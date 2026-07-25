@@ -41,3 +41,15 @@ Heimdall work.
   secrets under source control.
 - Treat node/gateway firmware changes as radio changes: record the build
   profile, PHY settings, board ID, and test result in `STATUS.md`.
+
+## Collaboration workflow
+
+- Before starting a requested task, briefly assess whether it should continue
+  in the current conversation or start in a new session, and tell the user
+  which is more appropriate.
+- Prefer the current session for sequential work that depends on its hardware,
+  repository, or decision context. Recommend a new session for an unrelated
+  task or when a clean context would materially reduce risk.
+- After making repository changes, consider whether a commit or push would be
+  useful. If so, tell the user and ask for approval before committing or
+  pushing; never commit or push solely based on this assessment.
