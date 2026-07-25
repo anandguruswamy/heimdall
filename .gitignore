@@ -23,3 +23,6 @@ __pycache__/
 *.env
 !.env.example
 secrets/
+
+# Portable local tool installer cache (keep binaries out of Git)
+tools/installers/

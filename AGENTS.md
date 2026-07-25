@@ -53,3 +53,7 @@ Heimdall work.
 - After making repository changes, consider whether a commit or push would be
   useful. If so, tell the user and ask for approval before committing or
   pushing; never commit or push solely based on this assessment.
+- When adding a host tool or firmware dependency, update the tracked tooling
+  manifest with its version, architecture, download link, and checksum when
+  available. Retain a copy of the installer or archive in the ignored local
+  `tools/installers/` cache when redistribution is permitted.
