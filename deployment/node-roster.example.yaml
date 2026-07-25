@@ -1,0 +1,17 @@
+gateway_node_id: 1
+round_rate_hz: 50
+uwb_channel: 5
+preamble_length: 128
+nodes:
+  - id: 1
+    role: gateway
+    serial: replace-me
+    slot: 0
+  - id: 2
+    role: fixed
+    serial: replace-me
+    slot: 1
+  - id: 3
+    role: fixed
+    serial: future
+    slot: 2

@@ -1,0 +1,25 @@
+# West and Zephyr generated state
+firmware/**/build*/
+firmware/**/zephyr/
+firmware/**/modules/
+firmware/**/.west/
+*.elf
+*.hex
+*.map
+
+# Runtime data
+captures/raw/
+captures/processed/
+*.pcap
+*.csv
+*.jsonl
+
+# Python state
+__pycache__/
+*.py[cod]
+.venv/
+
+# Local deployment and secrets
+*.env
+!.env.example
+secrets/

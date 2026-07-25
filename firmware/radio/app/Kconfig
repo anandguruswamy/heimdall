@@ -1,0 +1,52 @@
+mainmenu "UWB Phase 1 bring-up"
+
+source "Kconfig.zephyr"
+source "${ZEPHYR_BASE}/samples/subsys/usb/common/Kconfig.sample_usbd"
+
+choice PHASE1_ROLE
+	prompt "Phase 1 application role"
+	default PHASE1_ROLE_DEV_ID
+
+config PHASE1_ROLE_DEV_ID
+	bool "DEV_ID probe"
+
+config PHASE1_ROLE_TX
+	bool "1000-frame IRQ-confirmed transmitter"
+
+config PHASE1_ROLE_RX
+	bool "Continuous IRQ-driven receiver"
+
+config PHASE1_ROLE_SCHEDULED_TX
+	bool "1000-frame radio-clock scheduled transmitter"
+
+config PHASE1_ROLE_SENSING_RX
+	bool "CIR/timestamp/CFO sensing receiver"
+
+config PHASE1_ROLE_TWR_INITIATOR
+	bool "SS-TWR initiator"
+
+config PHASE1_ROLE_TWR_RESPONDER
+	bool "SS-TWR responder"
+
+endchoice
+
+config PHASE1_FRAME_COUNT
+	int "Number of frames in finite Phase 1 runs"
+	default 1000
+	range 1 10000
+
+config PHASE1_TX_PERIOD_MS
+	int "Scheduled-TX frame period in milliseconds"
+	default 20
+	range 2 10000
+
+config PHASE1_CONTINUOUS_TX
+	bool "Run scheduled TX continuously"
+	default n
+	depends on PHASE1_ROLE_SCHEDULED_TX
+	help
+	  Keep transmitting scheduled frames until the board is reset or reflashed.
+
+config PHASE1_CIR_DUMP
+	bool "Dump complete 64-tap CIR windows over UART"
+	default n

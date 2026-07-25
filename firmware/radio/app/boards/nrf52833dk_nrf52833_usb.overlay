@@ -1,0 +1,6 @@
+&zephyr_udc0 {
+	cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+		label = "DWM3001 USB CDC ACM";
+	};
+};

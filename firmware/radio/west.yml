@@ -1,0 +1,31 @@
+manifest:
+  version: "1.2"
+
+  remotes:
+    - name: ncs
+      url-base: https://github.com/nrfconnect
+    - name: br101
+      url-base: https://github.com/br101
+
+  projects:
+    # The driver's DWM3001CDK support was hardware-tested against NCS 3.3.
+    # Pin the corresponding Zephyr fork commit, not a moving tag or branch.
+    - name: zephyr
+      remote: ncs
+      repo-path: sdk-zephyr
+      revision: fd9204a02d52630660ce8d729945a4dd743feabf
+      path: zephyr
+      import:
+        name-allowlist:
+          - cmsis
+          - cmsis_6
+          - hal_nordic
+          - segger
+
+    - name: zephyr-dw3000-decadriver
+      remote: br101
+      revision: 6208d99f933872bf024a653b0c9e8bef92349162
+      path: modules/lib/zephyr-dw3000-decadriver
+
+  self:
+    path: fw

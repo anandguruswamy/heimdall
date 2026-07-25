@@ -1,0 +1,91 @@
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/pinctrl/nrf-pinctrl.h>
+
+ / {
+	aliases {
+		led0 = &phase1_led;
+	};
+
+	leds {
+		phase1_led: phase1_led {
+			gpios = <&gpio0 4 GPIO_ACTIVE_LOW>;
+			label = "DWM3001CDK D9";
+		};
+	};
+};
+
+/* J-Link OB VCOM wiring on the DWM3001CDK. */
+&uart0_default {
+	/delete-node/ group1;
+	/delete-node/ group2;
+
+	group1 {
+		psels = <NRF_PSEL(UART_TX, 0, 19)>;
+	};
+
+	group2 {
+		psels = <NRF_PSEL(UART_RX, 0, 15)>;
+		bias-pull-up;
+	};
+};
+
+&uart0_sleep {
+	/delete-node/ group1;
+	/delete-node/ group2;
+
+	group1 {
+		psels = <NRF_PSEL(UART_TX, 0, 19)>,
+			<NRF_PSEL(UART_RX, 0, 15)>;
+		low-power-enable;
+	};
+};
+
+&uart0 {
+	status = "okay";
+	current-speed = <115200>;
+};
+
+/*
+ * Optional Phase 2 speed-test profile: the nRF52833's only 32 MHz-capable
+ * SPI master. Keep the default board overlay as the known-good 8 MHz rollback.
+ */
+&spi3_default {
+	/delete-node/ group1;
+
+	group1 {
+		psels = <NRF_PSEL(SPIM_SCK, 0, 3)>,
+			<NRF_PSEL(SPIM_MISO, 0, 29)>,
+			<NRF_PSEL(SPIM_MOSI, 0, 8)>;
+		nordic,drive-mode = <NRF_DRIVE_H0H1>;
+	};
+};
+
+&spi3_sleep {
+	/delete-node/ group1;
+
+	group1 {
+		psels = <NRF_PSEL(SPIM_SCK, 0, 3)>,
+			<NRF_PSEL(SPIM_MISO, 0, 29)>,
+			<NRF_PSEL(SPIM_MOSI, 0, 8)>;
+		low-power-enable;
+	};
+};
+
+&spi1 {
+	status = "disabled";
+};
+
+&spi3 {
+	status = "okay";
+	cs-gpios = <&gpio1 6 GPIO_ACTIVE_LOW>;
+
+	dw3000: dw3000@0 {
+		compatible = "decawave,dw3000";
+		reg = <0>;
+		status = "okay";
+		spi-max-frequency = <32000000>;
+		irq-gpios = <&gpio1 2 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio0 25 GPIO_ACTIVE_LOW>;
+		wakeup-gpios = <&gpio1 19 GPIO_ACTIVE_HIGH>;
+	};
+};

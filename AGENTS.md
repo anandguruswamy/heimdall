@@ -1,0 +1,43 @@
+# Heimdall Workspace Notes
+
+Heimdall is the execution project for a multi-node UWB sensing system:
+
+```text
+UWB nodes <-> UWB beacon/ranging/CIR backhaul <-> gateway UWB node
+                                                   |
+                                                   | USB CDC
+                                                   v
+                                             Arduino UNO Q
+                                             fusion hub
+```
+
+This folder is intentionally standalone. Dated projects elsewhere in the
+workspace are reference material only and should not be modified as part of
+Heimdall work.
+
+## Operating rules
+
+- The UWB radio is the node-to-node data plane.
+- One DWM3001 gateway node is physically attached to the UNO Q over its native
+  USB CDC connection.
+- The UNO Q owns ingestion, validation, archival, fusion, and the dashboard.
+- Firmware must keep radio timing independent from USB backpressure.
+- Every record has a protocol version, node identity, round identity, sequence
+  information, and integrity check.
+- Capture/replay is a first-class adapter for development and testing.
+
+## Hardware assumptions
+
+- DWM3001CDK nodes with DW3110 radios and nRF52833 MCUs.
+- Gateway connection uses the DWM3001 J20/native USB path, not J9 J-Link.
+- Initial physical deployment has two real nodes and seven deterministic slots;
+  unused slots remain empty until more hardware is available.
+- The UNO Q Linux side is Debian aarch64 and is reachable as `chinny`.
+
+## Safety
+
+- Do not alter the frozen dated experiments while using their artifacts here.
+- Do not put generated Zephyr build trees, west dependencies, captures, or
+  secrets under source control.
+- Treat node/gateway firmware changes as radio changes: record the build
+  profile, PHY settings, board ID, and test result in `STATUS.md`.
