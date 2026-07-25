@@ -57,3 +57,7 @@ Heimdall work.
   manifest with its version, architecture, download link, and checksum when
   available. Retain a copy of the installer or archive in the ignored local
   `tools/installers/` cache when redistribution is permitted.
+- Before downloading or installing a host tool, inspect
+  `tools/installers/` for a matching version and host architecture. Prefer a
+  cached file whose checksum matches `tools/README.md`; download from the
+  documented official link only when no verified cached file is available.
