@@ -40,6 +40,8 @@ flashed yet.
 - J-Link reported successful flash download and verification (`O.K.`) for the
   nRF52833 target. D9 is blinking green, confirming the firmware reaches its
   heartbeat loop after radio initialization.
+- The 32 MHz SPIM3 image was then flashed and verified on the same board; D9
+  continued blinking green after the switch.
 
 ## Next executable checkpoint
 
