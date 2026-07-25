@@ -42,6 +42,8 @@ flashed yet.
   heartbeat loop after radio initialization.
 - The 32 MHz SPIM3 image was then flashed and verified on the same board; D9
   continued blinking green after the switch.
+- Board 2 (`760197419`) was flashed with the 32 MHz SPIM3 image through the
+  UNO Q and also shows the green D9 heartbeat.
 
 ## Next executable checkpoint
 
