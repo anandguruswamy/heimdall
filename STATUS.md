@@ -21,9 +21,14 @@ flashed yet.
   fetched in the `firmware/` west workspace.
 - CMake 3.31.10, Ninja, DTC, west 1.5.0, and the `arm-zephyr-eabi` compiler
   are installed and detected.
-- A clean firmware build is currently blocked by project configuration: the
-  SPIM3 overlay defines duplicate `dw3000` labels, and the current Kconfig
-  configuration emits warnings treated as errors.
+- The 8 MHz rollback and 32 MHz SPIM3 profiles both build successfully with
+  USB CDC enabled. The build outputs are under `firmware/build-radio/` and
+  `firmware/build-radio-spim3/`.
+- The baseline fixes included fetching the missing DW3000 west module,
+  including the USB DeviceTree overlay, and deleting the inactive SPI1 radio
+  node before defining the SPIM3 radio node.
+- Builds still emit non-fatal warnings for an empty console library, unused
+  role functions, and a deprecated SPI driver macro.
 - The current board target is `nrf52833dk/nrf52833`; underscore-form names are
   retained only for overlay/devicetree filenames.
 

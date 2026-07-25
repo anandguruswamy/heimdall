@@ -34,6 +34,11 @@ historical narrative.
 - Keep west, CMake, and Zephyr Python packages in one consistent environment.
   CMake invokes the Python interpreter it discovers, which may differ from the
   interpreter used by `pip`.
+- A west manifest entry does not guarantee that a module checkout exists after
+  an interrupted update; verify `west list` and the module directories before
+  diagnosing missing Kconfig symbols.
+- Enabling USB Kconfig options is not enough; the matching USB DeviceTree
+  overlay must also be included in the build.
 - The SPIM3 overlay must delete or rename the default SPI1 `dw3000` label before
   defining the SPI3 instance; disabling SPI1 alone does not remove its label.
 

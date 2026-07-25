@@ -72,6 +72,7 @@
 };
 
 &spi1 {
+	/delete-node/ dw3000@0;
 	status = "disabled";
 };
 

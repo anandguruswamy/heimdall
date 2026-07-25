@@ -88,7 +88,8 @@ and SEGGER module revisions. Use `west list` to verify the fetched projects.
 From `firmware/`, use the current Zephyr board target:
 
 ```powershell
-west build -p always --no-sysbuild -b nrf52833dk/nrf52833 radio/app -d build-radio -- "-DOVERLAY_CONFIG=radio/app/usb.conf"
+$usbOverlay = (Resolve-Path radio/app/boards/nrf52833dk_nrf52833_usb.overlay).Path.Replace('\', '/')
+west build -p always --no-sysbuild -b nrf52833dk/nrf52833 radio/app -d build-radio -- "-DOVERLAY_CONFIG=radio/app/usb.conf" "-DEXTRA_DTC_OVERLAY_FILE=$usbOverlay"
 ```
 
 The default board overlay is the 8 MHz SPI rollback profile. The 32 MHz SPIM3
@@ -99,7 +100,8 @@ west build -p always --no-sysbuild -b nrf52833dk/nrf52833 radio/app -d build-rad
 ```
 
 The absolute path avoids CMake resolving the extra overlay relative to the
-generated build directory.
+generated build directory. Include the USB overlay in any build that enables
+`usb.conf`.
 
 ## Understand the build inputs
 
@@ -122,19 +124,16 @@ image and the SEGGER tools are installed.
 Do not use J20 as a substitute for J9 when programming the board. J20 is the
 native USB CDC path intended for gateway transport testing.
 
-## Current known issues
+## Current build notes
 
-The current workspace setup is known to reach Zephyr and detect the compiler,
-but a clean firmware build still requires project configuration fixes:
+Both the 8 MHz rollback profile and the 32 MHz SPIM3 profile now build. The
+baseline fixes were fetching the missing west driver module, including the USB
+DeviceTree overlay, and deleting the inactive SPI1 radio node from the SPIM3
+overlay before defining the SPI3 instance.
 
-- The SPIM3 overlay disables SPI1 but leaves its `dw3000` label while defining
-  another `dw3000` label on SPI3.
-- The current Kconfig configuration emits warnings treated as errors,
-  including DW3000 and USB CDC configuration warnings.
-
-Resolve these baseline issues before implementing the custom Heimdall beacon
-protocol. Otherwise hardware and protocol failures will be difficult to
-separate from build configuration failures.
+The builds still emit non-fatal warnings for an empty console library, unused
+role functions, and a deprecated SPI driver macro. These should be cleaned up
+separately from protocol work.
 
 ## Where to continue
 
