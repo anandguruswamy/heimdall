@@ -76,6 +76,10 @@ add the installer files themselves to Git.
 | `windows-x86_64/dtc-1.6.1-msys2-x86_64.zip` | 1.6.1 | Windows x86-64 | `7AAC366F989FD2450D5E641E118734653EA29D0DDB7DBFA33521D57AFE852AE3` | DeviceTree compiler |
 | `windows-x86_64/zephyr-sdk-0.17.4_windows-x86_64_minimal.7z` | 0.17.4 | Windows x86-64 | `3A1B7DE85811296A7193D010882A61D8AF1DDA7B2319AF30EB04665F6BBF1F99` | SDK base archive |
 | `windows-x86_64/toolchain_windows-x86_64_arm-zephyr-eabi.7z` | 0.17.4 | Windows x86-64 | `22F8BE7A2762A5FE7C9C0F465F79F5E6ABAC204CC13405C9F243D8596C10B08D` | ARM compiler |
+| `windows-arm64/JLink_Windows_V962_arm64.exe` | 9.62 | Windows ARM64 | `0C79A68C64FF654787A31CFEBAA8D2A93CC3D8D7F67AF2D4558831C18B489F8B` | SEGGER J-Link installer |
+| `windows-x86_64/JLink_Windows_V962_x86_64.exe` | 9.62 | Windows x86-64 | `50F44E977285D76D45BB0BAEBE4C7867C96E6C9167112248093C3B18D7A7A137` | SEGGER fallback installer |
+| `windows-x86_64/zadig-2.9.exe` | 2.9 | Windows x86-64 | `4ECAA95DF3DA3621486A043AEF8B3050B8BAFE7C901402871E816229EF82039B` | WinUSB workaround; use only for J-Link MI_02 |
+| `linux-arm64/JLink_Linux_V962_arm64.deb` | 9.62 | Linux ARM64 | `F4BD3F3DC7EAD379EB9BC7BDF858CF8B1296FB82573B5A04B5A7248AA8877F74` | UNO Q J-Link package |
 
 On PowerShell, calculate a checksum with:
 

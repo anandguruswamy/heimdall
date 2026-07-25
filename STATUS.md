@@ -32,6 +32,15 @@ flashed yet.
 - The current board target is `nrf52833dk/nrf52833`; underscore-form names are
   retained only for overlay/devicetree filenames.
 
+## Hardware validation
+
+- Board 1 (`760223921`) was flashed successfully through the UNO Q using its
+  native Linux ARM64 J-Link tools and the J9 connection.
+- Image: 8 MHz rollback profile, USB CDC-enabled `zephyr.hex`.
+- J-Link reported successful flash download and verification (`O.K.`) for the
+  nRF52833 target. D9 is blinking green, confirming the firmware reaches its
+  heartbeat loop after radio initialization.
+
 ## Next executable checkpoint
 
 Build a two-board Heimdall beacon profile, flash one as gateway and one as peer,

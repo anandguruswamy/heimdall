@@ -117,9 +117,20 @@ generated build directory. Include the USB overlay in any build that enables
 
 ## Flashing and serial output
 
-Flashing uses the J-Link connection on J9. The exact `west flash` command and
-runner settings should be verified after the baseline build produces a valid
-image and the SEGGER tools are installed.
+Flashing uses the J-Link connection on J9. On ARM64 Windows, the UNO Q can be
+used as a remote Linux ARM64 flashing host: connect J9 to the UNO Q, copy the
+`.hex` image there, and invoke its native `JLinkExe` with the board's J-Link
+serial number. This avoids the Windows ARM USB-driver path.
+
+The current verified host command sequence is equivalent to:
+
+```bash
+printf 'connect\nloadfile /tmp/heimdall-board1-8mhz.hex\nr\ng\nq\n' \\
+  | JLinkExe -device nRF52833_xxAA -if SWD -speed 4000 \\
+      -SelectEmuBySN 760223921
+```
+
+The J-Link package is documented in `tools/README.md`.
 
 Do not use J20 as a substitute for J9 when programming the board. J20 is the
 native USB CDC path intended for gateway transport testing.
