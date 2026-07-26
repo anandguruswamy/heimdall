@@ -140,3 +140,45 @@ left explicitly pending rather than inferred from build success.
 - CIR shape remained valid: relative peaks were 17-18 taps and every received
   frame produced a 64-tap window. The 128-symbol profile is retained for the
   next Phase 2 experiments; 64 remains a documented lower-airtime fallback.
+
+## Gate 1 timing measurement: full-frame EXT-PHR
+
+- Date/profile: 2026-07-26, `nrf52833dk/nrf52833`, SPIM3 at 32 MHz, channel 9,
+  PRF 64 MHz, PLEN 128, 6.8 Mb/s, STS off.
+- Transmitter: J-Link `760223921`, scheduled-TX bring-up image with 1023 total
+  frame bytes including FCS, EXT PHR, 20 ms period.
+- Receiver: J-Link `760197419`, sensing-RX bring-up image with callback GPIO and
+  cycle-counter instrumentation.
+- The first run exposed that the application remained at the driver’s 2 MHz
+  initialization SPI rate. The application now calls the driver platform’s
+  fast-rate transition after initialization; the corrected run reported:
+
+| CIR taps | RX callback max | `dwt_writetxdata` max | Result |
+|---:|---:|---:|---|
+| 64 | 1983 us | 366 us | 1023-byte EXT-PHR frames and CIR reads observed |
+| 128 | 2868 us | 366 us | 1023-byte EXT-PHR frames and CIR reads observed |
+
+- The corrected run also verified scheduled TX completion on the transmitter;
+  the observed `error_dtu=0` remained unchanged.
+- These are callback maxima from the firmware counter, not GPIO pulse-width
+  captures. `report_assembly_us` and the independent diagnostic transaction
+  accounting remain pending, so the configuration model has not yet been
+  changed from its estimates.
+
+## Gate 3: EXT-PHR with hardware filtering
+
+- Date/profile: 2026-07-26, `nrf52833dk/nrf52833`, SPIM3 at 32 MHz, channel 9,
+  PRF 64 MHz, PLEN 128, 6.8 Mb/s, STS off, 1023-byte frames.
+- The TX image enabled `DWT_PHRMODE_EXT`, scheduled TX, and hardware data
+  filtering with `DWT_FF_EXTEND_EN`. The RX image enabled the same EXT-PHR
+  mode, 64-tap CIR measurement, and the extended hardware filter.
+- TX board `760223921` and RX board `760197419` were flashed through the UNO Q
+  J-Link host. Both downloads completed with J-Link program verification
+  `O.K.`.
+- Board-to-board run: at least 5200 scheduled TX IRQ completions and at least
+  5200 valid RX frames with 5200 CIR reads. TX reported `error_dtu=0`; RX
+  callback maximum remained 1953 us and `dwt_writetxdata` maximum remained
+  366 us. RX accumulated 38 errors during the run.
+- Result: PASS. `DWT_PHRMODE_EXT` and `DWT_FF_EXTEND_EN` work together for the
+  full-size frame profile. The RX error count is retained for later link-budget
+  characterization and does not invalidate this gate.

@@ -1,6 +1,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/sys/printk.h>
+#include <string.h>
 #if defined(CONFIG_USB_DEVICE_STACK_NEXT)
 #include "usb_cir_stream.h"
 #endif
@@ -15,8 +16,13 @@
 #define CIR_TAPS CONFIG_PHASE1_CIR_TAPS
 #define CIR_LEAD_TAPS CONFIG_PHASE1_CIR_LEFT_TAPS
 #define RX_BUFFER_LEN 1023U
-#define FRAME_DATA_LEN 10U
-#define FRAME_WIRE_LEN 12U
+#define FRAME_DATA_LEN (CONFIG_PHASE1_TX_FRAME_BYTES - 2U)
+#define FRAME_WIRE_LEN CONFIG_PHASE1_TX_FRAME_BYTES
+#if defined(CONFIG_PHASE1_ENABLE_FRAME_FILTER)
+#define PHASE1_PAYLOAD_OFFSET 9U
+#else
+#define PHASE1_PAYLOAD_OFFSET 0U
+#endif
 
 static uint64_t timestamp40(const uint8_t timestamp[5])
 {
@@ -43,6 +49,7 @@ static int64_t timestamp40_diff(uint64_t actual, uint64_t expected)
 #if defined(CONFIG_PHASE1_ROLE_SCHEDULED_TX)
 K_SEM_DEFINE(scheduled_tx_done, 0, 1);
 static volatile uint32_t scheduled_tx_irq_count;
+static volatile uint32_t scheduled_tx_write_max_us;
 
 static void scheduled_tx_confirm_cb(const dwt_cb_data_t *cb_data)
 {
@@ -59,9 +66,7 @@ static dwt_callbacks_s scheduled_tx_callbacks = {
 int phase1_run_scheduled_tx(void)
 {
 #if defined(CONFIG_PHASE1_ROLE_SCHEDULED_TX)
-	uint8_t frame[FRAME_DATA_LEN] = {
-		0xC5, 0, 0, 0, 'P', '1', 'S', 'C', 'H', '!'
-	};
+	static uint8_t frame[FRAME_DATA_LEN];
 	uint8_t system_timestamp[5];
 	uint8_t tx_timestamp[5];
 	uint64_t target;
@@ -72,6 +77,24 @@ int phase1_run_scheduled_tx(void)
 	int64_t error_max = INT64_MIN;
 	uint32_t start_failures = 0;
 	uint32_t irq_timeouts = 0;
+
+	memset(frame, 0xA5, sizeof(frame));
+#if defined(CONFIG_PHASE1_ENABLE_FRAME_FILTER)
+	frame[0] = 0x41;
+	frame[1] = 0x88;
+	frame[3] = (uint8_t)CONFIG_PHASE1_NETWORK_ID;
+	frame[4] = (uint8_t)(CONFIG_PHASE1_NETWORK_ID >> 8);
+	frame[5] = 0xFF;
+	frame[6] = 0xFF;
+	frame[7] = (uint8_t)CONFIG_PHASE1_NODE_ID;
+	frame[PHASE1_PAYLOAD_OFFSET] = 0xC5;
+	frame[PHASE1_PAYLOAD_OFFSET + 4U] = 'P';
+	frame[PHASE1_PAYLOAD_OFFSET + 5U] = '1';
+#else
+	frame[0] = 0xC5;
+	frame[4] = 'P';
+	frame[5] = '1';
+#endif
 
 	dwt_settxantennadelay(TX_ANT_DLY);
 	dwt_setcallbacks(&scheduled_tx_callbacks);
@@ -92,15 +115,28 @@ int phase1_run_scheduled_tx(void)
 	     sequence < CONFIG_PHASE1_FRAME_COUNT;
 	     sequence++) {
 		uint32_t delayed_time = (uint32_t)(target >> 8);
+		uint32_t tx_write_start;
+		uint32_t tx_write_us;
 		uint64_t programmed =
 			((((uint64_t)(delayed_time & 0xFFFFFFFEUL)) << 8) +
 			 TX_ANT_DLY) & DWT_TIMESTAMP_MASK;
 		int64_t error;
 
+#if defined(CONFIG_PHASE1_ENABLE_FRAME_FILTER)
+		frame[2] = (uint8_t)sequence;
+		frame[PHASE1_PAYLOAD_OFFSET + 2U] = (uint8_t)sequence;
+		frame[PHASE1_PAYLOAD_OFFSET + 3U] = (uint8_t)(sequence >> 8);
+#else
 		frame[1] = (uint8_t)sequence;
 		frame[2] = (uint8_t)sequence;
 		frame[3] = (uint8_t)(sequence >> 8);
+#endif
+		tx_write_start = k_cycle_get_32();
 		dwt_writetxdata(FRAME_DATA_LEN, frame, 0);
+		tx_write_us = k_cyc_to_us_floor32(k_cycle_get_32() - tx_write_start);
+		if (tx_write_us > scheduled_tx_write_max_us) {
+			scheduled_tx_write_max_us = tx_write_us;
+		}
 		dwt_writetxfctrl(FRAME_WIRE_LEN, 0, 0);
 		dwt_setdelayedtrxtime(delayed_time);
 
@@ -122,8 +158,9 @@ int phase1_run_scheduled_tx(void)
 				error_max = error;
 			}
 			if (((sequence + 1U) % 100U) == 0U) {
-				printk("phase1: SCHED_PROGRESS sent=%u irq=%u error_dtu=%lld\n",
-				       sequence + 1U, scheduled_tx_irq_count, error);
+				printk("phase1: SCHED_PROGRESS sent=%u irq=%u tx_write_max_us=%u error_dtu=%lld\n",
+				       sequence + 1U, scheduled_tx_irq_count,
+				       scheduled_tx_write_max_us, error);
 			}
 		}
 
@@ -133,8 +170,9 @@ int phase1_run_scheduled_tx(void)
 	}
 
 	uint32_t completed = scheduled_tx_irq_count;
-	printk("phase1: SCHED_FINAL sent=%d irq=%u start_fail=%u irq_to=%u error_min_dtu=%lld error_max_dtu=%lld error_mean_dtu=%lld error_abs_mean_dtu=%llu error_sq_sum=%llu\n",
+	printk("phase1: SCHED_FINAL sent=%d irq=%u start_fail=%u irq_to=%u tx_write_max_us=%u error_min_dtu=%lld error_max_dtu=%lld error_mean_dtu=%lld error_abs_mean_dtu=%llu error_sq_sum=%llu\n",
 	       CONFIG_PHASE1_FRAME_COUNT, completed, start_failures, irq_timeouts,
+	       scheduled_tx_write_max_us,
 	       completed ? error_min : 0, completed ? error_max : 0,
 	       completed ? error_sum / (int64_t)completed : 0,
 	       completed ? error_abs_sum / completed : 0,
@@ -214,8 +252,10 @@ static void sensing_rx_ok_cb(const dwt_cb_data_t *cb_data)
 		length = sizeof(sensing_rx_buffer);
 	}
 	dwt_readrxdata(sensing_rx_buffer, length, 0);
-	if ((length < 6U) || (sensing_rx_buffer[0] != 0xC5) ||
-	    (sensing_rx_buffer[4] != 'P') || (sensing_rx_buffer[5] != '1')) {
+	if ((length < PHASE1_PAYLOAD_OFFSET + 6U) ||
+	    (sensing_rx_buffer[PHASE1_PAYLOAD_OFFSET] != 0xC5) ||
+	    (sensing_rx_buffer[PHASE1_PAYLOAD_OFFSET + 4U] != 'P') ||
+	    (sensing_rx_buffer[PHASE1_PAYLOAD_OFFSET + 5U] != '1')) {
 		(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 		#if defined(CONFIG_PHASE1_MEASURE_CALLBACK)
 		(void)gpio_pin_set_dt(&sensing_measure_pin, 0);
@@ -223,8 +263,8 @@ static void sensing_rx_ok_cb(const dwt_cb_data_t *cb_data)
 		return;
 	}
 
-	sequence = (uint16_t)sensing_rx_buffer[2] |
-		   ((uint16_t)sensing_rx_buffer[3] << 8);
+	sequence = (uint16_t)sensing_rx_buffer[PHASE1_PAYLOAD_OFFSET + 2U] |
+		   ((uint16_t)sensing_rx_buffer[PHASE1_PAYLOAD_OFFSET + 3U] << 8);
 	dwt_readrxtimestamp(rx_timestamp, DWT_IP_M);
 	cfo_raw = dwt_readclockoffset();
 	if (dwt_readdiagnostics_acc(&diag, DWT_ACC_IDX_IP_M) != DWT_SUCCESS) {

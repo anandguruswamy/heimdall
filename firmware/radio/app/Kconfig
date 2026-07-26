@@ -40,6 +40,49 @@ config PHASE1_TX_PERIOD_MS
 	default 20
 	range 2 10000
 
+config PHASE1_TX_FRAME_BYTES
+	int "Scheduled-TX total frame bytes including FCS"
+	default 1023
+	range 12 1023
+	depends on PHASE1_ROLE_SCHEDULED_TX
+	help
+		Total frame length used by the scheduled transmitter timing gate.
+		The two hardware FCS bytes are included in this value.
+
+config PHASE1_EXT_PHR
+	bool "Use DW3000 extended PHR"
+	default y
+	depends on PHASE1_ROLE_SCHEDULED_TX || PHASE1_ROLE_SENSING_RX
+	help
+		Select the extended PHR required for frames larger than 127 bytes.
+
+config PHASE1_ENABLE_FRAME_FILTER
+	bool "Enable 802.15.4 hardware frame filter"
+	default n
+	depends on PHASE1_ROLE_SCHEDULED_TX || PHASE1_ROLE_SENSING_RX
+	help
+		Enable PAN ID and data-frame filtering for the radio bring-up gate.
+
+config PHASE1_FRAME_FILTER_EXTENDED
+	bool "Allow extended frame types in hardware filter"
+	default n
+	depends on PHASE1_ENABLE_FRAME_FILTER
+	help
+		Add DWT_FF_EXTEND_EN to the hardware filter flags for the EXT-PHR
+		combination test.
+
+config PHASE1_NODE_ID
+	int "Bring-up source node ID"
+	default 0
+	range 0 7
+	depends on PHASE1_ROLE_SCHEDULED_TX || PHASE1_ROLE_SENSING_RX
+
+config PHASE1_NETWORK_ID
+	hex "Bring-up PAN ID"
+	default 0xABCD
+	range 0 65535
+	depends on PHASE1_ROLE_SCHEDULED_TX || PHASE1_ROLE_SENSING_RX
+
 config PHASE1_CONTINUOUS_TX
 	bool "Run scheduled TX continuously"
 	default n

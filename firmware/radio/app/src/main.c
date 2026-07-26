@@ -11,6 +11,7 @@
 #include <deca_device_api.h>
 #include <deca_probe_interface.h>
 #include <dw3000_hw.h>
+#include <dw3000_spi.h>
 
 #if defined(CONFIG_HEIMDALL_BEACON)
 #include "heimdall_beacon_config.h"
@@ -113,7 +114,7 @@ static dwt_config_t radio_config = {
 	.rxCode = 9,
 	.sfdType = 1,
 	.dataRate = DWT_BR_6M8,
-	.phrMode = DWT_PHRMODE_STD,
+	.phrMode = CONFIG_PHASE1_EXT_PHR ? DWT_PHRMODE_EXT : DWT_PHRMODE_STD,
 	.phrRate = DWT_PHRRATE_STD,
 	.sfdTO = 129,
 	.stsMode = DWT_STS_MODE_OFF,
@@ -268,6 +269,7 @@ static int radio_probe_and_configure(bool configure_phy)
 		printk("phase1: dwt_initialise failed\n");
 		return -EIO;
 	}
+	dw3000_spi_speed_fast();
 
 	if (dwt_configure(&radio_config) == DWT_ERROR) {
 		printk("phase1: dwt_configure failed\n");
@@ -275,6 +277,17 @@ static int radio_probe_and_configure(bool configure_phy)
 	}
 
 	dwt_configuretxrf((dwt_txconfig_t *)&tx_rf_config);
+#if defined(CONFIG_PHASE1_ENABLE_FRAME_FILTER)
+	dwt_setpanid(CONFIG_PHASE1_NETWORK_ID);
+	dwt_setaddress16(CONFIG_PHASE1_NODE_ID);
+	if (CONFIG_PHASE1_ENABLE_FRAME_FILTER) {
+		uint16_t filter_flags = DWT_FF_DATA_EN;
+#if CONFIG_PHASE1_FRAME_FILTER_EXTENDED
+		filter_flags |= DWT_FF_EXTEND_EN;
+#endif
+		dwt_configureframefilter(DWT_FF_ENABLE_802_15_4, filter_flags);
+	}
+#endif
 #if defined(CONFIG_HEIMDALL_BEACON)
 	dwt_setpanid(HEIMDALL_NETWORK_ID);
 	dwt_setaddress16(CONFIG_HEIMDALL_NODE_ID);

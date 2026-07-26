@@ -46,8 +46,17 @@ flashed yet.
   (`.../dw3000/dw3000_device.c:2483-2526`); and the GPIO IRQ submits work
   before calling `dwt_isr()` (`.../platform/dw3000_hw.c:66-76`).
 - Added a GPIO/cycle-counter RX callback measurement mode with configurable
-  64/128 taps and a 1023-byte receive buffer. Both 64-tap and 128-tap SPIM3
-  builds pass; no hardware timing result has been recorded yet.
+  64/128 taps and a 1023-byte receive buffer. Corrected full-frame EXT-PHR
+  measurements at 32 MHz SPIM3 reported 1983 us maximum at 64 taps, 2868 us
+  maximum at 128 taps, and 366 us maximum for `dwt_writetxdata`; the complete
+  run is recorded in `firmware/radio/BRINGUP-NOTES.md`.
+- The first full-frame EXT-PHR run exposed that the application remained at the
+  driver's 2 MHz initialization SPI rate. The live compatibility path requires
+  SPI below 7 MHz during `dwt_initialise()` and exposes the fast-rate transition
+  separately (`firmware/modules/lib/zephyr-dw3000-decadriver/platform/deca_compat.c:410-431`,
+  `.../platform/dw3000_spi.c:44-49,80-87`). The application now calls
+  `dw3000_spi_speed_fast()` immediately after initialization; the timing result
+  will be re-measured after this correction.
 - Added initial frame-header/subreport serialization, CRC32, and schedule
   arithmetic modules under `CONFIG_HEIMDALL_BEACON`. The beacon-enabled SPIM3
   build passes and the existing 51 Python model tests pass.
@@ -130,6 +139,12 @@ flashed yet.
 - An earlier self-caught error is also recorded: the nominal 6.8 Mb/s is already
   net of Reed-Solomon coding, so airtime estimates go wrong by omitting the
   ~160 us of SHR and PHR, not by double-counting parity.
+- Gate 3 passed board-to-board with `DWT_PHRMODE_EXT` and
+  `DWT_FF_EXTEND_EN`: board `760223921` transmitted at least 5200 scheduled
+  frames and board `760197419` received at least 5200 valid frames with 5200
+  CIR reads. TX `error_dtu=0`; RX accumulated 38 errors; callback and TX-write
+  maxima were 1953 us and 366 us respectively. Details are in
+  `firmware/radio/BRINGUP-NOTES.md`.
 
 ## Next executable checkpoint
 
@@ -144,7 +159,9 @@ implementation is trusted:
    Modelled gateway load is 299-468 kB/s across N=2..8, which the current path
    cannot sustain.
 3. `DWT_PHRMODE_EXT` verified board-to-board, together with hardware frame
-   filtering, broadcast addressing, and auto-ACK confirmed disabled.
+   filtering, broadcast addressing, and auto-ACK confirmed disabled. PASS for
+   the current 1023-byte test profile; the 38 observed RX errors remain a
+   separate link-budget characterization item.
 
 Then implement the beacon frame over the verified scheduled-TX and USB CDC
 paths, and add gateway heartbeat, validation, and capture/replay coverage.
