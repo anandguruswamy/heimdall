@@ -1,4 +1,5 @@
 #include <zephyr/kernel.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/sys/printk.h>
 #if defined(CONFIG_USB_DEVICE_STACK_NEXT)
 #include "usb_cir_stream.h"
@@ -11,9 +12,9 @@
 #define DWT_DTU_PER_MS 63897600ULL
 #define TX_ANT_DLY 16385U
 #define RX_ANT_DLY 16385U
-#define CIR_TAPS 64U
-#define CIR_LEAD_TAPS 16U
-#define RX_BUFFER_LEN 127U
+#define CIR_TAPS CONFIG_PHASE1_CIR_TAPS
+#define CIR_LEAD_TAPS CONFIG_PHASE1_CIR_LEFT_TAPS
+#define RX_BUFFER_LEN 1023U
 #define FRAME_DATA_LEN 10U
 #define FRAME_WIRE_LEN 12U
 
@@ -166,6 +167,11 @@ static volatile uint8_t sensing_peak_last;
 static volatile uint64_t sensing_lead_power_last;
 static volatile uint64_t sensing_peak_power_last;
 static volatile uint64_t sensing_tail_power_last;
+#if defined(CONFIG_PHASE1_MEASURE_CALLBACK)
+static const struct gpio_dt_spec sensing_measure_pin =
+	GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
+static volatile uint32_t sensing_callback_max_us;
+#endif
 
 static int32_t sign_extend_18(const uint8_t value[3])
 {
@@ -181,6 +187,7 @@ static int32_t sign_extend_18(const uint8_t value[3])
 
 static void sensing_rx_ok_cb(const dwt_cb_data_t *cb_data)
 {
+	uint32_t callback_start = 0U;
 	dwt_cirdiags_t diag;
 	uint8_t rx_timestamp[5];
 	uint16_t length = cb_data->datalength;
@@ -195,6 +202,10 @@ static void sensing_rx_ok_cb(const dwt_cb_data_t *cb_data)
 	uint64_t peak_power = 0;
 	uint64_t tail_power = 0;
 	uint8_t peak_index = 0;
+#if defined(CONFIG_PHASE1_MEASURE_CALLBACK)
+	callback_start = k_cycle_get_32();
+	(void)gpio_pin_set_dt(&sensing_measure_pin, 1);
+#endif
 #if defined(CONFIG_PHASE1_CIR_DUMP) && !defined(CONFIG_USB_DEVICE_STACK_NEXT)
 	uint16_t full_peak_index = 0;
 #endif
@@ -206,6 +217,9 @@ static void sensing_rx_ok_cb(const dwt_cb_data_t *cb_data)
 	if ((length < 6U) || (sensing_rx_buffer[0] != 0xC5) ||
 	    (sensing_rx_buffer[4] != 'P') || (sensing_rx_buffer[5] != '1')) {
 		(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+		#if defined(CONFIG_PHASE1_MEASURE_CALLBACK)
+		(void)gpio_pin_set_dt(&sensing_measure_pin, 0);
+		#endif
 		return;
 	}
 
@@ -216,6 +230,9 @@ static void sensing_rx_ok_cb(const dwt_cb_data_t *cb_data)
 	if (dwt_readdiagnostics_acc(&diag, DWT_ACC_IDX_IP_M) != DWT_SUCCESS) {
 		sensing_rx_errors++;
 		(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+		#if defined(CONFIG_PHASE1_MEASURE_CALLBACK)
+		(void)gpio_pin_set_dt(&sensing_measure_pin, 0);
+		#endif
 		return;
 	}
 	agc_state = dwt_get_dgcdecision();
@@ -306,6 +323,14 @@ static void sensing_rx_ok_cb(const dwt_cb_data_t *cb_data)
 	printk("%s\n", cir_line);
 #endif
 #endif
+
+#if defined(CONFIG_PHASE1_MEASURE_CALLBACK)
+	uint32_t elapsed_us = k_cyc_to_us_floor32(k_cycle_get_32() - callback_start);
+	if (elapsed_us > sensing_callback_max_us) {
+		sensing_callback_max_us = elapsed_us;
+	}
+	(void)gpio_pin_set_dt(&sensing_measure_pin, 0);
+#endif
 }
 
 static void sensing_rx_error_cb(const dwt_cb_data_t *cb_data)
@@ -328,6 +353,14 @@ int phase1_run_sensing_rx(void)
 	uint32_t last_printed = 0;
 	bool final_printed = false;
 
+#if defined(CONFIG_PHASE1_MEASURE_CALLBACK)
+	if (!gpio_is_ready_dt(&sensing_measure_pin) ||
+	    gpio_pin_configure_dt(&sensing_measure_pin, GPIO_OUTPUT_INACTIVE) != 0) {
+		printk("phase1: callback measurement GPIO unavailable\n");
+		return -ENODEV;
+	}
+#endif
+
 	dwt_setrxantennadelay(RX_ANT_DLY);
 	dwt_configciadiag(DW_CIA_DIAG_LOG_ALL);
 	dwt_setcallbacks(&sensing_rx_callbacks);
@@ -338,21 +371,27 @@ int phase1_run_sensing_rx(void)
 		return -EIO;
 	}
 
-	printk("phase1: SENSE_START expected=%d cir_taps=%u lead=%u dump=%d mode=IRQ\n",
+	printk("phase1: SENSE_START expected=%d cir_taps=%u lead=%u dump=%d measure=%d mode=IRQ\n",
 	       CONFIG_PHASE1_FRAME_COUNT, CIR_TAPS, CIR_LEAD_TAPS,
-	       IS_ENABLED(CONFIG_PHASE1_CIR_DUMP));
+	       IS_ENABLED(CONFIG_PHASE1_CIR_DUMP),
+	       IS_ENABLED(CONFIG_PHASE1_MEASURE_CALLBACK));
 	(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 
 	while (true) {
 		uint32_t received = sensing_rx_count;
 
 		if ((received != last_printed) && ((received % 100U) == 0U)) {
-			printk("phase1: SENSE_PROGRESS received=%u cir_reads=%u errors=%u rx_ts=%llu cfo_raw=%d fp=%u peak_rel=%u lead_pwr=%llu peak_pwr=%llu tail_pwr=%llu\n",
+			printk("phase1: SENSE_PROGRESS received=%u cir_reads=%u errors=%u rx_ts=%llu cfo_raw=%d fp=%u peak_rel=%u lead_pwr=%llu peak_pwr=%llu tail_pwr=%llu callback_max_us=%u\n",
 			       received, sensing_cir_reads, sensing_rx_errors,
 			       sensing_rx_timestamp_last, sensing_cfo_raw_last,
 			       sensing_fp_last, sensing_peak_last,
 			       sensing_lead_power_last, sensing_peak_power_last,
-			       sensing_tail_power_last);
+			       sensing_tail_power_last,
+#if defined(CONFIG_PHASE1_MEASURE_CALLBACK)
+			       sensing_callback_max_us);
+#else
+			       0U);
+#endif
 			last_printed = received;
 		}
 

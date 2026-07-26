@@ -12,6 +12,11 @@
 #include <deca_probe_interface.h>
 #include <dw3000_hw.h>
 
+#if defined(CONFIG_HEIMDALL_BEACON)
+#include "heimdall_beacon_config.h"
+#include "beacon_wire.h"
+#endif
+
 #define HEARTBEAT_PERIOD_MS 500
 #define FRAME_COUNT 1000U
 #define FRAME_DATA_LEN 10U
@@ -63,7 +68,44 @@ static void usb_init(void)
 static const struct gpio_dt_spec heartbeat_led =
 	GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
 
+#if defined(CONFIG_HEIMDALL_BEACON)
+_Static_assert(HEIMDALL_N_NODES >= 2 && HEIMDALL_N_NODES <= HEIMDALL_MAX_NODES,
+	       "Heimdall node count is outside the protocol range");
+_Static_assert(CONFIG_HEIMDALL_NODE_ID < HEIMDALL_N_NODES,
+	       "Heimdall node ID is outside the configured roster range");
+_Static_assert(HEIMDALL_CIR_TAPS >= 1 && HEIMDALL_CIR_TAPS <= HEIMDALL_MAX_CIR_TAPS,
+	       "Heimdall CIR tap count is outside the protocol range");
+_Static_assert(HEIMDALL_CIR_LEFT_TAPS < HEIMDALL_CIR_TAPS,
+	       "Heimdall CIR window starts outside the tap count");
+_Static_assert(HEIMDALL_MAX_FRAME_BYTES <= 1023,
+	       "Heimdall maximum frame exceeds the DW3000 EXT PHR limit");
+_Static_assert(HEIMDALL_FRAME_BYTES <= HEIMDALL_MAX_FRAME_BYTES,
+	       "Heimdall frame exceeds the configured maximum");
+_Static_assert(HEIMDALL_M * HEIMDALL_FRAME_PAYLOAD_BYTES >=
+	       HEIMDALL_POOLED_REPORT_MAX_BYTES,
+	       "Heimdall pooled report does not fit its frames");
+_Static_assert(HEIMDALL_SLOT_DURATION_US % 100U == 0U,
+	       "Heimdall slot duration is not quantised to 100 us");
+_Static_assert(HEIMDALL_SLOT_DURATION_US >= HEIMDALL_SLOT_FLOOR_US,
+	       "Heimdall slot duration is below the calculated floor");
+#endif
+
 static dwt_config_t radio_config = {
+#if defined(CONFIG_HEIMDALL_BEACON)
+	.chan = HEIMDALL_PHY_CHANNEL,
+	.txPreambLength = HEIMDALL_PHY_PREAMBLE_LENGTH == 128 ? DWT_PLEN_128 : DWT_PLEN_64,
+	.rxPAC = HEIMDALL_PHY_PAC == 8 ? DWT_PAC8 : DWT_PAC4,
+	.txCode = HEIMDALL_PHY_TX_PREAMBLE_CODE,
+	.rxCode = HEIMDALL_PHY_RX_PREAMBLE_CODE,
+	.sfdType = HEIMDALL_PHY_SFD_TYPE,
+	.dataRate = DWT_BR_6M8,
+	.phrMode = HEIMDALL_PHY_PHR_MODE_EXT ? DWT_PHRMODE_EXT : DWT_PHRMODE_STD,
+	.phrRate = HEIMDALL_PHY_PHR_RATE_DTA ? DWT_PHRRATE_DTA : DWT_PHRRATE_STD,
+	.sfdTO = HEIMDALL_PHY_SFD_TIMEOUT,
+	.stsMode = DWT_STS_MODE_OFF,
+	.stsLength = DWT_STS_LEN_64,
+	.pdoaMode = DWT_PDOA_M0,
+#else
 	.chan = 9,
 	.txPreambLength = DWT_PLEN_128,
 	.rxPAC = DWT_PAC8,
@@ -77,11 +119,17 @@ static dwt_config_t radio_config = {
 	.stsMode = DWT_STS_MODE_OFF,
 	.stsLength = DWT_STS_LEN_64,
 	.pdoaMode = DWT_PDOA_M0,
+#endif
 };
 
 static const dwt_txconfig_t tx_rf_config = {
+#if defined(CONFIG_HEIMDALL_BEACON)
+	.PGdly = HEIMDALL_PHY_TX_PG_DELAY,
+	.power = HEIMDALL_PHY_TX_POWER,
+#else
 	.PGdly = 0x34,
 	.power = 0xfefefefe,
+#endif
 	.PGcount = 0,
 };
 
@@ -227,6 +275,13 @@ static int radio_probe_and_configure(bool configure_phy)
 	}
 
 	dwt_configuretxrf((dwt_txconfig_t *)&tx_rf_config);
+#if defined(CONFIG_HEIMDALL_BEACON)
+	dwt_setpanid(HEIMDALL_NETWORK_ID);
+	dwt_setaddress16(CONFIG_HEIMDALL_NODE_ID);
+	if (HEIMDALL_ENABLE_FRAME_FILTER != 0U) {
+		dwt_configureframefilter(DWT_FF_ENABLE_802_15_4, DWT_FF_DATA_EN);
+	}
+#endif
 	/* Keep the DW3110 in IDLE_PLL between packets; do not enter IDLE_RC or
 	 * sleep, so the RF synthesizer remains locked across the schedule. */
 	if (dwt_setdwstate(DWT_DW_IDLE) == DWT_ERROR) {

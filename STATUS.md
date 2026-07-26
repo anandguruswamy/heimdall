@@ -32,6 +32,26 @@ flashed yet.
 - The current board target is `nrf52833dk/nrf52833`; underscore-form names are
   retained only for overlay/devicetree filenames.
 
+## Beacon implementation progress
+
+- The west workspace was restored from `firmware/radio/west.yml`; the live
+  driver is pinned at `6208d99f933872bf024a653b0c9e8bef92349162`.
+- Driver-source checks used the DW3000 implementation, not the DW3720 variant:
+  EXT PHR is enum value `DWT_PHRMODE_EXT = 0x1`
+  (`firmware/modules/lib/zephyr-dw3000-decadriver/dwt_uwb_driver/deca_device_api.h:169-174`);
+  TX writes above offset 127 use the indirect path and the TX buffer limit is
+  1024 bytes (`.../dw3000/dw3000_device.c:2218-2241`); delayed TX writes the
+  high 32 system-time bits with bit 0 ignored (`.../dw3000/dw3000_device.c:4942-4958`);
+  the CIR path reads `ACC_MEM_ID` in 16-sample chunks
+  (`.../dw3000/dw3000_device.c:2483-2526`); and the GPIO IRQ submits work
+  before calling `dwt_isr()` (`.../platform/dw3000_hw.c:66-76`).
+- Added a GPIO/cycle-counter RX callback measurement mode with configurable
+  64/128 taps and a 1023-byte receive buffer. Both 64-tap and 128-tap SPIM3
+  builds pass; no hardware timing result has been recorded yet.
+- Added initial frame-header/subreport serialization, CRC32, and schedule
+  arithmetic modules under `CONFIG_HEIMDALL_BEACON`. The beacon-enabled SPIM3
+  build passes and the existing 51 Python model tests pass.
+
 ## Hardware validation
 
 - Board 1 (`760223921`) was flashed successfully through the UNO Q using its

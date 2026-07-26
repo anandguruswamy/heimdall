@@ -10,6 +10,10 @@ target_sources(app PRIVATE src/main.c)
 # independently re-derived model. See docs/protocol-decisions.md item 27.
 if(CONFIG_HEIMDALL_BEACON)
   include(cmake/heimdall_config.cmake)
+  target_sources(app PRIVATE
+    src/beacon_schedule.c
+    src/beacon_report.c
+    src/beacon_wire.c)
 endif()
 
 if(CONFIG_USB_DEVICE_STACK_NEXT)

@@ -48,8 +48,33 @@ config PHASE1_CONTINUOUS_TX
 	  Keep transmitting scheduled frames until the board is reset or reflashed.
 
 config PHASE1_CIR_DUMP
-	bool "Dump complete 64-tap CIR windows over UART"
+	bool "Dump complete CIR windows over UART"
 	default n
+
+config PHASE1_CIR_TAPS
+	int "Sensing CIR taps"
+	default 64
+	range 1 128
+	depends on PHASE1_ROLE_SENSING_RX
+	help
+		Number of complex CIR taps read by the sensing receiver. Use 64 and
+		128 for the callback timing gate.
+
+config PHASE1_CIR_LEFT_TAPS
+	int "Sensing CIR taps before first path"
+	default 16
+	range 0 127
+	depends on PHASE1_ROLE_SENSING_RX
+	help
+		Number of CIR taps requested before the CIA first-path index.
+
+config PHASE1_MEASURE_CALLBACK
+	bool "Measure sensing RX callback duration"
+	default n
+	depends on PHASE1_ROLE_SENSING_RX
+	help
+		Toggle D9 around the sensing callback and report the maximum callback
+		duration using the Zephyr cycle counter.
 
 config HEIMDALL_BEACON
 	bool "Heimdall superslot beacon protocol"
@@ -65,3 +90,13 @@ config HEIMDALL_BEACON
 	  The configure stage fails if the configuration's declared derived
 	  values disagree with the independently re-derived reference model in
 	  tools/config/heimdall_config.py.
+
+config HEIMDALL_NODE_ID
+	int "Heimdall schedule node ID"
+	default 0
+	range 0 7
+	depends on HEIMDALL_BEACON
+	help
+		Schedule position for this firmware image. The deployment roster must
+		bind this position to the board hardware ID before transmission is
+		enabled.
