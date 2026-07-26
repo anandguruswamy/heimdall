@@ -50,3 +50,18 @@ config PHASE1_CONTINUOUS_TX
 config PHASE1_CIR_DUMP
 	bool "Dump complete 64-tap CIR windows over UART"
 	default n
+
+config HEIMDALL_BEACON
+	bool "Heimdall superslot beacon protocol"
+	default n
+	help
+	  Enable the Heimdall beacon protocol defined in
+	  contracts/beacon-v1.md. Selecting this makes the build verify a
+	  beacon configuration file and generate heimdall_beacon_config.h.
+	  Point the build at a configuration with
+	  -DHEIMDALL_CONFIG_FILE=<path>; it defaults to
+	  deployment/beacon-config.example.json.
+
+	  The configure stage fails if the configuration's declared derived
+	  values disagree with the independently re-derived reference model in
+	  tools/config/heimdall_config.py.

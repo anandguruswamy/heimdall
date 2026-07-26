@@ -1,0 +1,71 @@
+{
+  "schema": "heimdall-beacon-config/1",
+  "protocol_version": 1,
+  "generated_by": "hand-written example, verified by tools/config/heimdall_config.py",
+  "description": "Two-board configuration matching current verified hardware. Slot duration is deliberately well above the feasibility floor to hold the per-link rate near 50 Hz; see contracts/beacon-v1.md on rate control.",
+  "network": {
+    "n_nodes": 2,
+    "network_id": 43981,
+    "master_node_id": 0,
+    "evidence_age_threshold": 3
+  },
+  "phy": {
+    "channel": 9,
+    "tx_preamble_code": 9,
+    "rx_preamble_code": 9,
+    "prf_mhz": 64,
+    "preamble_length": 128,
+    "pac": 8,
+    "sfd_type": 1,
+    "sfd_timeout": 129,
+    "data_rate_kbps": 6800,
+    "phr_mode": "ext",
+    "phr_rate": "std",
+    "pdoa_mode": 0,
+    "tx_pg_delay": 52,
+    "tx_power": 4278124286
+  },
+  "cir": {
+    "taps": 64,
+    "left_taps": 16
+  },
+  "framing": {
+    "max_frame_bytes": 1023,
+    "enable_frame_filter": true
+  },
+  "timing": {
+    "slot_duration_us": 10000
+  },
+  "budget": {
+    "usb_budget_bytes_per_s": 250000,
+    "processing_margin_factor": 1.5,
+    "spi_hz": 32000000,
+    "spi_transaction_overhead_us": 5.0,
+    "diagnostics_bytes": 48,
+    "rx_fixed_overhead_us": 80.0,
+    "crc32_bytes_per_us": 8.0,
+    "report_assembly_us": 20.0
+  },
+  "derived": {
+    "subreport_bytes": 296,
+    "pooled_report_max_bytes": 296,
+    "frame_capacity_max_bytes": 990,
+    "m_slots_per_superslot": 1,
+    "frame_payload_bytes": 296,
+    "frame_bytes": 329,
+    "frame_airtime_us": 547.64,
+    "rx_processing_us": 341.25,
+    "tx_write_us": 87.25,
+    "slot_floor_rx_us": 1100,
+    "slot_floor_assembly_us": 1300,
+    "slot_floor_us": 1300,
+    "slot_floor_binding_constraint": "assembly",
+    "superslot_us": 10000,
+    "cycle_us": 20000,
+    "per_link_rate_hz": 50.0,
+    "gateway_usb_bytes_per_s": 37450,
+    "gateway_usb_bytes_per_cycle": 749,
+    "straddling_subreport_index": -1,
+    "config_hash": 15440
+  }
+}

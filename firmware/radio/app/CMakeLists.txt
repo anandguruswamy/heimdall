@@ -5,6 +5,13 @@ project(uwb_phase1_bringup)
 
 target_sources(app PRIVATE src/main.c)
 
+# Verifies the beacon configuration and generates heimdall_beacon_config.h.
+# Fails the configure stage if the tool-declared values disagree with the
+# independently re-derived model. See docs/protocol-decisions.md item 27.
+if(CONFIG_HEIMDALL_BEACON)
+  include(cmake/heimdall_config.cmake)
+endif()
+
 if(CONFIG_USB_DEVICE_STACK_NEXT)
   target_sources(app PRIVATE src/usb_cir_stream.c)
   target_sources(app PRIVATE ${ZEPHYR_BASE}/samples/subsys/usb/common/sample_usbd_init.c)
