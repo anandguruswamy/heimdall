@@ -158,6 +158,7 @@ config PHASE1_MEASURE_REPORT_ASSEMBLY
 config HEIMDALL_BEACON
 	bool "Heimdall superslot beacon protocol"
 	default n
+	select CRC
 	help
 	  Enable the Heimdall beacon protocol defined in
 	  contracts/beacon-v1.md. Selecting this makes the build verify a

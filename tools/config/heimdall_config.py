@@ -45,6 +45,7 @@ HEIMDALL_HEADER_BYTES = 22
 FRAME_HEADER_BYTES = MAC_HEADER_BYTES + HEIMDALL_HEADER_BYTES  # 31
 FCS_BYTES = 2
 SUBREPORT_METADATA_BYTES = 40
+SUBREPORT_CRC_BYTES = 4
 BYTES_PER_TAP = 4  # int16 I + int16 Q
 
 MAX_NODES = 8
@@ -178,10 +179,8 @@ def spi_byte_us(budget: dict[str, Any]) -> float:
 def rx_processing_us(frame_bytes: int, cir_taps: int, subreport_bytes: int, budget: dict[str, Any]) -> float:
     """Worst-case RX callback duration in microseconds.
 
-    Derived from SPI byte counts and throughput estimates, not measured.  See
-    the bring-up gate in ``docs/protocol-decisions.md``: this model must be
-    calibrated against a real GPIO or cycle-counter measurement before it is
-    trusted.
+    SPI components are derived from byte counts; CRC throughput is measured.
+    See the calibration record in ``firmware/radio/BRINGUP-NOTES.md``.
 
     Accounts for the reordered callback of decision item 30: read RX data,
     then diagnostics, then CIR, and only then re-arm RX.
@@ -201,8 +200,8 @@ def rx_processing_us(frame_bytes: int, cir_taps: int, subreport_bytes: int, budg
 
     # contracts/beacon-v1.md section 9: the subreport CRC32 is computed by the
     # observing node at observation time, so it lands inside this callback and
-    # is not negligible -- roughly 37 us for a 296 B subreport.
-    crc_us = subreport_bytes / budget["crc32_bytes_per_us"]
+    # is not negligible. The stored CRC itself is not part of its input.
+    crc_us = (subreport_bytes - SUBREPORT_CRC_BYTES) / budget["crc32_bytes_per_us"]
 
     return rxdata_us + cir_us + diag_us + crc_us + budget["rx_fixed_overhead_us"]
 

@@ -233,7 +233,7 @@ class ReportAssemblyConstraint(unittest.TestCase):
         cfg["budget"]["report_assembly_us"] = 20.0
         der = hc.derive(cfg)["derived"]
         self.assertGreater(der["slot_floor_assembly_us"], der["slot_floor_rx_us"])
-        self.assertEqual(der["slot_floor_assembly_us"] - der["slot_floor_rx_us"], 300)
+        self.assertEqual(der["slot_floor_assembly_us"] - der["slot_floor_rx_us"], 400)
 
     def test_crc32_is_included_in_rx_processing(self):
         """Section 9 puts the subreport CRC32 in the observing node's callback."""
@@ -241,8 +241,9 @@ class ReportAssemblyConstraint(unittest.TestCase):
         slow = copy.deepcopy(cfg)
         slow["budget"]["crc32_bytes_per_us"] = 1.0
         delta = hc.derive(slow)["derived"]["rx_processing_us"] - hc.derive(cfg)["derived"]["rx_processing_us"]
-        sub = hc.derive(cfg)["derived"]["subreport_bytes"]
-        self.assertAlmostEqual(delta, sub / 1.0 - sub / 8.0, places=2)
+        protected = hc.derive(cfg)["derived"]["subreport_bytes"] - hc.SUBREPORT_CRC_BYTES
+        baseline = cfg["budget"]["crc32_bytes_per_us"]
+        self.assertAlmostEqual(delta, protected / 1.0 - protected / baseline, places=2)
 
 
 class ConfigHash(unittest.TestCase):
@@ -325,10 +326,10 @@ class ExampleConfiguration(unittest.TestCase):
         self.assertEqual(cfg["phy"]["data_rate_kbps"], 6800)
         self.assertEqual(cfg["phy"]["phr_mode"], "ext", "frames above 127 B need EXT")
 
-    def test_example_uses_measured_report_assembly(self):
+    def test_example_uses_measured_processing_rates(self):
         cfg = load_example()
-        self.assertEqual(cfg["budget"]["report_assembly_us"], 91.0)
-        self.assertEqual(cfg["derived"]["slot_floor_assembly_us"], 1400)
+        self.assertEqual(cfg["budget"]["crc32_bytes_per_us"], 1.92)
+        self.assertEqual(cfg["budget"]["report_assembly_us"], 122.0)
 
     def test_header_emission_contains_every_flashed_constant(self):
         header = hc.emit_header(hc.derive(load_example()))
@@ -459,8 +460,8 @@ class UsbRecordOverheads(unittest.TestCase):
             cfg["timing"]["slot_duration_us"] = hc.derive(cfg)["derived"]["slot_floor_us"]
             bps = hc.derive(cfg)["derived"]["gateway_usb_bytes_per_s"]
             low, high = min(low, bps), max(high, bps)
-        self.assertGreater(low, 260_000)
-        self.assertLess(high, 460_000)
+        self.assertGreater(low, 225_000)
+        self.assertLess(high, 440_000)
 
 
 class TimestampSpan(unittest.TestCase):

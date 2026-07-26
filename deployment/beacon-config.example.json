@@ -43,8 +43,8 @@
     "spi_transaction_overhead_us": 5.0,
     "diagnostics_bytes": 48,
     "rx_fixed_overhead_us": 80.0,
-    "crc32_bytes_per_us": 8.0,
-    "report_assembly_us": 91.0
+    "crc32_bytes_per_us": 1.92,
+    "report_assembly_us": 122.0
   },
   "derived": {
     "subreport_bytes": 296,
@@ -54,11 +54,11 @@
     "frame_payload_bytes": 296,
     "frame_bytes": 329,
     "frame_airtime_us": 547.64,
-    "rx_processing_us": 341.25,
+    "rx_processing_us": 456.33,
     "tx_write_us": 87.25,
-    "slot_floor_rx_us": 1100,
-    "slot_floor_assembly_us": 1400,
-    "slot_floor_us": 1400,
+    "slot_floor_rx_us": 1300,
+    "slot_floor_assembly_us": 1600,
+    "slot_floor_us": 1600,
     "slot_floor_binding_constraint": "assembly",
     "superslot_us": 10000,
     "cycle_us": 20000,

@@ -513,12 +513,12 @@ PRF 64 MHz, 128-symbol preamble, 6.8 Mb/s, 1023-byte frame ceiling, 32 MHz SPI.
 | `M` | 1 | 2 | 3 |
 | Frame size | 329 B | 773 B | 953 B |
 | Frame airtime | 0.55 ms | 1.08 ms | 1.32 ms |
-| RX processing (modelled) | 0.34 ms | 0.45 ms | 0.65 ms |
+| RX processing (modelled SPI, measured CRC) | 0.46 ms | 0.57 ms | 0.87 ms |
 | TX buffer write (modelled) | 0.09 ms | 0.20 ms | 0.24 ms |
-| Slot floor | 1.4 ms | 1.8 ms | 2.4 ms |
+| Slot floor | 1.6 ms | 2.0 ms | 2.7 ms |
 | Which limit binds | assembly | reception | reception |
-| Cycle at the floor | 2.8 ms | 21.6 ms | 43.2 ms |
-| Per-link rate at the floor | 357 Hz | 46 Hz | 23 Hz |
+| Cycle at the floor | 3.2 ms | 24.0 ms | 48.6 ms |
+| Per-link rate at the floor | 313 Hz | 42 Hz | 21 Hz |
 | Links | 2 | 30 | 30 |
 
 Three things are worth drawing out.
@@ -532,7 +532,7 @@ receive. At `M ≥ 2` the reception path dominates and the assembly path has rou
 half the slot to spare.
 
 **Gateway USB load is roughly invariant.** Across every value of `N` from 2 to 8
-at 64 taps it stays within 268-454 kB/s, because the radio runs saturated
+at 64 taps it stays within 234-433 kB/s, because the radio runs saturated
 regardless of the configuration; throughput is essentially
 `frame_payload / slot_duration`. It is not even monotonic — it peaks where the
 frame size happens to land near the 1023-byte ceiling. This
@@ -543,7 +543,7 @@ budget.
 The lever for backing off is `slot_duration_us`, which may be set anywhere at or
 above the feasibility floor. Lengthening the slot lowers the rate and the USB load
 without introducing idle slots or a second timing parameter. The N=2 example above
-runs at 357 Hz at the floor, which no sensing application needs; the shipped
+runs at 313 Hz at the floor, which no sensing application needs; the shipped
 example configuration sets a 10 ms slot instead, giving a 50 Hz per-link rate and
 about 37 kB/s of USB traffic.
 

@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include <zephyr/sys/byteorder.h>
+#include <zephyr/sys/crc.h>
 
 static uint64_t get_le40(const uint8_t *data)
 {
@@ -25,16 +26,7 @@ static void put_le40(uint8_t *data, uint64_t value)
 
 uint32_t heimdall_crc32(const uint8_t *data, size_t length)
 {
-	uint32_t crc = 0xFFFFFFFFU;
-
-	for (size_t i = 0U; i < length; ++i) {
-		crc ^= data[i];
-		for (uint8_t bit = 0U; bit < 8U; ++bit) {
-			crc = (crc >> 1U) ^
-				((crc & 1U) != 0U ? 0xEDB88320U : 0U);
-		}
-	}
-	return crc ^ 0xFFFFFFFFU;
+	return crc32_ieee(data, length);
 }
 
 int heimdall_frame_header_encode(const struct heimdall_frame_header *header,

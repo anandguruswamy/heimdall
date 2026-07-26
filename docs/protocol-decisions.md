@@ -107,10 +107,10 @@ per_link_rate  = 1 / cycle
 | `frame_payload` | 740 B | 920 B |
 | `frame_bytes` | 773 B | 953 B |
 | Airtime | 1.03 ms | 1.28 ms |
-| `T_slot` | 1.7 ms | 2.2 ms |
-| Cycle | 20.4 ms | 39.6 ms |
-| Per-link rate | 49.0 Hz | 25.3 Hz |
-| Gateway USB | ~451 KB/s | ~431 KB/s |
+| `T_slot` | 2.0 ms | 2.7 ms |
+| Cycle | 24.0 ms | 48.6 ms |
+| Per-link rate | 41.7 Hz | 20.6 Hz |
+| Gateway USB | ~403 KB/s | ~363 KB/s |
 
 USB load is roughly invariant in `N` and `cir_taps`, as predicted: the radio runs
 saturated regardless, so throughput is approximately
@@ -189,13 +189,13 @@ of `contracts/usb-cdc-v1.md`:
 
 | N | `P_max` | M | `frame_bytes` | airtime | `T_slot` floor | binds | cycle | per-link Hz | links | USB |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 2 | 296 B | 1 | 329 B | 0.55 ms | 1.4 ms | assembly | 2.8 ms | 357.1 | 2 | 268 KB/s |
-| 3 | 592 B | 1 | 625 B | 0.94 ms | 2.0 ms | assembly | 6.0 ms | 166.7 | 6 | 335 KB/s |
-| 4 | 888 B | 1 | 921 B | 1.28 ms | 2.5 ms | assembly | 10.0 ms | 100.0 | 12 | 387 KB/s |
-| 5 | 1184 B | 2 | 625 B | 0.94 ms | 1.6 ms | reception | 16.0 ms | 62.5 | 20 | 411 KB/s |
-| 6 | 1480 B | 2 | 773 B | 1.08 ms | 1.8 ms | reception | 21.6 ms | 46.3 | 30 | 447 KB/s |
-| 7 | 1776 B | 2 | 921 B | 1.28 ms | 2.1 ms | reception | 29.4 ms | 34.0 | 42 | 454 KB/s |
-| 8 | 2072 B | 3 | 724 B | 1.03 ms | 1.7 ms | reception | 40.8 ms | 24.5 | 56 | 443 KB/s |
+| 2 | 296 B | 1 | 329 B | 0.55 ms | 1.6 ms | assembly | 3.2 ms | 312.5 | 2 | 234 KB/s |
+| 3 | 592 B | 1 | 625 B | 0.94 ms | 2.2 ms | assembly | 6.6 ms | 151.5 | 6 | 305 KB/s |
+| 4 | 888 B | 1 | 921 B | 1.28 ms | 2.8 ms | assembly | 11.2 ms | 89.3 | 12 | 345 KB/s |
+| 5 | 1184 B | 2 | 625 B | 0.94 ms | 1.8 ms | reception | 18.0 ms | 55.6 | 20 | 365 KB/s |
+| 6 | 1480 B | 2 | 773 B | 1.08 ms | 2.0 ms | reception | 24.0 ms | 41.7 | 30 | 403 KB/s |
+| 7 | 1776 B | 2 | 921 B | 1.28 ms | 2.2 ms | reception | 30.8 ms | 32.5 | 42 | 433 KB/s |
+| 8 | 2072 B | 3 | 724 B | 1.03 ms | 1.9 ms | reception | 45.6 ms | 21.9 | 56 | 396 KB/s |
 
 Three non-obvious effects:
 
@@ -206,7 +206,7 @@ Three non-obvious effects:
   whenever `M` increments, so N=5 has a *shorter* slot than N=4 despite having
   more peers. The tool should surface these discontinuities rather than let a
   configuration sit just above one.
-- **USB load stays within 268-454 KB/s** across the whole range, because the
+- **USB load stays within 234-433 KB/s** across the whole range, because the
   radio runs saturated regardless. It is not monotonic either.
 
 ---
@@ -508,22 +508,21 @@ ample slack.
 
 | N | M | `floor_rx` | `floor_assembly` | floor | binding |
 | --- | --- | --- | --- | --- | --- |
-| 2 | 1 | 1100 | 1400 | 1400 | assembly |
-| 3 | 1 | 1600 | 2000 | 2000 | assembly |
-| 4 | 1 | 2100 | 2500 | 2500 | assembly |
-| 5 | 2 | 1600 | 1000 | 1600 | reception |
-| 6 | 2 | 1800 | 1100 | 1800 | reception |
-| 7 | 2 | 2100 | 1300 | 2100 | reception |
-| 8 | 3 | 1700 | 800 | 1700 | reception |
+| 2 | 1 | 1300 | 1600 | 1600 | assembly |
+| 3 | 1 | 1800 | 2200 | 2200 | assembly |
+| 4 | 1 | 2200 | 2800 | 2800 | assembly |
+| 5 | 2 | 1800 | 1100 | 1800 | reception |
+| 6 | 2 | 2000 | 1300 | 2000 | reception |
+| 7 | 2 | 2200 | 1400 | 2200 | reception |
+| 8 | 3 | 1900 | 800 | 1900 | reception |
 
-The six-board target is unaffected. N=4 loses 17 percent of its rate.
+The six-board target is unaffected. N=4 loses 21 percent of its rate.
 
 **Second correction in the same area.** `rx_processing` omitted the subreport
-CRC32, which item 11 places in the observing node's callback. At roughly 8 bytes
-per microsecond a 296 B subreport costs about 37 us, which the 80 us fixed
-overhead allowance did not cover. It is now modelled explicitly via
-`budget.crc32_bytes_per_us`. This raised `floor_rx` by 100 us at N=4 and N=7
-independently of the assembly constraint.
+CRC32, which item 11 places in the observing node's callback. The optimized
+Zephyr nibble-table implementation measures 1.92 bytes per microsecond over the
+292-byte protected span, or 152 us, which the 80 us fixed overhead allowance
+does not cover. It is modelled explicitly via `budget.crc32_bytes_per_us`.
 
 **Escape hatch, not adopted.** An implementation unable to meet constraint 2
 could defer the `round_delta = 1` peer's observation by one full cycle, using the

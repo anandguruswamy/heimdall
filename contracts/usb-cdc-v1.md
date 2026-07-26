@@ -326,12 +326,12 @@ M          TX_RECORD     at 16 + 13 each
 
 plus `HELLO` and `HEARTBEAT`, which are negligible.
 
-At N=6, 64 taps, `M=2`, `frame_bytes=773`, `subreport_bytes=296`, cycle 21.6 ms,
-this is about **447 kB/s**. Across N=2..8 it stays within 268-454 kB/s, because
+At N=6, 64 taps, `M=2`, `frame_bytes=773`, `subreport_bytes=296`, cycle 24.0 ms,
+this is about **403 kB/s**. Across N=2..8 it stays within 234-433 kB/s, because
 the radio runs saturated regardless of configuration.
 
 The interrupt-driven FIFO path has sustained a verified 475 kB/s offered load,
-which covers the current 454 kB/s model maximum with limited headroom. The
+which covers the current 433 kB/s model maximum with limited headroom. The
 configuration tool MUST still reject configurations whose calculated load
 exceeds `budget.usb_budget_bytes_per_s`.
 

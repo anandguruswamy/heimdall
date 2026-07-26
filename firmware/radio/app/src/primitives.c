@@ -231,9 +231,11 @@ static uint16_t sensing_subreport_lengths[HEIMDALL_REPORT_NODE_SLOTS];
 static struct heimdall_report sensing_report;
 static uint8_t sensing_report_frames[HEIMDALL_M][HEIMDALL_FRAME_BYTES - 2U];
 static volatile uint32_t sensing_subreport_encode_max_us;
+static volatile uint32_t sensing_crc_only_max_us;
 static volatile uint32_t sensing_report_assembly_max_us;
 static volatile uint32_t sensing_report_assembly_failures;
 static volatile uint8_t sensing_report_frame_sink;
+static volatile uint32_t sensing_crc_sink;
 #endif
 
 static int32_t sign_extend_18(const uint8_t value[3])
@@ -347,6 +349,21 @@ static int sensing_assemble_report(uint32_t k, uint8_t observed_node,
 			sensing_report_frames[HEIMDALL_M - 1U][HEIMDALL_FRAME_BYTES - 3U];
 	}
 	return ret;
+}
+
+static void sensing_measure_crc32(void)
+{
+	uint32_t crc = 0U;
+
+	for (uint16_t i = 0U; i < 256U; ++i) {
+		uint32_t operation_start;
+
+		sensing_subreports[0][0] = (uint8_t)i;
+		operation_start = k_cycle_get_32();
+		crc ^= heimdall_crc32(sensing_subreports[0], HEIMDALL_SUBREPORT_BYTES - 4U);
+		sensing_update_max_us(&sensing_crc_only_max_us, operation_start);
+	}
+	sensing_crc_sink = crc;
 }
 #endif
 
@@ -559,6 +576,10 @@ int phase1_run_sensing_rx(void)
 	}
 #endif
 
+#if defined(CONFIG_PHASE1_MEASURE_REPORT_ASSEMBLY)
+	sensing_measure_crc32();
+#endif
+
 	dwt_setrxantennadelay(RX_ANT_DLY);
 	dwt_configciadiag(DW_CIA_DIAG_LOG_ALL);
 	dwt_setcallbacks(&sensing_rx_callbacks);
@@ -580,7 +601,7 @@ int phase1_run_sensing_rx(void)
 		uint32_t received = sensing_rx_count;
 
 		if ((received != last_printed) && ((received % 100U) == 0U)) {
-			printk("phase1: SENSE_PROGRESS received=%u cir_reads=%u errors=%u rx_ts=%llu cfo_raw=%d fp=%u peak_rel=%u lead_pwr=%llu peak_pwr=%llu tail_pwr=%llu callback_max_us=%u diag_max_us=%u cir_max_us=%u subreport_encode_max_us=%u report_assembly_max_us=%u report_assembly_failures=%u\n",
+			printk("phase1: SENSE_PROGRESS received=%u cir_reads=%u errors=%u rx_ts=%llu cfo_raw=%d fp=%u peak_rel=%u lead_pwr=%llu peak_pwr=%llu tail_pwr=%llu callback_max_us=%u diag_max_us=%u cir_max_us=%u subreport_encode_max_us=%u crc_only_max_us=%u report_assembly_max_us=%u report_assembly_failures=%u\n",
 			       received, sensing_cir_reads, sensing_rx_errors,
 			       sensing_rx_timestamp_last, sensing_cfo_raw_last,
 			       sensing_fp_last, sensing_peak_last,
@@ -591,13 +612,14 @@ int phase1_run_sensing_rx(void)
 			       sensing_cir_max_us,
 #if defined(CONFIG_PHASE1_MEASURE_REPORT_ASSEMBLY)
 			       sensing_subreport_encode_max_us,
+			       sensing_crc_only_max_us,
 			       sensing_report_assembly_max_us,
 			       sensing_report_assembly_failures);
 #else
-			       0U, 0U, 0U);
+			       0U, 0U, 0U, 0U);
 #endif
 #else
-			       0U, 0U, 0U, 0U, 0U, 0U);
+			       0U, 0U, 0U, 0U, 0U, 0U, 0U);
 #endif
 			last_printed = received;
 		}

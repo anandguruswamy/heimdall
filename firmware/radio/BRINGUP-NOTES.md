@@ -197,14 +197,18 @@ left explicitly pending rather than inferred from build success.
   exact ELF's RAM symbols were: full callback 2593 us, diagnostics 213 us, CIR
   read 915 us, subreport encode 518 us, and pooled-report/frame assembly 91 us.
   Assembly failures were zero; the radio accumulated 7 RX errors.
-- Result: `report_assembly_us=91` replaces the provisional 20 us input. The N=2
-  assembly floor rises from 1300 us to 1400 us and remains below the configured
-  10 ms slot.
-- The 518 us encoder maximum also shows that the current bitwise CRC plus
-  serialization path is much slower than the model's provisional 8 B/us CRC
-  throughput. That budget remains explicitly uncalibrated; it must be measured
-  separately or the CRC implementation optimized before the slot floor is
-  treated as final.
+- The 518 us encoder maximum showed that the bitwise CRC implementation was much
+  slower than the model's provisional 8 B/us assumption. It was replaced by
+  Zephyr's reflected IEEE CRC32 implementation, which uses a 16-entry nibble
+  table. A startup benchmark measured CRC alone over the exact 292-byte
+  protected span without adding duplicate work to the RX callback.
+- The CRC-optimized run covered 8898 valid frames. Stable maxima were: CRC alone
+  152 us, complete subreport encode 183 us, pooled-report/frame assembly 122 us,
+  full callback 2227 us, diagnostics 213 us, and CIR read 915 us. Assembly
+  failures were zero; the radio accumulated 6 RX errors.
+- Result: `crc32_bytes_per_us=1.92` and `report_assembly_us=122` are now measured
+  model inputs. The N=2 assembly floor is 1600 us and remains below the
+  configured 10 ms slot.
 - J-Link VCOM output was framing garbage during this run, including with the
   previously verified receiver image. Counters were therefore read by halting
   the receiver briefly and reading named RAM symbols through J-Link, then
@@ -246,7 +250,7 @@ left explicitly pending rather than inferred from build success.
   bytes with sequences 0 through 9999 ordered.
 - Required-rate run: 20,000 records at 600 us spacing produced exactly
   5,700,000 bytes with sequences 0 through 19999 ordered. The 475 kB/s offered
-  load exceeds the model's current 454 kB/s maximum gateway load. A 500 us spacing
+  load exceeds the model's current 433 kB/s maximum gateway load. A 500 us spacing
   overloaded the queue, so the absolute transport ceiling remains between the
   verified 475 kB/s rate and the failed 570 kB/s offered load.
 - Result: PASS for the protocol budget. The UNO Q reader must configure the ACM
