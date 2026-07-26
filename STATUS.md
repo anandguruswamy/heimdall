@@ -76,8 +76,55 @@ flashed yet.
   callback never queued CDC records. With it enabled in `radio/app/usb.conf`,
   the UNO Q captured 16,384 bytes containing 59 `CIR2` records from board 2.
 
+- The beacon protocol was then designed and specified. No firmware behaviour
+  changed: `CONFIG_HEIMDALL_BEACON` is added but defaults to `n`, and the new
+  CMake step only runs when it is selected. No board was flashed.
+  - `contracts/beacon-v1.md` is the normative wire format and behaviour,
+    superseding `beacon-v0.md`.
+  - `docs/protocol-decisions.md` records all 30 design decisions, the
+    alternatives rejected, and the defects found in the original sketch.
+  - `docs/beacon-protocol-explained.md` explains the scheme from background.
+  - `tools/config/heimdall_config.py` is the reference sizing model. It derives
+    `M`, frame sizes, airtime, slot floor, cycle, rate, and `config_hash`, and
+    verifies a configuration against its declared values.
+  - `firmware/radio/app/cmake/heimdall_config.cmake` fails the configure stage
+    if a configuration's declared values disagree with the model, and generates
+    `heimdall_beacon_config.h`.
+  - `contracts/usb-cdc-v1.md` defines the gateway-to-host stream: 16 B outer
+    framing plus seven record types. Its overheads feed the throughput budget
+    that gates configuration export, so they are normative rather than
+    descriptive. Supersedes `usb-cdc-v0.md`.
+  - `tests/test_beacon_config.py` covers the model with 51 tests, all passing.
+- An external review of the plan prompted two model corrections, both now
+  covered by tests:
+  - **Report-assembly constraint.** A node's report must contain its
+    measurement of the peer that transmitted immediately before it, so the TX
+    buffer cannot be assembled in advance. The full read-out, CRC, assembly, and
+    TX-write chain must fit `M * T_slot - airtime`. The slot floor is now the
+    larger of a reception constraint and an assembly constraint. Only `M = 1`
+    configurations are affected: N=2 floor 1.1 to 1.3 ms, N=3 1.6 to 1.9 ms,
+    N=4 2.0 to 2.4 ms. The six-board target is unchanged.
+  - **Subreport CRC32 was missing from the RX budget.** It runs in the observing
+    node's callback and costs roughly 37 us for a 296 B subreport, which the
+    fixed-overhead allowance did not cover.
+- An earlier self-caught error is also recorded: the nominal 6.8 Mb/s is already
+  net of Reed-Solomon coding, so airtime estimates go wrong by omitting the
+  ~160 us of SHR and PHR, not by double-counting parity.
+
 ## Next executable checkpoint
 
-Define and implement the first Heimdall beacon frame over the verified
-scheduled-TX and USB CDC paths, then add gateway heartbeat, validation, and
-capture/replay coverage.
+Three measurements gate the protocol's numeric claims and must be taken before
+implementation is trusted:
+
+1. RX callback duration, instrumented with a GPIO toggle or cycle counter at
+   32 MHz SPI, at both 64 and 128 taps. This calibrates `slot_floor_us`; every
+   processing figure currently in the model is derived from SPI byte counts, not
+   observed.
+2. USB CDC throughput after replacing the byte-at-a-time `uart_poll_out()` path.
+   Modelled gateway load is 299-468 kB/s across N=2..8, which the current path
+   cannot sustain.
+3. `DWT_PHRMODE_EXT` verified board-to-board, together with hardware frame
+   filtering, broadcast addressing, and auto-ACK confirmed disabled.
+
+Then implement the beacon frame over the verified scheduled-TX and USB CDC
+paths, and add gateway heartbeat, validation, and capture/replay coverage.
