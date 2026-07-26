@@ -164,6 +164,13 @@ left explicitly pending rather than inferred from build success.
   captures. `report_assembly_us` and the independent diagnostic transaction
   accounting remain pending, so the configuration model has not yet been
   changed from its estimates.
+- A follow-up 64-tap run added operation breakdown counters. Over at least
+  2600 received frames with no RX errors, the maxima were 1953 us for the full
+  callback, 213 us for `dwt_readdiagnostics_acc()`, and 915 us for the 64-tap
+  `dwt_readcir_48b()` transaction. The transmitter remained at 366 us maximum
+  for `dwt_writetxdata` with `error_dtu=0`. These measurements still do not
+  include a real pooled-report assembly path, so `report_assembly_us` remains
+  pending.
 
 ## Gate 3: EXT-PHR with hardware filtering
 

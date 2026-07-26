@@ -116,8 +116,8 @@ config PHASE1_MEASURE_CALLBACK
 	default n
 	depends on PHASE1_ROLE_SENSING_RX
 	help
-		Toggle D9 around the sensing callback and report the maximum callback
-		duration using the Zephyr cycle counter.
+		Toggle D9 around the sensing callback and report maximum callback,
+		diagnostics-read, and CIR-read durations using the Zephyr cycle counter.
 
 config HEIMDALL_BEACON
 	bool "Heimdall superslot beacon protocol"

@@ -145,6 +145,11 @@ flashed yet.
   CIR reads. TX `error_dtu=0`; RX accumulated 38 errors; callback and TX-write
   maxima were 1953 us and 366 us respectively. Details are in
   `firmware/radio/BRINGUP-NOTES.md`.
+- The assembly measurement follow-up now reports independent 64-tap maxima of
+  213 us for `dwt_readdiagnostics_acc()` and 915 us for `dwt_readcir_48b()`;
+  full callback maximum remained 1953 us over at least 2600 frames with no RX
+  errors. A real pooled-report assembly path is still needed before updating
+  `report_assembly_us` in the configuration model.
 
 ## Next executable checkpoint
 
