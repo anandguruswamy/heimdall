@@ -16,7 +16,11 @@ int heimdall_report_pack(struct heimdall_report *report, uint32_t k,
 	    n_nodes < 2U || n_nodes > 8U || reporting_node >= n_nodes) {
 		return -EINVAL;
 	}
-	memset(report, 0, sizeof(*report));
+	memset(report->start_offsets, 0, sizeof(report->start_offsets));
+	memset(report->ordered_nodes, 0, sizeof(report->ordered_nodes));
+	report->subreport_count = 0U;
+	report->total_bytes = 0U;
+	report->peer_observed_bitmap = 0U;
 
 	for (uint8_t ordinal = 0U; ordinal < n_nodes - 1U; ++ordinal) {
 		uint8_t observed = heimdall_schedule_order(k, reporting_node, n_nodes, ordinal);

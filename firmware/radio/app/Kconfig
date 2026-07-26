@@ -146,6 +146,15 @@ config PHASE1_MEASURE_CALLBACK
 		Toggle D9 around the sensing callback and report maximum callback,
 		diagnostics-read, and CIR-read durations using the Zephyr cycle counter.
 
+config PHASE1_MEASURE_REPORT_ASSEMBLY
+	bool "Measure production beacon report assembly"
+	default n
+	depends on PHASE1_MEASURE_CALLBACK && HEIMDALL_BEACON
+	help
+		Encode the received CIR as a CRC-bearing beacon subreport, pack the
+		rotated pooled report, build every balanced frame, and report separate
+		subreport-encode and report-assembly maxima.
+
 config HEIMDALL_BEACON
 	bool "Heimdall superslot beacon protocol"
 	default n

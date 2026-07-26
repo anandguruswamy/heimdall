@@ -9,6 +9,13 @@
 #include <deca_device_api.h>
 #include <dw3000_hw.h>
 
+#if defined(CONFIG_PHASE1_MEASURE_REPORT_ASSEMBLY)
+#include "heimdall_beacon_config.h"
+#include "beacon_report.h"
+#include "beacon_schedule.h"
+#include "beacon_wire.h"
+#endif
+
 #define DWT_TIMESTAMP_MASK ((1ULL << 40) - 1ULL)
 #define DWT_DTU_PER_MS 63897600ULL
 #define TX_ANT_DLY 16385U
@@ -212,6 +219,22 @@ static volatile uint32_t sensing_callback_max_us;
 static volatile uint32_t sensing_diag_max_us;
 static volatile uint32_t sensing_cir_max_us;
 #endif
+#if defined(CONFIG_PHASE1_MEASURE_REPORT_ASSEMBLY)
+BUILD_ASSERT(CIR_TAPS == HEIMDALL_CIR_TAPS);
+BUILD_ASSERT(CIR_LEAD_TAPS == HEIMDALL_CIR_LEFT_TAPS);
+BUILD_ASSERT(HEIMDALL_FRAME_HEADER_BYTES + HEIMDALL_FRAME_PAYLOAD_BYTES ==
+	     HEIMDALL_FRAME_BYTES - 2U);
+static int16_t sensing_cir_iq[2U * HEIMDALL_CIR_TAPS];
+static uint8_t sensing_subreports[HEIMDALL_N_NODES][HEIMDALL_SUBREPORT_BYTES];
+static const uint8_t *sensing_subreport_ptrs[HEIMDALL_REPORT_NODE_SLOTS];
+static uint16_t sensing_subreport_lengths[HEIMDALL_REPORT_NODE_SLOTS];
+static struct heimdall_report sensing_report;
+static uint8_t sensing_report_frames[HEIMDALL_M][HEIMDALL_FRAME_BYTES - 2U];
+static volatile uint32_t sensing_subreport_encode_max_us;
+static volatile uint32_t sensing_report_assembly_max_us;
+static volatile uint32_t sensing_report_assembly_failures;
+static volatile uint8_t sensing_report_frame_sink;
+#endif
 
 static int32_t sign_extend_18(const uint8_t value[3])
 {
@@ -233,6 +256,97 @@ static void sensing_update_max_us(volatile uint32_t *maximum, uint32_t start)
 	if (elapsed_us > *maximum) {
 		*maximum = elapsed_us;
 	}
+}
+#endif
+
+#if defined(CONFIG_PHASE1_MEASURE_REPORT_ASSEMBLY)
+static int sensing_assemble_report(uint32_t k, uint8_t observed_node,
+				  uint64_t rx_timestamp, int16_t cfo_raw,
+				  uint16_t cir_start, uint8_t dgc_decision,
+				  const dwt_cirdiags_t *diag)
+{
+	struct heimdall_subreport subreport = {
+		.observed_node_id = observed_node,
+		.obs_flags = BIT(0) | BIT(2),
+		.observed_m = 0U,
+		.round_delta = heimdall_schedule_round_delta(
+			CONFIG_HEIMDALL_NODE_ID, observed_node, HEIMDALL_N_NODES),
+		.observed_tx_timestamp = 0U,
+		.rx_timestamp = rx_timestamp,
+		.cfo_raw = cfo_raw,
+		.fp_index_q10_6 = diag->FpIndex,
+		.f1 = diag->F1,
+		.f2 = diag->F2,
+		.f3 = diag->F3,
+		.ip_power = diag->power,
+		.accum_count = diag->accumCount,
+		.dgc_decision = dgc_decision,
+		.cir_start_offset = cir_start,
+		.cir_taps = HEIMDALL_CIR_TAPS,
+		.cir_iq = sensing_cir_iq,
+	};
+	uint32_t operation_start;
+	int ret;
+
+	if (observed_node >= HEIMDALL_N_NODES ||
+	    observed_node == CONFIG_HEIMDALL_NODE_ID) {
+		return -EINVAL;
+	}
+	if (cir_start == 0U && ((diag->FpIndex + 32U) >> 6) < CIR_LEAD_TAPS) {
+		subreport.obs_flags |= BIT(1);
+	}
+
+	operation_start = k_cycle_get_32();
+	ret = heimdall_subreport_encode(&subreport,
+					 sensing_subreports[observed_node],
+					 sizeof(sensing_subreports[observed_node]));
+	sensing_update_max_us(&sensing_subreport_encode_max_us, operation_start);
+	if (ret != 0) {
+		return ret;
+	}
+	sensing_subreport_ptrs[observed_node] = sensing_subreports[observed_node];
+	sensing_subreport_lengths[observed_node] = HEIMDALL_SUBREPORT_BYTES;
+
+	operation_start = k_cycle_get_32();
+	ret = heimdall_report_pack(&sensing_report, k, CONFIG_HEIMDALL_NODE_ID,
+				   HEIMDALL_N_NODES, sensing_subreport_ptrs,
+				   sensing_subreport_lengths);
+	for (uint8_t m = 0U; ret == 0 && m < HEIMDALL_M; ++m) {
+		struct heimdall_frame_header header = {
+			.mac_seq = (uint8_t)(k * HEIMDALL_M + m),
+			.network_id = HEIMDALL_NETWORK_ID,
+			.src_addr = CONFIG_HEIMDALL_NODE_ID,
+			.protocol_version = HEIMDALL_PROTOCOL_VERSION,
+			.frame_type = 0U,
+			.m = m,
+			.k = k,
+			.n_nodes = HEIMDALL_N_NODES,
+			.slots_per_superslot = HEIMDALL_M,
+			.config_hash = HEIMDALL_CONFIG_HASH,
+			.tx_timestamp = 0U,
+			.subreport_count = heimdall_report_frame_subreport_count(
+				&sensing_report, m, HEIMDALL_FRAME_PAYLOAD_BYTES),
+			.pooled_total_bytes = sensing_report.total_bytes,
+			.peer_observed_bitmap = sensing_report.peer_observed_bitmap,
+			.evidence_age = 0U,
+			.flags = 0U,
+		};
+
+		ret = heimdall_frame_header_encode(
+			&header, sensing_report_frames[m], sizeof(sensing_report_frames[m]));
+		if (ret == 0) {
+			ret = heimdall_report_copy_frame(
+				&sensing_report, m, HEIMDALL_FRAME_PAYLOAD_BYTES,
+				&sensing_report_frames[m][HEIMDALL_FRAME_HEADER_BYTES],
+				HEIMDALL_FRAME_PAYLOAD_BYTES);
+		}
+	}
+	sensing_update_max_us(&sensing_report_assembly_max_us, operation_start);
+	if (ret == 0) {
+		sensing_report_frame_sink =
+			sensing_report_frames[HEIMDALL_M - 1U][HEIMDALL_FRAME_BYTES - 3U];
+	}
+	return ret;
 }
 #endif
 
@@ -336,6 +450,11 @@ static void sensing_rx_ok_cb(const dwt_cb_data_t *cb_data)
 		uint64_t power = (uint64_t)((int64_t)real * real) +
 				 (uint64_t)((int64_t)imag * imag);
 
+#if defined(CONFIG_PHASE1_MEASURE_REPORT_ASSEMBLY)
+		sensing_cir_iq[2U * i] = (int16_t)(real >> 2);
+		sensing_cir_iq[2U * i + 1U] = (int16_t)(imag >> 2);
+#endif
+
 		if (i < 8U) {
 			lead_power += power;
 		}
@@ -365,6 +484,19 @@ static void sensing_rx_ok_cb(const dwt_cb_data_t *cb_data)
 	sensing_lead_power_last = lead_power / 8U;
 	sensing_peak_power_last = peak_power;
 	sensing_tail_power_last = tail_power / 24U;
+
+#if defined(CONFIG_PHASE1_MEASURE_REPORT_ASSEMBLY)
+	if (sensing_assemble_report(sequence,
+#if defined(CONFIG_PHASE1_ENABLE_FRAME_FILTER)
+				    sensing_rx_buffer[7],
+#else
+				    heimdall_schedule_transmitter(sequence, HEIMDALL_N_NODES),
+#endif
+				    sensing_rx_timestamp_last, cfo_raw, start, agc_state,
+				    &diag) != 0) {
+		sensing_report_assembly_failures++;
+	}
+#endif
 
 	(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 
@@ -437,17 +569,18 @@ int phase1_run_sensing_rx(void)
 		return -EIO;
 	}
 
-	printk("phase1: SENSE_START expected=%d cir_taps=%u lead=%u dump=%d measure=%d mode=IRQ\n",
+	printk("phase1: SENSE_START expected=%d cir_taps=%u lead=%u dump=%d measure=%d assembly=%d mode=IRQ\n",
 	       CONFIG_PHASE1_FRAME_COUNT, CIR_TAPS, CIR_LEAD_TAPS,
 	       IS_ENABLED(CONFIG_PHASE1_CIR_DUMP),
-	       IS_ENABLED(CONFIG_PHASE1_MEASURE_CALLBACK));
+	       IS_ENABLED(CONFIG_PHASE1_MEASURE_CALLBACK),
+	       IS_ENABLED(CONFIG_PHASE1_MEASURE_REPORT_ASSEMBLY));
 	(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 
 	while (true) {
 		uint32_t received = sensing_rx_count;
 
 		if ((received != last_printed) && ((received % 100U) == 0U)) {
-			printk("phase1: SENSE_PROGRESS received=%u cir_reads=%u errors=%u rx_ts=%llu cfo_raw=%d fp=%u peak_rel=%u lead_pwr=%llu peak_pwr=%llu tail_pwr=%llu callback_max_us=%u diag_max_us=%u cir_max_us=%u\n",
+			printk("phase1: SENSE_PROGRESS received=%u cir_reads=%u errors=%u rx_ts=%llu cfo_raw=%d fp=%u peak_rel=%u lead_pwr=%llu peak_pwr=%llu tail_pwr=%llu callback_max_us=%u diag_max_us=%u cir_max_us=%u subreport_encode_max_us=%u report_assembly_max_us=%u report_assembly_failures=%u\n",
 			       received, sensing_cir_reads, sensing_rx_errors,
 			       sensing_rx_timestamp_last, sensing_cfo_raw_last,
 			       sensing_fp_last, sensing_peak_last,
@@ -455,9 +588,16 @@ int phase1_run_sensing_rx(void)
 			       sensing_tail_power_last,
 #if defined(CONFIG_PHASE1_MEASURE_CALLBACK)
 			       sensing_callback_max_us, sensing_diag_max_us,
-			       sensing_cir_max_us);
+			       sensing_cir_max_us,
+#if defined(CONFIG_PHASE1_MEASURE_REPORT_ASSEMBLY)
+			       sensing_subreport_encode_max_us,
+			       sensing_report_assembly_max_us,
+			       sensing_report_assembly_failures);
 #else
 			       0U, 0U, 0U);
+#endif
+#else
+			       0U, 0U, 0U, 0U, 0U, 0U);
 #endif
 			last_printed = received;
 		}

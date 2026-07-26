@@ -168,9 +168,47 @@ left explicitly pending rather than inferred from build success.
   2600 received frames with no RX errors, the maxima were 1953 us for the full
   callback, 213 us for `dwt_readdiagnostics_acc()`, and 915 us for the 64-tap
   `dwt_readcir_48b()` transaction. The transmitter remained at 366 us maximum
-  for `dwt_writetxdata` with `error_dtu=0`. These measurements still do not
-  include a real pooled-report assembly path, so `report_assembly_us` remains
-  pending.
+  for `dwt_writetxdata` with `error_dtu=0`.
+
+### Production report assembly measurement
+
+- Date/profile: 2026-07-26, `nrf52833dk/nrf52833`, 32 MHz SPIM3, channel 9,
+  PRF 64 MHz, PLEN 128, 6.8 Mb/s, EXT PHR and extended frame filtering,
+  N=2, M=1, 64 CIR taps, reporting node 1.
+- Board `760223921` ran the verified continuous 1023-byte Gate 3 transmitter.
+  Board `760197419` ran the beacon-enabled sensing receiver. Both J-Link
+  downloads completed with verification `O.K.`.
+- For each valid RX callback, firmware converted the actual CIR to normative
+  i16 I/Q samples, encoded the complete CRC-bearing 296-byte subreport, packed
+  the rotated pooled report, encoded the 31-byte production frame header, and
+  copied the balanced payload into the exact 327-byte TX-buffer image. The
+  measured assembly interval excludes subreport encoding/CRC and TX-buffer
+  writing, matching the model's `report_assembly_us` boundary.
+- The Gate 3 source frame is not a beacon frame, so fields unavailable from it
+  (`observed_tx_timestamp` and the candidate frame's `tx_timestamp`) were zero
+  during this timing run. Actual RX timestamp, CFO, CIA diagnostics, CIR window,
+  node identity, sequence-derived round, CRC, pool ordering, and frame bytes
+  used the production serializers.
+- The first 4162-frame run measured 549 us for assembly and revealed that
+  `heimdall_report_pack()` cleared the entire 3864-byte maximum report before
+  overwriting the valid N=2 payload. Removing that unnecessary clear preserved
+  metadata initialization and the exact emitted bytes.
+- The optimized run covered 4217 valid frames. Maxima read directly from the
+  exact ELF's RAM symbols were: full callback 2593 us, diagnostics 213 us, CIR
+  read 915 us, subreport encode 518 us, and pooled-report/frame assembly 91 us.
+  Assembly failures were zero; the radio accumulated 7 RX errors.
+- Result: `report_assembly_us=91` replaces the provisional 20 us input. The N=2
+  assembly floor rises from 1300 us to 1400 us and remains below the configured
+  10 ms slot.
+- The 518 us encoder maximum also shows that the current bitwise CRC plus
+  serialization path is much slower than the model's provisional 8 B/us CRC
+  throughput. That budget remains explicitly uncalibrated; it must be measured
+  separately or the CRC implementation optimized before the slot floor is
+  treated as final.
+- J-Link VCOM output was framing garbage during this run, including with the
+  previously verified receiver image. Counters were therefore read by halting
+  the receiver briefly and reading named RAM symbols through J-Link, then
+  resuming it. Board 2 was restored to the verified Gate 3 receiver afterward.
 
 ## Gate 3: EXT-PHR with hardware filtering
 
@@ -208,7 +246,7 @@ left explicitly pending rather than inferred from build success.
   bytes with sequences 0 through 9999 ordered.
 - Required-rate run: 20,000 records at 600 us spacing produced exactly
   5,700,000 bytes with sequences 0 through 19999 ordered. The 475 kB/s offered
-  load exceeds the model's 468 kB/s maximum gateway load. A 500 us spacing
+  load exceeds the model's current 454 kB/s maximum gateway load. A 500 us spacing
   overloaded the queue, so the absolute transport ceiling remains between the
   verified 475 kB/s rate and the failed 570 kB/s offered load.
 - Result: PASS for the protocol budget. The UNO Q reader must configure the ACM

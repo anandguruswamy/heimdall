@@ -691,16 +691,17 @@ slot provides ample slack and constraint 1 dominates:
 
 | N | M | `floor_rx` | `floor_assembly` | binding |
 | --- | --- | --- | --- | --- |
-| 2 | 1 | 1100 us | 1300 us | assembly |
-| 3 | 1 | 1600 us | 1900 us | assembly |
-| 4 | 1 | 2100 us | 2400 us | assembly |
+| 2 | 1 | 1100 us | 1400 us | assembly |
+| 3 | 1 | 1600 us | 2000 us | assembly |
+| 4 | 1 | 2100 us | 2500 us | assembly |
 | 5 | 2 | 1600 us | 1000 us | reception |
 | 6 | 2 | 1800 us | 1100 us | reception |
-| 7 | 2 | 2100 us | 1200 us | reception |
-| 8 | 3 | 1700 us | 700 us | reception |
+| 7 | 2 | 2100 us | 1300 us | reception |
+| 8 | 3 | 1700 us | 800 us | reception |
 
-Figures are at 64 taps, `max_frame_bytes` 1023, 32 MHz SPI, margin 1.5. They are
-**modelled, not measured**; see the bring-up gates.
+Figures are at 64 taps, `max_frame_bytes` 1023, 32 MHz SPI, margin 1.5. The
+91 us report-assembly input is measured; RX, TX-write, and CRC budget inputs
+remain modelled as described by the bring-up notes.
 
 An implementation that cannot meet constraint 2 MAY instead report the
 `round_delta = 1` peer's observation one full cycle later, using the
@@ -755,8 +756,8 @@ the producer and reported in `CYCLE_SUMMARY`; they MUST NOT be silent.
 throughput calculation, which is compared against `budget.usb_budget_bytes_per_s`
 and determines whether a beacon configuration may be built. Per cycle the gateway
 emits `(N-1) * M` `RADIO_FRAME`, `(N-1)` `LOCAL_OBS`, `M` `TX_RECORD`, and one
-`CYCLE_SUMMARY`. Across N=2..8 at 64 taps this is 288-454 kB/s, which exceeds
-what the current transport delivers.
+`CYCLE_SUMMARY`. Across N=2..8 at 64 taps this is 268-454 kB/s, within the
+interrupt-driven transport's verified 475 kB/s offered load.
 
 ---
 

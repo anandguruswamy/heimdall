@@ -327,15 +327,13 @@ M          TX_RECORD     at 16 + 13 each
 plus `HELLO` and `HEARTBEAT`, which are negligible.
 
 At N=6, 64 taps, `M=2`, `frame_bytes=773`, `subreport_bytes=296`, cycle 21.6 ms,
-this is about **447 kB/s**. Across N=2..8 it stays within 288-454 kB/s, because
+this is about **447 kB/s**. Across N=2..8 it stays within 268-454 kB/s, because
 the radio runs saturated regardless of configuration.
 
-**This exceeds what the current transport can deliver.** The existing path writes
-one byte at a time with `uart_poll_out()` from a thread draining an 8-deep queue
-(`usb_cir_stream.c:81-83`). Replacing it with buffered or asynchronous CDC writes
-and measuring the result is bring-up gate 2. Until that measurement exists,
-`budget.usb_budget_bytes_per_s` is provisional and any configuration near the
-limit is unproven.
+The interrupt-driven FIFO path has sustained a verified 475 kB/s offered load,
+which covers the current 454 kB/s model maximum with limited headroom. The
+configuration tool MUST still reject configurations whose calculated load
+exceeds `budget.usb_budget_bytes_per_s`.
 
 ---
 

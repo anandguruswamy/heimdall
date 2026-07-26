@@ -148,15 +148,23 @@ flashed yet.
 - The assembly measurement follow-up now reports independent 64-tap maxima of
   213 us for `dwt_readdiagnostics_acc()` and 915 us for `dwt_readcir_48b()`;
   full callback maximum remained 1953 us over at least 2600 frames with no RX
-  errors. A real pooled-report assembly path is still needed before updating
-  `report_assembly_us` in the configuration model.
+  errors.
+- Real production-byte report assembly is now instrumented in the sensing RX
+  callback. After removing an unnecessary 3864-byte report clear, 4217 valid
+  1023-byte Gate 3 receptions reported maxima of 518 us for CRC-bearing
+  subreport encoding, 91 us for rotated pool plus complete frame assembly, and
+  2593 us for the full callback; assembly failures were zero and RX accumulated
+  7 errors. The example configuration now uses `report_assembly_us=91`, raising
+  its assembly floor from the provisional 1300 us to 1400 us.
+  The encoder result also invalidates the provisional 8 B/us CRC assumption;
+  CRC timing or optimization remains required before the model is final.
 - Native USB CDC bulk transmission is verified on board `760223921` through
   J20 and the UNO Q. The interrupt-driven FIFO path disables TX IRQ when its
   application queue drains, preventing the CDC callback work item from
   starving the transfer work. A radio-free profile sent all 20,000 synthetic
   285-byte `CIR2` records at 600 us spacing: the raw host capture was exactly
   5,700,000 bytes with ordered sequences 0 through 19999. This is a 475 kB/s
-  offered load, above the model's 468 kB/s worst case. A 500 us / 570 kB/s
+  offered load, above the model's current 454 kB/s worst case. A 500 us / 570 kB/s
   profile saturated the queue, so 475 kB/s is the current verified rate rather
   than a measured absolute ceiling. Linux captures must put the ACM TTY in raw
   mode; earlier 8,547-byte `cat` results were canonical-line-discipline
@@ -168,16 +176,18 @@ Three measurements gate the protocol's numeric claims and must be taken before
 implementation is trusted:
 
 1. RX callback duration, instrumented with a GPIO toggle or cycle counter at
-   32 MHz SPI, at both 64 and 128 taps. This calibrates `slot_floor_us`; every
-   processing figure currently in the model is derived from SPI byte counts, not
-   observed.
+   32 MHz SPI, at both 64 and 128 taps. PASS for the Gate 1 read path at 1983 us
+   and 2868 us respectively; the 64-tap production assembly profile measured a
+   2593 us full callback with the current encoder.
 2. USB CDC throughput after replacing the byte-at-a-time `uart_poll_out()` path.
    PASS at a 475 kB/s offered load with 20,000 complete ordered records; this
-   exceeds the modelled 299-468 kB/s gateway range.
+   exceeds the modelled 268-454 kB/s gateway range.
 3. `DWT_PHRMODE_EXT` verified board-to-board, together with hardware frame
    filtering, broadcast addressing, and auto-ACK confirmed disabled. PASS for
    the current 1023-byte test profile; the 38 observed RX errors remain a
    separate link-budget characterization item.
 
-Then implement the beacon frame over the verified scheduled-TX and USB CDC
-paths, and add gateway heartbeat, validation, and capture/replay coverage.
+The next numeric task is to measure or optimize the 518 us subreport encoder so
+the provisional CRC throughput can be replaced. Then implement the beacon frame
+over the verified scheduled-TX and USB CDC paths, and add gateway heartbeat,
+validation, and capture/replay coverage.

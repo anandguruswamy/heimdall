@@ -114,9 +114,8 @@ per_link_rate  = 1 / cycle
 
 USB load is roughly invariant in `N` and `cir_taps`, as predicted: the radio runs
 saturated regardless, so throughput is approximately
-`frame_payload / T_slot`. **Both examples exceed comfortable Zephyr CDC ACM
-throughput and would trip the item 1 export block** until the USB path is
-rewritten and measured.
+`frame_payload / T_slot`. Both examples fit the interrupt-driven CDC path's
+verified 475 kB/s offered load, although the 64-tap case leaves little headroom.
 
 ---
 
@@ -190,9 +189,9 @@ of `contracts/usb-cdc-v1.md`:
 
 | N | `P_max` | M | `frame_bytes` | airtime | `T_slot` floor | binds | cycle | per-link Hz | links | USB |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 2 | 296 B | 1 | 329 B | 0.55 ms | 1.3 ms | assembly | 2.6 ms | 384.6 | 2 | 288 KB/s |
-| 3 | 592 B | 1 | 625 B | 0.94 ms | 1.9 ms | assembly | 5.7 ms | 175.4 | 6 | 353 KB/s |
-| 4 | 888 B | 1 | 921 B | 1.28 ms | 2.4 ms | assembly | 9.6 ms | 104.2 | 12 | 403 KB/s |
+| 2 | 296 B | 1 | 329 B | 0.55 ms | 1.4 ms | assembly | 2.8 ms | 357.1 | 2 | 268 KB/s |
+| 3 | 592 B | 1 | 625 B | 0.94 ms | 2.0 ms | assembly | 6.0 ms | 166.7 | 6 | 335 KB/s |
+| 4 | 888 B | 1 | 921 B | 1.28 ms | 2.5 ms | assembly | 10.0 ms | 100.0 | 12 | 387 KB/s |
 | 5 | 1184 B | 2 | 625 B | 0.94 ms | 1.6 ms | reception | 16.0 ms | 62.5 | 20 | 411 KB/s |
 | 6 | 1480 B | 2 | 773 B | 1.08 ms | 1.8 ms | reception | 21.6 ms | 46.3 | 30 | 447 KB/s |
 | 7 | 1776 B | 2 | 921 B | 1.28 ms | 2.1 ms | reception | 29.4 ms | 34.0 | 42 | 454 KB/s |
@@ -207,7 +206,7 @@ Three non-obvious effects:
   whenever `M` increments, so N=5 has a *shorter* slot than N=4 despite having
   more peers. The tool should surface these discontinuities rather than let a
   configuration sit just above one.
-- **USB load stays within 288-454 KB/s** across the whole range, because the
+- **USB load stays within 268-454 KB/s** across the whole range, because the
   radio runs saturated regardless. It is not monotonic either.
 
 ---
@@ -509,13 +508,13 @@ ample slack.
 
 | N | M | `floor_rx` | `floor_assembly` | floor | binding |
 | --- | --- | --- | --- | --- | --- |
-| 2 | 1 | 1100 | 1300 | 1300 | assembly |
-| 3 | 1 | 1600 | 1900 | 1900 | assembly |
-| 4 | 1 | 2100 | 2400 | 2400 | assembly |
+| 2 | 1 | 1100 | 1400 | 1400 | assembly |
+| 3 | 1 | 1600 | 2000 | 2000 | assembly |
+| 4 | 1 | 2100 | 2500 | 2500 | assembly |
 | 5 | 2 | 1600 | 1000 | 1600 | reception |
 | 6 | 2 | 1800 | 1100 | 1800 | reception |
-| 7 | 2 | 2100 | 1200 | 2100 | reception |
-| 8 | 3 | 1700 | 700 | 1700 | reception |
+| 7 | 2 | 2100 | 1300 | 2100 | reception |
+| 8 | 3 | 1700 | 800 | 1700 | reception |
 
 The six-board target is unaffected. N=4 loses 17 percent of its rate.
 

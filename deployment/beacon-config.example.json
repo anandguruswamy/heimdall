@@ -44,7 +44,7 @@
     "diagnostics_bytes": 48,
     "rx_fixed_overhead_us": 80.0,
     "crc32_bytes_per_us": 8.0,
-    "report_assembly_us": 20.0
+    "report_assembly_us": 91.0
   },
   "derived": {
     "subreport_bytes": 296,
@@ -57,8 +57,8 @@
     "rx_processing_us": 341.25,
     "tx_write_us": 87.25,
     "slot_floor_rx_us": 1100,
-    "slot_floor_assembly_us": 1300,
-    "slot_floor_us": 1300,
+    "slot_floor_assembly_us": 1400,
+    "slot_floor_us": 1400,
     "slot_floor_binding_constraint": "assembly",
     "superslot_us": 10000,
     "cycle_us": 20000,

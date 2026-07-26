@@ -230,6 +230,7 @@ class ReportAssemblyConstraint(unittest.TestCase):
         """Quantifies the bug: N=4 was short by 400 us before the fix."""
         cfg = load_example()
         cfg["network"]["n_nodes"] = 4
+        cfg["budget"]["report_assembly_us"] = 20.0
         der = hc.derive(cfg)["derived"]
         self.assertGreater(der["slot_floor_assembly_us"], der["slot_floor_rx_us"])
         self.assertEqual(der["slot_floor_assembly_us"] - der["slot_floor_rx_us"], 300)
@@ -323,6 +324,11 @@ class ExampleConfiguration(unittest.TestCase):
         self.assertEqual(cfg["phy"]["preamble_length"], 128)
         self.assertEqual(cfg["phy"]["data_rate_kbps"], 6800)
         self.assertEqual(cfg["phy"]["phr_mode"], "ext", "frames above 127 B need EXT")
+
+    def test_example_uses_measured_report_assembly(self):
+        cfg = load_example()
+        self.assertEqual(cfg["budget"]["report_assembly_us"], 91.0)
+        self.assertEqual(cfg["derived"]["slot_floor_assembly_us"], 1400)
 
     def test_header_emission_contains_every_flashed_constant(self):
         header = hc.emit_header(hc.derive(load_example()))
@@ -453,7 +459,7 @@ class UsbRecordOverheads(unittest.TestCase):
             cfg["timing"]["slot_duration_us"] = hc.derive(cfg)["derived"]["slot_floor_us"]
             bps = hc.derive(cfg)["derived"]["gateway_usb_bytes_per_s"]
             low, high = min(low, bps), max(high, bps)
-        self.assertGreater(low, 280_000)
+        self.assertGreater(low, 260_000)
         self.assertLess(high, 460_000)
 
 

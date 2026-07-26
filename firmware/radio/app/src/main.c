@@ -293,7 +293,12 @@ static int radio_probe_and_configure(bool configure_phy)
 	dwt_setpanid(HEIMDALL_NETWORK_ID);
 	dwt_setaddress16(CONFIG_HEIMDALL_NODE_ID);
 	if (HEIMDALL_ENABLE_FRAME_FILTER != 0U) {
-		dwt_configureframefilter(DWT_FF_ENABLE_802_15_4, DWT_FF_DATA_EN);
+		uint16_t filter_flags = DWT_FF_DATA_EN;
+
+		if (HEIMDALL_PHY_PHR_MODE_EXT != 0U) {
+			filter_flags |= DWT_FF_EXTEND_EN;
+		}
+		dwt_configureframefilter(DWT_FF_ENABLE_802_15_4, filter_flags);
 	}
 #endif
 	/* Keep the DW3110 in IDLE_PLL between packets; do not enter IDLE_RC or
