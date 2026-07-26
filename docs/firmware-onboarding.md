@@ -150,7 +150,14 @@ separately from protocol work.
 
 - Read `firmware/radio/BRINGUP-NOTES.md` for proven Phase 1 measurements.
 - Read `docs/architecture.md` for the complete system data flow.
-- Read `contracts/beacon-v0.md` and `contracts/usb-cdc-v0.md` before changing
-  wire formats.
+- Read `docs/beacon-protocol-explained.md` for how the beacon scheme works and
+  why.
+- Read `contracts/beacon-v1.md` and `contracts/usb-cdc-v1.md` before changing
+  wire formats. The `v0` files are superseded and retained only for history.
+- Read `docs/protocol-decisions.md` for the rationale behind any protocol
+  decision, and the alternatives that were rejected.
+- Sizing is derived, not hand-written. Change
+  `deployment/beacon-config.example.json`, not the constants; the build verifies
+  it against `tools/config/heimdall_config.py` and fails on any disagreement.
 - Use `STATUS.md` to record board IDs, build profiles, PHY settings, and test
   results for hardware changes.
