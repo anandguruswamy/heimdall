@@ -150,6 +150,17 @@ flashed yet.
   full callback maximum remained 1953 us over at least 2600 frames with no RX
   errors. A real pooled-report assembly path is still needed before updating
   `report_assembly_us` in the configuration model.
+- Native USB CDC bulk transmission is verified on board `760223921` through
+  J20 and the UNO Q. The interrupt-driven FIFO path disables TX IRQ when its
+  application queue drains, preventing the CDC callback work item from
+  starving the transfer work. A radio-free profile sent all 20,000 synthetic
+  285-byte `CIR2` records at 600 us spacing: the raw host capture was exactly
+  5,700,000 bytes with ordered sequences 0 through 19999. This is a 475 kB/s
+  offered load, above the model's 468 kB/s worst case. A 500 us / 570 kB/s
+  profile saturated the queue, so 475 kB/s is the current verified rate rather
+  than a measured absolute ceiling. Linux captures must put the ACM TTY in raw
+  mode; earlier 8,547-byte `cat` results were canonical-line-discipline
+  artifacts and are invalid throughput measurements.
 
 ## Next executable checkpoint
 
@@ -161,8 +172,8 @@ implementation is trusted:
    processing figure currently in the model is derived from SPI byte counts, not
    observed.
 2. USB CDC throughput after replacing the byte-at-a-time `uart_poll_out()` path.
-   Modelled gateway load is 299-468 kB/s across N=2..8, which the current path
-   cannot sustain.
+   PASS at a 475 kB/s offered load with 20,000 complete ordered records; this
+   exceeds the modelled 299-468 kB/s gateway range.
 3. `DWT_PHRMODE_EXT` verified board-to-board, together with hardware frame
    filtering, broadcast addressing, and auto-ACK confirmed disabled. PASS for
    the current 1023-byte test profile; the 38 observed RX errors remain a

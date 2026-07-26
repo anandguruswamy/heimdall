@@ -189,3 +189,28 @@ left explicitly pending rather than inferred from build success.
 - Result: PASS. `DWT_PHRMODE_EXT` and `DWT_FF_EXTEND_EN` work together for the
   full-size frame profile. The RX error count is retained for later link-budget
   characterization and does not invalidate this gate.
+
+## USB CDC bulk throughput
+
+- Date/profile: 2026-07-26, `nrf52833dk/nrf52833`, native J20 USB CDC,
+  interrupt-driven `uart_fifo_fill()`, 32-entry non-blocking application queue.
+  The radio was not initialized or exercised; the build retained the 32 MHz
+  SPIM3 overlay and channel 9 PHY defaults for consistency with the gateway
+  profile.
+- Gateway board `760223921` was flashed and captured by the UNO Q through its
+  stable USB hub. J-Link download and verification completed `O.K.`.
+- The TX callback now disables its UART TX interrupt when the application queue
+  is empty. Leaving it enabled continuously resubmitted the callback work while
+  FIFO space remained and could starve CDC transfer work.
+- Control run: 1,000 synthetic 285-byte `CIR2` records at 20,000 us spacing
+  produced exactly 285,000 bytes with sequences 0 through 999 ordered.
+- Stress run: 10,000 records at 1,000 us spacing produced exactly 2,850,000
+  bytes with sequences 0 through 9999 ordered.
+- Required-rate run: 20,000 records at 600 us spacing produced exactly
+  5,700,000 bytes with sequences 0 through 19999 ordered. The 475 kB/s offered
+  load exceeds the model's 468 kB/s maximum gateway load. A 500 us spacing
+  overloaded the queue, so the absolute transport ceiling remains between the
+  verified 475 kB/s rate and the failed 570 kB/s offered load.
+- Result: PASS for the protocol budget. The UNO Q reader must configure the ACM
+  port for raw input; plain `cat` in canonical mode transformed and buffered the
+  binary stream, producing repeatable but invalid 8,547-byte captures.

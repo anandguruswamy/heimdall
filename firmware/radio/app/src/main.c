@@ -6,6 +6,7 @@
 #include <sample_usbd.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/usb/usbd.h>
+#include "usb_cir_stream.h"
 #endif
 
 #include <deca_device_api.h>
@@ -430,6 +431,9 @@ int main(void)
 	}
 
 	printk("phase1: hello from DWM3001CDK Zephyr bring-up\n");
+#if defined(CONFIG_PHASE1_ROLE_USB_THROUGHPUT)
+	ret = 0;
+#else
 	ret = radio_probe_and_configure(
 #if defined(CONFIG_PHASE1_ROLE_DEV_ID)
 		false
@@ -437,11 +441,14 @@ int main(void)
 		true
 #endif
 	);
-	if (ret != 0) {
+#endif
+	if (ret != 0 && !IS_ENABLED(CONFIG_PHASE1_ROLE_USB_THROUGHPUT)) {
 		return 0;
 	}
 
-#if defined(CONFIG_PHASE1_ROLE_TX)
+#if defined(CONFIG_PHASE1_ROLE_USB_THROUGHPUT)
+	(void)phase1_run_usb_throughput();
+#elif defined(CONFIG_PHASE1_ROLE_TX)
 	(void)run_tx();
 #elif defined(CONFIG_PHASE1_ROLE_RX)
 	(void)run_rx();

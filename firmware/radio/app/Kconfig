@@ -19,8 +19,13 @@ config PHASE1_ROLE_RX
 config PHASE1_ROLE_SCHEDULED_TX
 	bool "1000-frame radio-clock scheduled transmitter"
 
+
 config PHASE1_ROLE_SENSING_RX
 	bool "CIR/timestamp/CFO sensing receiver"
+
+config PHASE1_ROLE_USB_THROUGHPUT
+	bool "Finite radio-free USB CDC throughput benchmark"
+	depends on USB_DEVICE_STACK_NEXT
 
 config PHASE1_ROLE_TWR_INITIATOR
 	bool "SS-TWR initiator"
@@ -52,7 +57,6 @@ config PHASE1_TX_FRAME_BYTES
 config PHASE1_EXT_PHR
 	bool "Use DW3000 extended PHR"
 	default y
-	depends on PHASE1_ROLE_SCHEDULED_TX || PHASE1_ROLE_SENSING_RX
 	help
 		Select the extended PHR required for frames larger than 127 bytes.
 
@@ -93,6 +97,29 @@ config PHASE1_CONTINUOUS_TX
 config PHASE1_CIR_DUMP
 	bool "Dump complete CIR windows over UART"
 	default n
+
+config PHASE1_USB_TEST_RECORDS
+	int "Number of synthetic USB records"
+	default 1000
+	range 1 100000
+	depends on PHASE1_ROLE_USB_THROUGHPUT
+
+config PHASE1_USB_TEST_PERIOD_US
+	int "Delay between synthetic USB records in microseconds"
+	default 20000
+	range 1 1000000
+	depends on PHASE1_ROLE_USB_THROUGHPUT
+
+config PHASE1_USB_TEST_START_DELAY_MS
+	int "Startup delay before synthetic USB records in milliseconds"
+	default 5000
+	range 0 30000
+	depends on PHASE1_ROLE_USB_THROUGHPUT
+
+config PHASE1_USB_BULK_TX
+	bool "Use FIFO-filled interrupt-driven CDC transmission"
+	default y
+	depends on USB_DEVICE_STACK_NEXT
 
 config PHASE1_CIR_TAPS
 	int "Sensing CIR taps"
