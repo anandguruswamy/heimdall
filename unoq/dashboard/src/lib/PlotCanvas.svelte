@@ -65,7 +65,8 @@
       for (const s of f.series ?? []) {
         ctx.strokeStyle = s.color; ctx.fillStyle = s.color; ctx.lineWidth = (s.width ?? 1) * devicePixelRatio;
         if (s.points) {
-          for (let i = 0; i < s.data.length; i++) { const v = s.data[i]; const x = (s.data.length < 2 ? 0.5 : i / (s.data.length - 1)) * w; const y = h - (v - (f.min ?? 0)) / Math.max(Number.EPSILON,(f.max ?? 1) - (f.min ?? 0)) * h; ctx.fillRect(x - 2, y - 2, 4, 4); }
+          const size = 5 * devicePixelRatio;
+          for (let i = 0; i < s.data.length; i++) { const v = s.data[i]; const x = (s.data.length < 2 ? 0.5 : i / (s.data.length - 1)) * w; const y = h - (v - (f.min ?? 0)) / Math.max(Number.EPSILON,(f.max ?? 1) - (f.min ?? 0)) * h; ctx.fillRect(x - size / 2, y - size / 2, size, size); }
         } else {
           ctx.beginPath();
           s.data.forEach((v, i) => { const x = i / Math.max(1,s.data.length - 1) * w; const y = h - (v - (f.min ?? 0)) / Math.max(Number.EPSILON,(f.max ?? 1) - (f.min ?? 0)) * h; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
@@ -83,7 +84,7 @@
         for (let i = 0; i < f.heatmap.length; i++) { const x=i%f.heatWidth,y=Math.floor(i/f.heatWidth),normalized=(f.heatmap[i]-(f.min??0))/Math.max(Number.EPSILON,(f.max??1)-(f.min??0)),c=heatColor(normalized); vertices.set([(x+.5)/f.heatWidth*2-1,(y+.5)/f.heatHeight*2-1,c[0]/255,c[1]/255,c[2]/255],i*5); }
         gl.bufferData(gl.ARRAY_BUFFER,vertices,gl.STREAM_DRAW); gl.uniform1f(pointSize, Math.max(canvas.width/f.heatWidth,canvas.height/f.heatHeight)+1); gl.drawArrays(gl.POINTS,0,f.heatmap.length);
       }
-      for (const s of f.series ?? []) { const v = new Float32Array(s.data.length * 5),c=rgb(s.color); s.data.forEach((value,i)=>{v.set([i/Math.max(1,s.data.length-1)*2-1,(value-(f.min??0))/Math.max(Number.EPSILON,(f.max??1)-(f.min??0))*2-1,...c],i*5);}); gl.bufferData(gl.ARRAY_BUFFER,v,gl.STREAM_DRAW); gl.uniform1f(pointSize,4*devicePixelRatio); gl.drawArrays(s.points ? gl.POINTS : gl.LINE_STRIP,0,s.data.length); }
+      for (const s of f.series ?? []) { const v = new Float32Array(s.data.length * 5),c=rgb(s.color); s.data.forEach((value,i)=>{v.set([i/Math.max(1,s.data.length-1)*2-1,(value-(f.min??0))/Math.max(Number.EPSILON,(f.max??1)-(f.min??0))*2-1,...c],i*5);}); gl.bufferData(gl.ARRAY_BUFFER,v,gl.STREAM_DRAW); gl.uniform1f(pointSize, s.points ? 8*devicePixelRatio : 4*devicePixelRatio); gl.drawArrays(s.points ? gl.POINTS : gl.LINE_STRIP,0,s.data.length); }
       for (const marker of f.markers ?? []) { const x=marker.at*2-1,c=rgb(marker.color),v=new Float32Array([x,-1,...c,x,1,...c]); gl.bufferData(gl.ARRAY_BUFFER,v,gl.STREAM_DRAW); gl.uniform1f(pointSize,1); gl.drawArrays(gl.LINES,0,2); }
     };
     const loop = (now: number) => { if (now - last >= 33 || !animate) { const resized=size(),f=frame(); if (!document.hidden && (resized || f !== lastFrame)) { gl ? drawGl(f) : draw2d(f); lastFrame=f; } last = now; } if (animate) raf = requestAnimationFrame(loop); };
