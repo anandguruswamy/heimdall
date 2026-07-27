@@ -61,6 +61,24 @@ def n3_radio_payload(source: int, k: int) -> bytes:
     return (777).to_bytes(5, "little") + bytes((1,)) + struct.pack("<H", len(frame)) + frame
 
 
+def n5_hello_payload() -> bytes:
+    return struct.pack(
+        "<8B4H2IQI", 1, 1, 5, 2, 0, 0, 64, 16,
+        0x8885, 296, 592, 1023, 3500, 35000,
+        0x7556160612A31510, 0,
+    )
+
+
+def n5_radio_payload(source: int, k: int, m: int) -> bytes:
+    frame = bytearray(623)
+    struct.pack_into("<H", frame, 7, source)
+    frame[9:12] = bytes((1, 0, m))
+    struct.pack_into("<I", frame, 12, k)
+    frame[16:18] = bytes((5, 2))
+    struct.pack_into("<H", frame, 18, 0x8885)
+    return (777).to_bytes(5, "little") + bytes((1,)) + struct.pack("<H", len(frame)) + frame
+
+
 class UsbCdcV1Tests(unittest.TestCase):
     def test_incremental_parser_accepts_every_boundary(self):
         raw = encode_record(HELLO, 0, 4, hello_payload())
@@ -186,6 +204,36 @@ class UsbCdcV1Tests(unittest.TestCase):
         summary = decode_record(record, DecoderState())
         self.assertEqual(summary.frames_expected, 2)
         self.assertEqual(summary.peer_m0_miss, (0, 0, 1, 0, 0, 0, 0, 0))
+
+    def test_n5_m2_ownership_and_missing_node_summary(self):
+        stream = encode_record(HELLO, 0, 0, n5_hello_payload())
+        sequence = 1
+        for source in (1, 2):
+            for m in (0, 1):
+                stream += encode_record(
+                    RADIO_FRAME, 0, sequence, n5_radio_payload(source, source, m)
+                )
+                sequence += 1
+        for m in (0, 1):
+            tx_payload = struct.pack("<IB", 5, m) + (1000 + m).to_bytes(5, "little")
+            tx_payload += struct.pack("<HB", 625, 1)
+            stream += encode_record(TX_RECORD, 0, sequence, tx_payload)
+            sequence += 1
+
+        result = inspect(stream)
+        self.assertEqual(result["hello"]["n_nodes"], 5)
+        self.assertEqual(result["hello"]["m_slots"], 2)
+        self.assertTrue(result["radio_ownership_valid"])
+        self.assertTrue(result["tx_ownership_valid"])
+
+        payload = struct.pack("<II8H", 5, 1, 4, 8, 0, 0, 0, 0, 0, 2500)
+        payload += bytes((0, 0, 0, 1, 1, 0, 0, 0, 0, 0))
+        record = StreamParser().feed(
+            encode_record(CYCLE_SUMMARY, 0, sequence, payload)
+        )[0]
+        summary = decode_record(record, DecoderState())
+        self.assertEqual((summary.frames_received, summary.frames_expected), (4, 8))
+        self.assertEqual(summary.peer_m0_miss, (0, 0, 0, 1, 1, 0, 0, 0))
 
 
 if __name__ == "__main__":

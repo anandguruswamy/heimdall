@@ -45,6 +45,7 @@ class RelayedSubreport:
 class _PendingReport:
     header: BeaconHeader
     fragments: dict[int, bytes] = field(default_factory=dict)
+    headers: dict[int, BeaconHeader] = field(default_factory=dict)
 
 
 def decode_beacon_header(frame: bytes, hello: HelloRecord) -> BeaconHeader:
@@ -87,12 +88,15 @@ def decode_beacon_header(frame: bytes, hello: HelloRecord) -> BeaconHeader:
         raise ProtocolError("pooled report exceeds configured maximum")
     if header.subreport_count > hello.n_nodes - 1:
         raise ProtocolError("beacon subreport count exceeds configured maximum")
-    if header.pooled_total_bytes > header.subreport_count * hello.subreport_bytes:
-        raise ProtocolError("pooled report exceeds subreport count capacity")
-    if header.peer_observed_bitmap.bit_count() != header.subreport_count:
-        raise ProtocolError("peer observation bitmap does not match subreport count")
+    report_count = header.peer_observed_bitmap.bit_count()
+    if header.pooled_total_bytes > report_count * hello.subreport_bytes:
+        raise ProtocolError("pooled report exceeds bitmap capacity")
+    if (header.pooled_total_bytes == 0) != (report_count == 0):
+        raise ProtocolError("empty pooled report does not match peer bitmap")
     if header.peer_observed_bitmap & (1 << source):
         raise ProtocolError("beacon report contains a self-observation")
+    if header.peer_observed_bitmap >> hello.n_nodes:
+        raise ProtocolError("beacon report bitmap contains a node outside N")
     return header
 
 
@@ -138,24 +142,26 @@ class ReportReassembler:
             raise ProtocolError("inconsistent fragments for one pooled report")
         prior = pending.fragments.get(header.m)
         if prior is not None:
-            if prior != payload:
+            if prior != payload or pending.headers[header.m] != header:
                 self.inconsistent_fragments += 1
                 del self.pending[key]
-                raise ProtocolError("duplicate fragment body changed")
+                raise ProtocolError("duplicate fragment changed")
             self.duplicate_fragments += 1
             return []
         pending.fragments[header.m] = payload
+        pending.headers[header.m] = header
         if len(pending.fragments) != hello.m_slots:
             return []
         pooled = b"".join(pending.fragments[m] for m in range(hello.m_slots))
         pooled = pooled[: header.pooled_total_bytes]
         del self.pending[key]
-        return self._decode_report(header, pooled, hello)
+        return self._decode_report(header, pending.headers, pooled, hello)
 
     @staticmethod
     def _consistent(first: BeaconHeader, other: BeaconHeader) -> bool:
         return (
             first.source_node_id,
+            first.network_id,
             first.k,
             first.n_nodes,
             first.m_slots,
@@ -166,6 +172,7 @@ class ReportReassembler:
             first.flags,
         ) == (
             other.source_node_id,
+            other.network_id,
             other.k,
             other.n_nodes,
             other.m_slots,
@@ -178,11 +185,15 @@ class ReportReassembler:
 
     @staticmethod
     def _decode_report(
-        header: BeaconHeader, pooled: bytes, hello: HelloRecord
+        header: BeaconHeader,
+        headers: dict[int, BeaconHeader],
+        pooled: bytes,
+        hello: HelloRecord,
     ) -> list[RelayedSubreport]:
         decoded: list[RelayedSubreport] = []
         offset = 0
         observed_ids: list[int] = []
+        frame_start_counts = [0] * hello.m_slots
         while offset < len(pooled):
             if len(pooled) - offset < 40:
                 raise ProtocolError("pooled report ends inside subreport metadata")
@@ -203,15 +214,23 @@ class ReportReassembler:
                 raise ProtocolError("subreport schedule metadata is inconsistent")
             observed_ids.append(subreport.observed_node_id)
             decoded.append(RelayedSubreport(header, subreport, raw))
+            frame_start_counts[offset // hello.frame_payload_bytes] += 1
             offset += length
+        start = (header.k // hello.n_nodes + 1) % hello.n_nodes
         bitmap_ids = [
-            node for node in range(hello.n_nodes)
-            if header.peer_observed_bitmap & (1 << node)
+            node
+            for offset in range(hello.n_nodes)
+            if (node := (start + offset) % hello.n_nodes) != header.source_node_id
+            and header.peer_observed_bitmap & (1 << node)
         ]
         if (
-            sorted(observed_ids) != bitmap_ids
+            observed_ids != bitmap_ids
             or len(decoded) != len(bitmap_ids)
-            or len(decoded) != header.subreport_count
         ):
-            raise ProtocolError("subreports do not match peer observation bitmap")
+            raise ProtocolError("subreports do not match rotated bitmap order")
+        if any(
+            headers[m].subreport_count != frame_start_counts[m]
+            for m in range(hello.m_slots)
+        ):
+            raise ProtocolError("subreport starts do not match per-frame counts")
         return decoded

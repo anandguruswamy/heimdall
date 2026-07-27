@@ -19,6 +19,19 @@ uint8_t heimdall_schedule_slots_until_owner(uint32_t k, uint8_t node_id,
 	return 0U;
 }
 
+uint8_t heimdall_schedule_frame_slots_until_owner(uint32_t k, uint8_t m,
+						  uint8_t node_id, uint8_t n_nodes,
+						  uint8_t slots_per_superslot)
+{
+	uint8_t superslots;
+
+	if (slots_per_superslot == 0U || m >= slots_per_superslot) {
+		return 0U;
+	}
+	superslots = heimdall_schedule_slots_until_owner(k, node_id, n_nodes);
+	return (uint8_t)(superslots * slots_per_superslot - m);
+}
+
 uint32_t heimdall_schedule_slot_index(uint32_t k, uint8_t m,
 					      uint8_t slots_per_superslot)
 {

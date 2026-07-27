@@ -34,17 +34,18 @@ Start with `docs/firmware-glossary.md` if any term in this guide is unfamiliar.
 For a board-bound runtime image, also read the nRF52833 FICR `DEVICEID` words
 through J-Link and record both words in `deployment/node-roster.lab.yaml` before
 building. Gate H4's node 2 candidate is board label 3 / J-Link `760197416`; its
-FICR is still pending. On the UNO Q, the read-only query is:
+FICR is `6402F3A7:947F4A25`. N=5 roster positions 3 and 4 are pending physical
+board 4/5 identification. On the UNO Q, the read-only query is:
 
 ```bash
 printf 'connect\nmem32 0x10000060,2\nq\n' |
   JLinkExe -device nRF52833_xxAA -if SWD -speed 4000 \
-    -SelectEmuBySN 760197416
+    -SelectEmuBySN <candidate-jlink-serial>
 ```
 
 Confirm the low/high word ordering against an existing rostered board before
-recording the combined 64-bit device ID. See `docs/gate-h4-handoff.md` for the
-current N=3 candidate, blockers, and build sequence.
+recording the combined 64-bit device ID. `STATUS.md` and
+`deployment/node-roster.lab.yaml` are authoritative for the current N=5 state.
 
 J9 is used for programming, debugging, and J-Link VCOM. J20 is reserved for
 testing the native USB CDC data path.

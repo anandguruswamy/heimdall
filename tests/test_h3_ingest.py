@@ -66,7 +66,7 @@ def beacon_frame(
     header[16:18] = bytes((2, m_slots))
     struct.pack_into("<H", header, 18, 0x3C50)
     header[20:25] = (999).to_bytes(5, "little")
-    header[25] = 1
+    header[25] = int(m == 0)
     struct.pack_into("<H", header, 26, len(report))
     header[28] = 1
     start = m * frame_payload_bytes
@@ -111,6 +111,43 @@ def n3_beacon_frame(source: int, k: int, reports: list[bytes]) -> bytes:
     struct.pack_into("<H", header, 26, len(pooled))
     header[28] = sum(1 << report[0] for report in reports)
     return bytes(header) + pooled.ljust(592, b"\x00")
+
+
+def n5_hello_payload() -> bytes:
+    return struct.pack(
+        "<8B4H2IQI",
+        1, 1, 5, 2, 0, 0, 64, 16,
+        0x8885, 296, 592, 1023, 3500, 35000,
+        0x7556160612A31510, 0,
+    )
+
+
+def n5_beacon_frames(source: int, k: int, reports: list[bytes]) -> tuple[bytes, bytes]:
+    pooled = b"".join(reports)
+    starts = []
+    offset = 0
+    for report in reports:
+        starts.append(offset)
+        offset += len(report)
+    frames = []
+    for m in range(2):
+        header = bytearray(31)
+        struct.pack_into("<H", header, 0, 0x8841)
+        header[2] = (2 * k + m) & 0xFF
+        struct.pack_into("<H", header, 3, 0xABCD)
+        struct.pack_into("<H", header, 5, 0xFFFF)
+        struct.pack_into("<H", header, 7, source)
+        header[9:12] = bytes((1, 0, m))
+        struct.pack_into("<I", header, 12, k)
+        header[16:18] = bytes((5, 2))
+        struct.pack_into("<H", header, 18, 0x8885)
+        header[20:25] = (1000 + 2 * k + m).to_bytes(5, "little")
+        header[25] = sum(m * 592 <= start < (m + 1) * 592 for start in starts)
+        struct.pack_into("<H", header, 26, len(pooled))
+        header[28] = sum(1 << report[0] for report in reports)
+        fragment = pooled[m * 592:(m + 1) * 592]
+        frames.append(bytes(header) + fragment.ljust(592, b"\x00"))
+    return frames[0], frames[1]
 
 
 class CanonicalTests(unittest.TestCase):
@@ -179,6 +216,79 @@ class CanonicalTests(unittest.TestCase):
              for item in observations if item.route == "relayed"},
             {(1, 0, 1), (1, 2, 2), (2, 0, 2), (2, 1, 1)},
         )
+
+    def test_n5_m2_complete_cycle_yields_twenty_directed_observations(self):
+        parser = StreamParser()
+        processor = CanonicalProcessor()
+        stream = [encode_record(HELLO, 0, 0, n5_hello_payload())]
+        sequence = 1
+        for peer in range(1, 5):
+            delta = (5 - peer) % 5
+            payload = bytes((0,)) + struct.pack("<I", peer) + subreport(peer, delta)
+            stream.append(encode_record(LOCAL_OBS, 0, sequence, payload))
+            sequence += 1
+        for source in range(1, 5):
+            order = [node for node in (1, 2, 3, 4, 0) if node != source]
+            reports = [
+                subreport(observed, (source - observed) % 5)
+                for observed in order
+            ]
+            for frame in reversed(n5_beacon_frames(source, source, reports)):
+                payload = (777).to_bytes(5, "little") + bytes((1,))
+                payload += struct.pack("<H", len(frame)) + frame
+                stream.append(encode_record(RADIO_FRAME, 0, sequence, payload))
+                sequence += 1
+
+        observations = []
+        for raw in stream:
+            record = parser.feed(raw)[0]
+            observations.extend(processor.process(record).observations)
+
+        self.assertEqual(len(observations), 20)
+        self.assertEqual(
+            {(item.reporting_node_id, item.observed_node_id) for item in observations},
+            {(reporter, observed) for reporter in range(5)
+             for observed in range(5) if reporter != observed},
+        )
+
+    def test_n5_m2_rejects_wrong_per_frame_start_count(self):
+        parser = StreamParser()
+        processor = CanonicalProcessor()
+        processor.process(parser.feed(
+            encode_record(HELLO, 0, 0, n5_hello_payload())
+        )[0])
+        reports = [subreport(node, (1 - node) % 5) for node in (2, 3, 4, 0)]
+        frames = list(n5_beacon_frames(1, 1, reports))
+        damaged = bytearray(frames[1])
+        damaged[25] = 3
+        frames[1] = bytes(damaged)
+        for sequence, frame in enumerate(frames, 1):
+            payload = (777).to_bytes(5, "little") + bytes((1,))
+            payload += struct.pack("<H", len(frame)) + frame
+            record = parser.feed(encode_record(RADIO_FRAME, 0, sequence, payload))[0]
+            if sequence == 1:
+                self.assertEqual(processor.process(record).observations, ())
+            else:
+                with self.assertRaisesRegex(ProtocolError, "per-frame counts"):
+                    processor.process(record)
+
+    def test_n5_m2_rejects_wrong_rotated_order(self):
+        parser = StreamParser()
+        processor = CanonicalProcessor()
+        processor.process(parser.feed(
+            encode_record(HELLO, 0, 0, n5_hello_payload())
+        )[0])
+        reports = [subreport(node, (1 - node) % 5) for node in (0, 2, 3, 4)]
+        frames = n5_beacon_frames(1, 1, reports)
+        for sequence, frame in enumerate(frames, 1):
+            payload = (777).to_bytes(5, "little") + bytes((1,))
+            payload += struct.pack("<H", len(frame)) + frame
+            record = parser.feed(encode_record(RADIO_FRAME, 0, sequence, payload))[0]
+            if sequence == 1:
+                self.assertEqual(processor.process(record).observations, ())
+            else:
+                with self.assertRaisesRegex(ProtocolError, "rotated bitmap order"):
+                    processor.process(record)
 
     def test_boundary_truncated_subreport_remains_self_describing(self):
         parser = StreamParser()

@@ -1,6 +1,6 @@
 # UWB Beacon Contract v1
 
-Status: **normative, not yet implemented.** Supersedes `beacon-v0.md`.
+Status: **normative and implemented.** Supersedes `beacon-v0.md`.
 
 `protocol_version = 1`.
 
@@ -740,6 +740,14 @@ prefixed by an 8-byte wrapper carrying its local RX timestamp and validation
 flags, inside 16 bytes of outer framing. It MUST NOT re-encode subreports: doing
 so would leave the host unable to verify the CRC32 computed by the observing node
 and would destroy end-to-end integrity.
+
+The gateway firmware performs only the fixed-header, ownership, phase, and
+configuration checks needed for radio safety. It MUST NOT parse or reassemble
+relayed pooled reports in the radio callback. Fragment reassembly, padding
+validation, per-frame start-count validation, subreport decoding, and subreport
+CRC32 validation belong to the UNO Q ingest path. This keeps semantic processing
+out of the timing-critical radio path while preserving verbatim bytes for
+end-to-end validation and replay.
 
 The gateway's own observations are exported as `LOCAL_OBS` records whose
 subreport bytes are **byte-identical in layout** to those carried over the radio,

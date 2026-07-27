@@ -8,6 +8,12 @@ def slots_until_owner(k: int, node_id: int, n_nodes: int) -> int:
     raise AssertionError("owner not found")
 
 
+def frame_slots_until_owner(
+    k: int, m: int, node_id: int, n_nodes: int, m_slots: int
+) -> int:
+    return slots_until_owner(k, node_id, n_nodes) * m_slots - m
+
+
 class ValidationPolicy:
     def __init__(self, node_id: int) -> None:
         self.node_id = node_id
@@ -46,6 +52,16 @@ class H4RuntimePolicyTests(unittest.TestCase):
         self.assertEqual(slots_until_owner(0, 2, 3), 2)  # node 1 absent
         self.assertEqual(slots_until_owner(1, 0, 3), 2)  # node 2 absent
         self.assertEqual(slots_until_owner(3, 2, 3), 2)  # predecessor absent
+
+    def test_n5_m2_uses_both_fragment_phases(self):
+        self.assertEqual(frame_slots_until_owner(0, 0, 1, 5, 2), 2)
+        self.assertEqual(frame_slots_until_owner(0, 1, 1, 5, 2), 1)
+        self.assertEqual(frame_slots_until_owner(2, 1, 0, 5, 2), 5)
+
+    def test_n5_missing_nodes_do_not_compress_the_schedule(self):
+        # After node 2 m=1, nodes 3 and 4 remain silent before node 0 owns k=5.
+        self.assertEqual(frame_slots_until_owner(2, 1, 0, 5, 2), 5)
+        self.assertEqual(slots_until_owner(2, 0, 5), 3)
 
     def test_duplicate_identity_is_sticky(self):
         policy = ValidationPolicy(node_id=1)

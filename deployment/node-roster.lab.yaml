@@ -1,6 +1,9 @@
 schema: heimdall-node-roster/1
-beacon_config: beacon-config.n3.json
-notes: Antenna delays are uncalibrated bring-up values and must not be used for calibrated ranging.
+beacon_config: beacon-config.n5.json
+deployment_status: incomplete-n5-roster
+notes: Nodes 0-2 are available for an N=5 missing-node test. Nodes 3-4 require FICR identification before images can be built. Antenna delays are uncalibrated bring-up values and must not be used for calibrated ranging.
+pending_node_ids: [3, 4]
+candidate_jlink_serials: ["760200606", "760223924"]
 nodes:
   - node_id: 0
     role: gateway

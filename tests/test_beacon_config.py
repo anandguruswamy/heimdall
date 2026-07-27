@@ -26,6 +26,7 @@ import heimdall_config as hc  # noqa: E402
 
 EXAMPLE = REPO_ROOT / "deployment" / "beacon-config.example.json"
 N3_CONFIG = REPO_ROOT / "deployment" / "beacon-config.n3.json"
+N5_CONFIG = REPO_ROOT / "deployment" / "beacon-config.n5.json"
 
 
 def load_example() -> dict:
@@ -344,6 +345,21 @@ class ExampleConfiguration(unittest.TestCase):
         self.assertEqual(cfg["derived"]["pooled_report_max_bytes"], 592)
         self.assertEqual(cfg["derived"]["frame_bytes"], 625)
         self.assertEqual(cfg["derived"]["config_hash"], 0xC8CF)
+
+    def test_n5_m2_profile_verifies_clean(self):
+        cfg = json.loads(N5_CONFIG.read_text(encoding="utf-8"))
+        _, problems = hc.verify(cfg)
+        self.assertEqual(problems, [], f"N=5 profile must verify: {problems}")
+        self.assertEqual(cfg["network"]["n_nodes"], 5)
+        self.assertEqual(cfg["timing"]["slot_duration_us"], 3_500)
+        self.assertEqual(cfg["derived"]["m_slots_per_superslot"], 2)
+        self.assertEqual(cfg["derived"]["pooled_report_max_bytes"], 1184)
+        self.assertEqual(cfg["derived"]["frame_payload_bytes"], 592)
+        self.assertEqual(cfg["derived"]["frame_bytes"], 625)
+        self.assertEqual(cfg["derived"]["cycle_us"], 35_000)
+        self.assertEqual(cfg["derived"]["per_link_rate_hz"], 28.571)
+        self.assertEqual(cfg["derived"]["gateway_usb_bytes_per_s"], 187_200)
+        self.assertEqual(cfg["derived"]["config_hash"], 0x8885)
 
     def test_header_emission_contains_every_flashed_constant(self):
         header = hc.emit_header(hc.derive(load_example()))

@@ -2,9 +2,10 @@
 
 ## Project state
 
-The N=3 Heimdall radio runtime, gateway USB export, and replayable UNO Q ingest
-are hardware-validated. Gate H4 is complete; antenna calibration remains before
-timestamps can be treated as accurate ranges.
+The N=5/M=2 Heimdall radio runtime, thin gateway USB export, and replayable UNO Q
+ingest are hardware-validated with three active boards and two deliberately
+missing nodes. The fastest reliable 64-tap profile is 28.571 Hz; antenna
+calibration remains before timestamps can be treated as accurate ranges.
 
 ## Starting point
 
@@ -298,17 +299,55 @@ timestamps can be treated as accurate ranges.
   `08cc36484497d88bd605ef652ccab30777edd07074d0ebc4a47f72e9b874aa20`.
   All six directed pair counts were 983-986, consistent with 33.333 Hz. The
   host baseline is now 80 passing tests.
+- N=5/M=2 three-board qualification: PASS. The tracked profile uses five
+  superslots, two 625-byte frames per superslot, 64 CIR taps, a 3,500 us slot,
+  a 35,000 us cycle, 28.571 Hz per directed link, modeled 187,200 B/s gateway
+  USB load, and config hash `0x8885`. Nodes 3 and 4 were deliberately absent;
+  their superslots remained silent and were never compressed or reassigned.
+- The runtime now accepts same-`k` increasing-`m` frames, derives phase from
+  `(k,m)`, transmits both report fragments with per-frame start counts, captures
+  CIR only on `m=0`, pre-packs reports before fallback deadlines, and accounts
+  for frame completion plus callback time when arming missing-node recovery.
+  The receiver is rearmed immediately after accumulator-sensitive reads.
+- Gateway pooled-report parsing and USB framing moved out of the radio callback.
+  A 16-event preallocated FIFO feeds one export thread for every USB record type,
+  eliminating sequence inversions while keeping USB backpressure independent of
+  radio timing. The UNO Q owns M=2 reassembly, padding/count checks, subreport
+  CRC validation, canonicalization, and replay.
+- Final N=5 images all flashed and verified `O.K.`. Node 0 SHA-256 is
+  `436CDAC15FD2152EC3AFD7E8BE813D3BDA1D159CB6EA7593B89316CA98B78FA1`
+  (79,908 B flash / 69,624 B RAM), node 1 is
+  `AE8EFB80E564720C3844DD927497157970C12F736755CDAC3A8E85580CC92FC7`
+  (42,444 B / 18,112 B), and node 2 is
+  `DDE8D935F7916C59706AD1E8054A5D99C976DB44D344FB5076153CC39B5D6175`
+  (42,428 B / 18,112 B).
+- The 30-second rate-qualification capture covered 861 summaries and 5,156 canonical
+  observations. All transmissions were confirmed; ownership and cycle binding
+  were valid; USB sequence inversions, CRC failures, framing errors, validation
+  rejects, firmware errors, and tail USB drops were zero. Active directed-pair
+  counts were 855-861. Two isolated `m>0` losses occurred, plus one
+  capture-boundary cycle; the last 100 summaries contained exactly the 200
+  expected node 3/4 `m=0` misses. Gateway callback maximum was 1,892 us.
+- Post-review binaries add generation-bound TX timeouts, stale-TXFRS rejection,
+  atomic USB-drop claiming, and strict RX-before-summary export ordering. A final
+  five-second smoke capture covered 146 summaries with valid ownership, all TX
+  confirmed, no CRC/framing/validation errors, and exactly the expected node 3/4
+  misses in the last 100 summaries.
+- A 3,000 us candidate reached 33.333 Hz with no delayed-start errors, but was
+  rejected: 11/1,003 summaries missed one `m>0` frame and four summaries had an
+  active-node `m=0` miss. Early RX rearm reduced this from 147 incomplete cycles,
+  but the remaining approximately 173 us timing margin was not reliable.
 
 ## Next executable checkpoint
 
-Gate H4 N=3 is hardware-validated. The final profile uses M=1, exactly three
-occupied 10,000 us superslots, 30,000 us cycles, 592-byte report payloads,
-625-byte frames, approximately 66,900 B/s gateway USB, and config hash `0xC8CF`.
-The full evidence and image hashes are in `firmware/radio/BRINGUP-NOTES.md`.
+N=5/M=2 is hardware-qualified with nodes 0-2 at 28.571 Hz. The next deployment
+checkpoint is identifying the FICR IDs of physical boards 4 and 5, completing
+roster positions 3 and 4, building their identity-bound images, and validating
+all eight received peer frames plus all 20 directed observations per cycle.
 
-The next checkpoint is per-board antenna-delay calibration and ranging
-validation. All current boards still use the explicit uncalibrated 16385 DTU
-bring-up value. Do not present their timestamps as accurate ranges. Beacon-v1
-cycle-summary behavior at the approximately 545-year u32 wrap boundary for
-non-power-of-two N also remains a protocol clarification item; ordinary wrapped
-ownership selection is already tested and does not stall.
+Per-board antenna-delay calibration and ranging validation remain required. All
+current boards still use the explicit uncalibrated 16385 DTU bring-up value; do
+not present their timestamps as accurate ranges. Beacon-v1 cycle-summary
+behavior at the approximately 545-year u32 wrap boundary for non-power-of-two N
+also remains a protocol clarification item; ordinary wrapped ownership selection
+is already tested and does not stall.

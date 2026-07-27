@@ -184,9 +184,22 @@ uint32_t heimdall_usb_drop_count_get(void)
 	return (uint32_t)atomic_get(&stream_drop_count);
 }
 
-void heimdall_usb_drop_count_ack(uint32_t count)
+uint32_t heimdall_usb_drop_count_take(void)
 {
-	atomic_sub(&stream_drop_count, (atomic_val_t)count);
+	return (uint32_t)atomic_set(&stream_drop_count, 0);
+}
+
+void heimdall_usb_drop_count_restore(uint32_t count)
+{
+	atomic_add(&stream_drop_count, (atomic_val_t)count);
+}
+
+void heimdall_usb_note_drop(void)
+{
+	atomic_inc(&stream_drop_count);
+#if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
+	atomic_set(&heimdall_drop_pending, 1);
+#endif
 }
 
 #if defined(CONFIG_PHASE1_USB_BULK_TX)

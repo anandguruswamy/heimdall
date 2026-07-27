@@ -94,14 +94,14 @@ bool heimdall_usb_emit_local_observation(uint32_t k,
 		subreport_length);
 }
 
-bool heimdall_usb_emit_tx_record(uint32_t k, uint64_t tx_timestamp,
+bool heimdall_usb_emit_tx_record(uint32_t k, uint8_t m, uint64_t tx_timestamp,
 				 uint16_t frame_length, bool confirmed,
 				 bool unsynchronized)
 {
 	uint8_t payload[13];
 
 	sys_put_le32(k, &payload[0]);
-	payload[4] = 0U;
+	payload[4] = m;
 	put_le40(&payload[5], tx_timestamp);
 	sys_put_le16(frame_length, &payload[10]);
 	payload[12] = confirmed ? BIT(0) : 0U;

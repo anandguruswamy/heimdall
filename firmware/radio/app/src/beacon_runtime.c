@@ -24,7 +24,9 @@
 #define FRAME_DATA_BYTES (HEIMDALL_FRAME_BYTES - 2U)
 #define SLOT_DTU ((uint64_t)(HEIMDALL_SLOT_DURATION_US / 100U) * 6389760ULL)
 #define BOOTSTRAP_LISTEN_MS 50U
-#define FALLBACK_PREP_LEAD_US (HEIMDALL_SLOT_DURATION_US / 2U)
+/* Start fallback preparation just after the prior slot's frame should end. */
+#define FALLBACK_PREP_LEAD_US (HEIMDALL_SLOT_DURATION_US - 1000U)
+#define FRAME_COMPLETION_BUDGET_US 1000U
 #define TX_COMPLETION_TIMEOUT_US (HEIMDALL_SLOT_DURATION_US + 2000U)
 #define EPOCH_EXPIRY_MS (((HEIMDALL_EVIDENCE_AGE_THRESHOLD + 2U) * HEIMDALL_CYCLE_US) / 1000U)
 #define CONFIG_MISMATCH_LIMIT 3U
@@ -33,11 +35,12 @@
 #define OBS_FLAG_CIR_VALID BIT(0)
 #define OBS_FLAG_CIR_TRUNCATED BIT(1)
 #define OBS_FLAG_FP_VALID BIT(2)
+#define GATEWAY_RX_EVENT_COUNT 16U
 
 BUILD_ASSERT(HEIMDALL_N_NODES >= 2U && HEIMDALL_N_NODES <= 8U,
 	     "the beacon runtime supports two through eight nodes");
-BUILD_ASSERT(HEIMDALL_M == 1U,
-	     "the runtime currently supports one frame per superslot");
+BUILD_ASSERT(HEIMDALL_M >= 1U && HEIMDALL_M <= 3U,
+	     "the beacon runtime supports one through three frames per superslot");
 BUILD_ASSERT(HEIMDALL_FRAME_HEADER_BYTES + HEIMDALL_FRAME_PAYLOAD_BYTES ==
 	     FRAME_DATA_BYTES);
 BUILD_ASSERT(HEIMDALL_SUBREPORT_BYTES <= HEIMDALL_FRAME_PAYLOAD_BYTES);
@@ -53,6 +56,9 @@ static struct {
 	bool have_rx_k;
 	bool have_tx_k;
 	uint8_t mac_seq;
+	uint8_t last_rx_m;
+	uint8_t last_tx_m;
+	uint8_t fallback_m;
 	uint8_t evidence_age;
 	uint8_t evidence_min_received;
 	bool have_cycle_evidence;
@@ -61,10 +67,17 @@ static struct {
 	uint32_t evidence_target_k;
 	uint32_t last_rx_k;
 	uint32_t last_tx_k;
+	uint32_t tx_generation;
 	uint64_t last_programmed_tx_timestamp;
 	uint32_t fallback_k;
 	uint64_t fallback_timestamp;
 	bool fallback_valid;
+	uint32_t tx_report_k;
+	uint32_t prepared_report_k;
+	uint8_t tx_report_evidence_age;
+	uint8_t tx_report_flags;
+	bool tx_report_valid;
+	bool prepared_report_valid;
 	uint32_t last_valid_uptime_ms;
 	uint8_t config_mismatch_streak;
 	uint8_t config_match_streak;
@@ -74,7 +87,6 @@ static uint8_t rx_frame[HEIMDALL_FRAME_BYTES];
 static uint8_t tx_frame[FRAME_DATA_BYTES];
 static uint8_t cir_raw[HEIMDALL_CIR_TAPS * 6U];
 static int16_t cir_iq[2U * HEIMDALL_CIR_TAPS];
-static int16_t decoded_cir_iq[2U * HEIMDALL_CIR_TAPS];
 static uint8_t subreport_bytes[HEIMDALL_REPORT_NODE_SLOTS][HEIMDALL_SUBREPORT_BYTES];
 static uint32_t subreport_observed_k[HEIMDALL_REPORT_NODE_SLOTS];
 static const uint8_t *subreport_ptrs[HEIMDALL_REPORT_NODE_SLOTS];
@@ -82,8 +94,62 @@ static uint16_t subreport_lengths[HEIMDALL_REPORT_NODE_SLOTS];
 static struct heimdall_report report;
 static struct k_work_delayable bootstrap_work;
 static struct k_work_delayable watchdog_work;
-static struct k_work_delayable tx_timeout_work;
+struct tx_timeout_context {
+	struct k_work_delayable work;
+	uint32_t generation;
+};
+static struct tx_timeout_context tx_timeout_contexts[HEIMDALL_M];
 #if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
+enum gateway_event_type {
+	GATEWAY_EVENT_RX,
+	GATEWAY_EVENT_TX,
+	GATEWAY_EVENT_SUMMARY,
+	GATEWAY_EVENT_ERROR,
+	GATEWAY_EVENT_HELLO,
+	GATEWAY_EVENT_HEARTBEAT,
+};
+
+struct gateway_rx_event {
+	void *fifo_reserved;
+	enum gateway_event_type type;
+	bool unsynchronized;
+	uint64_t rx_timestamp;
+	uint32_t observation_k;
+	uint16_t frame_length;
+	uint16_t observation_length;
+	uint8_t rx_flags;
+	uint8_t frame[HEIMDALL_FRAME_BYTES];
+	uint8_t observation[HEIMDALL_SUBREPORT_BYTES];
+	union {
+		struct {
+			uint32_t k;
+			uint64_t timestamp;
+			uint16_t frame_length;
+			uint8_t m;
+			bool confirmed;
+		} tx;
+		struct {
+			struct heimdall_usb_cycle_summary value;
+			uint32_t drop_ack;
+		} summary;
+		struct {
+			uint16_t code;
+			uint16_t detail;
+			uint32_t k;
+		} error;
+		struct {
+			uint32_t cycles_completed;
+			uint8_t sync_state;
+			uint8_t evidence_age;
+		} heartbeat;
+		uint64_t hello_device_id;
+	};
+};
+
+K_MEM_SLAB_DEFINE(gateway_rx_event_slab, sizeof(struct gateway_rx_event),
+		  GATEWAY_RX_EVENT_COUNT, 4);
+K_FIFO_DEFINE(gateway_rx_event_fifo);
+
 static struct k_work_delayable gateway_status_work;
 static uint64_t gateway_device_id;
 static uint32_t cycle_callback_max_us;
@@ -96,6 +162,146 @@ static uint32_t summary_k_cycle_start;
 static bool summary_peer_received[HEIMDALL_REPORT_NODE_SLOTS];
 static bool gateway_emit_hello_next;
 static bool summary_cycle_active;
+
+static void gateway_export_thread(void *a, void *b, void *c)
+{
+	ARG_UNUSED(a);
+	ARG_UNUSED(b);
+	ARG_UNUSED(c);
+
+	while (true) {
+		struct gateway_rx_event *event = k_fifo_get(
+			&gateway_rx_event_fifo, K_FOREVER);
+
+		switch (event->type) {
+		case GATEWAY_EVENT_RX:
+			(void)heimdall_usb_emit_radio_frame(
+				event->rx_timestamp, event->rx_flags, event->frame,
+				event->frame_length, event->unsynchronized);
+			if (event->observation_length != 0U) {
+				(void)heimdall_usb_emit_local_observation(
+					event->observation_k, event->observation,
+					event->observation_length,
+					event->unsynchronized);
+			}
+			break;
+		case GATEWAY_EVENT_TX:
+			(void)heimdall_usb_emit_tx_record(
+				event->tx.k, event->tx.m, event->tx.timestamp,
+				event->tx.frame_length, event->tx.confirmed,
+				event->unsynchronized);
+			break;
+		case GATEWAY_EVENT_SUMMARY:
+			if (heimdall_usb_emit_cycle_summary(
+				    &event->summary.value, event->unsynchronized)) {
+				/* The count was atomically claimed when queued. */
+			} else {
+				heimdall_usb_drop_count_restore(
+					event->summary.drop_ack);
+			}
+			break;
+		case GATEWAY_EVENT_ERROR:
+			(void)heimdall_usb_emit_error(
+				event->error.code, event->error.detail,
+				event->error.k, event->unsynchronized);
+			break;
+		case GATEWAY_EVENT_HELLO:
+			(void)heimdall_usb_emit_hello(
+				event->hello_device_id, event->unsynchronized);
+			break;
+		case GATEWAY_EVENT_HEARTBEAT:
+			(void)heimdall_usb_emit_heartbeat(
+				event->heartbeat.cycles_completed,
+				event->heartbeat.sync_state,
+				event->heartbeat.evidence_age);
+			break;
+		}
+		k_mem_slab_free(&gateway_rx_event_slab, event);
+	}
+}
+
+K_THREAD_DEFINE(gateway_export_tid, 2048, gateway_export_thread,
+		NULL, NULL, NULL, 4, 0, 0);
+
+static struct gateway_rx_event *gateway_event_alloc(enum gateway_event_type type,
+						      bool unsynchronized)
+{
+	struct gateway_rx_event *event;
+
+	if (k_mem_slab_alloc(&gateway_rx_event_slab, (void **)&event,
+			     K_NO_WAIT) != 0) {
+		heimdall_usb_note_drop();
+		return NULL;
+	}
+	event->type = type;
+	event->unsynchronized = unsynchronized;
+	return event;
+}
+
+static void gateway_event_submit(struct gateway_rx_event *event)
+{
+	if (event != NULL) {
+		k_fifo_put(&gateway_rx_event_fifo, event);
+	}
+}
+
+static void gateway_queue_error(uint16_t code, uint16_t detail, uint32_t k,
+				bool unsynchronized)
+{
+	struct gateway_rx_event *event = gateway_event_alloc(
+		GATEWAY_EVENT_ERROR, unsynchronized);
+
+	if (event != NULL) {
+		event->error.code = code;
+		event->error.detail = detail;
+		event->error.k = k;
+		gateway_event_submit(event);
+	}
+}
+
+static void gateway_queue_tx(uint32_t k, uint8_t m, uint64_t timestamp,
+			     bool confirmed, bool unsynchronized)
+{
+	struct gateway_rx_event *event = gateway_event_alloc(
+		GATEWAY_EVENT_TX, unsynchronized);
+
+	if (event != NULL) {
+		event->tx.k = k;
+		event->tx.m = m;
+		event->tx.timestamp = timestamp;
+		event->tx.frame_length = HEIMDALL_FRAME_BYTES;
+		event->tx.confirmed = confirmed;
+		gateway_event_submit(event);
+	}
+}
+
+static void gateway_submit_rx(struct gateway_rx_event **event_ptr,
+			      bool *submitted, uint64_t rx_timestamp,
+			      uint8_t rx_flags, uint16_t captured_length,
+			      uint32_t observation_k,
+			      const uint8_t *observation,
+			      uint16_t observation_length,
+			      bool unsynchronized)
+{
+	struct gateway_rx_event *event = *event_ptr;
+
+	if (event == NULL) {
+		return;
+	}
+	event->type = GATEWAY_EVENT_RX;
+	event->rx_timestamp = rx_timestamp;
+	event->rx_flags = rx_flags;
+	event->frame_length = captured_length >= 2U ? captured_length - 2U : 0U;
+	event->unsynchronized = unsynchronized;
+	event->observation_length = observation_length;
+	if (observation_length != 0U) {
+		event->observation_k = observation_k;
+		memcpy(event->observation, observation, observation_length);
+	}
+	gateway_event_submit(event);
+	*event_ptr = NULL;
+	*submitted = true;
+}
 #endif
 
 static uint64_t timestamp40(const uint8_t timestamp[5])
@@ -135,36 +341,53 @@ static bool k_is_newer(uint32_t candidate, uint32_t previous)
 	return (int32_t)(candidate - previous) > 0;
 }
 
-static uint8_t slots_until_local_owner(uint32_t k)
+static uint8_t slots_until_local_owner(uint32_t k, uint8_t m)
 {
-	return heimdall_schedule_slots_until_owner(
-		k, CONFIG_HEIMDALL_NODE_ID, HEIMDALL_N_NODES);
+	return heimdall_schedule_frame_slots_until_owner(
+		k, m, CONFIG_HEIMDALL_NODE_ID, HEIMDALL_N_NODES, HEIMDALL_M);
 }
 
-static void schedule_fallback(uint32_t k, uint64_t timestamp,
+static void schedule_fallback(uint32_t k, uint8_t m, uint64_t timestamp,
 			      uint32_t delay_us)
 {
 	runtime.fallback_k = k;
+	runtime.fallback_m = m;
 	runtime.fallback_timestamp = timestamp;
 	runtime.fallback_valid = true;
 	(void)k_work_reschedule(&watchdog_work, K_USEC(delay_us));
 }
 
-static void schedule_next_owned_fallback(uint32_t prior_k,
-					 uint64_t prior_timestamp,
-					 uint32_t delay_us)
+static void schedule_after_frame(uint32_t prior_k, uint8_t prior_m,
+				 uint64_t prior_timestamp, uint32_t elapsed_us)
 {
-	uint8_t slots = slots_until_local_owner(prior_k);
+	uint32_t target_k;
+	uint8_t target_m;
+	uint8_t slots;
+	uint32_t delay_us;
 
-	schedule_fallback(prior_k + slots,
+	if (prior_m + 1U < HEIMDALL_M) {
+		target_k = prior_k;
+		target_m = prior_m + 1U;
+		slots = 1U;
+	} else {
+		slots = slots_until_local_owner(prior_k, prior_m);
+		target_k = prior_k + heimdall_schedule_slots_until_owner(
+			prior_k, CONFIG_HEIMDALL_NODE_ID, HEIMDALL_N_NODES);
+		target_m = 0U;
+	}
+	delay_us = slots * HEIMDALL_SLOT_DURATION_US;
+	delay_us = delay_us > elapsed_us + FALLBACK_PREP_LEAD_US ?
+		delay_us - elapsed_us - FALLBACK_PREP_LEAD_US : 0U;
+	schedule_fallback(target_k, target_m,
 		(prior_timestamp + slots * SLOT_DTU) & DWT_TIMESTAMP_MASK,
 		delay_us);
 }
 
 static void update_evidence(const struct heimdall_frame_header *header)
 {
-	uint8_t slots = slots_until_local_owner(header->k);
-	uint32_t target_k = header->k + slots;
+	uint8_t superslots = heimdall_schedule_slots_until_owner(
+		header->k, CONFIG_HEIMDALL_NODE_ID, HEIMDALL_N_NODES);
+	uint32_t target_k = header->k + superslots;
 
 	if (!runtime.evidence_target_valid || runtime.evidence_target_k != target_k) {
 		runtime.have_cycle_evidence = false;
@@ -193,6 +416,34 @@ static void prepare_transmit_evidence(uint32_t k)
 		   runtime.evidence_target_k != k) {
 		runtime.evidence_age = UINT8_MAX;
 	}
+}
+
+static int prepare_transmit_report(uint32_t k)
+{
+	int ret;
+
+	for (uint8_t peer = 0U; peer < HEIMDALL_N_NODES; ++peer) {
+		uint8_t delta = heimdall_schedule_round_delta(
+			CONFIG_HEIMDALL_NODE_ID, peer, HEIMDALL_N_NODES);
+
+		if (peer != CONFIG_HEIMDALL_NODE_ID &&
+		    subreport_ptrs[peer] != NULL &&
+		    subreport_observed_k[peer] != k - delta) {
+			subreport_ptrs[peer] = NULL;
+			subreport_lengths[peer] = 0U;
+		}
+	}
+	ret = heimdall_report_pack(&report, k, CONFIG_HEIMDALL_NODE_ID,
+				   HEIMDALL_N_NODES, subreport_ptrs,
+				   subreport_lengths);
+	if (ret != 0) {
+		heimdall_runtime_counters.report_assembly_failures++;
+		runtime.prepared_report_valid = false;
+		return ret;
+	}
+	runtime.prepared_report_k = k;
+	runtime.prepared_report_valid = true;
+	return 0;
 }
 
 static int32_t sign_extend_18(const uint8_t value[3])
@@ -262,8 +513,8 @@ static void gateway_begin_cycle(uint32_t k)
 }
 #endif
 
-static int build_and_schedule(uint32_t k, uint64_t desired_programmed_timestamp,
-			      bool watchdog)
+static int build_and_schedule(uint32_t k, uint8_t m,
+			      uint64_t desired_programmed_timestamp, bool watchdog)
 {
 	struct heimdall_frame_header header;
 	uint32_t delayed_time;
@@ -272,32 +523,25 @@ static int build_and_schedule(uint32_t k, uint64_t desired_programmed_timestamp,
 	uint64_t system_timestamp;
 	int ret;
 
-	prepare_transmit_evidence(k);
 	if (runtime.identity_collision || runtime.configuration_inhibited ||
 	    runtime.tx_armed ||
+	    m >= HEIMDALL_M ||
 	    heimdall_schedule_transmitter(k, HEIMDALL_N_NODES) !=
 		CONFIG_HEIMDALL_NODE_ID) {
 		return -EPERM;
 	}
+	if (m == 0U) {
+		prepare_transmit_evidence(k);
+	}
 	if (CONFIG_HEIMDALL_NODE_ID != HEIMDALL_MASTER_NODE_ID &&
-	    runtime.evidence_age > HEIMDALL_EVIDENCE_AGE_THRESHOLD) {
+	    (m == 0U ? runtime.evidence_age : runtime.tx_report_evidence_age) >
+		HEIMDALL_EVIDENCE_AGE_THRESHOLD) {
 #if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
-		(void)heimdall_usb_emit_error(0x0006U, runtime.evidence_age, k,
-					      !runtime.synchronized);
+		gateway_queue_error(0x0006U, runtime.evidence_age, k,
+				    !runtime.synchronized);
 #endif
 		return -EHOSTDOWN;
 	}
-	for (uint8_t peer = 0U; peer < HEIMDALL_N_NODES; ++peer) {
-		uint8_t delta = heimdall_schedule_round_delta(
-			CONFIG_HEIMDALL_NODE_ID, peer, HEIMDALL_N_NODES);
-
-		if (peer != CONFIG_HEIMDALL_NODE_ID && subreport_ptrs[peer] != NULL &&
-		    subreport_observed_k[peer] != k - delta) {
-			subreport_ptrs[peer] = NULL;
-			subreport_lengths[peer] = 0U;
-		}
-	}
-
 	raw_target = (desired_programmed_timestamp -
 		      CONFIG_HEIMDALL_TX_ANTENNA_DELAY_DTU) &
 		     DWT_TIMESTAMP_MASK;
@@ -305,12 +549,21 @@ static int build_and_schedule(uint32_t k, uint64_t desired_programmed_timestamp,
 	programmed = ((((uint64_t)(delayed_time & 0xFFFFFFFEUL)) << 8) +
 		      CONFIG_HEIMDALL_TX_ANTENNA_DELAY_DTU) & DWT_TIMESTAMP_MASK;
 
-	ret = heimdall_report_pack(&report, k, CONFIG_HEIMDALL_NODE_ID,
-				   HEIMDALL_N_NODES, subreport_ptrs,
-				   subreport_lengths);
-	if (ret != 0) {
-		heimdall_runtime_counters.report_assembly_failures++;
-		return ret;
+	if (m == 0U) {
+		if (!runtime.prepared_report_valid || runtime.prepared_report_k != k) {
+			ret = prepare_transmit_report(k);
+			if (ret != 0) {
+				return ret;
+			}
+		}
+		runtime.tx_report_k = k;
+		runtime.tx_report_evidence_age =
+			CONFIG_HEIMDALL_NODE_ID == HEIMDALL_MASTER_NODE_ID ?
+			0U : runtime.evidence_age;
+		runtime.tx_report_flags = runtime.synchronized ? 0U : FRAME_FLAG_BOOTSTRAP;
+		runtime.tx_report_valid = true;
+	} else if (!runtime.tx_report_valid || runtime.tx_report_k != k) {
+		return -ENODATA;
 	}
 
 	header = (struct heimdall_frame_header) {
@@ -319,24 +572,24 @@ static int build_and_schedule(uint32_t k, uint64_t desired_programmed_timestamp,
 		.src_addr = CONFIG_HEIMDALL_NODE_ID,
 		.protocol_version = HEIMDALL_PROTOCOL_VERSION,
 		.frame_type = 0U,
-		.m = 0U,
+		.m = m,
 		.k = k,
 		.n_nodes = HEIMDALL_N_NODES,
 		.slots_per_superslot = HEIMDALL_M,
 		.config_hash = HEIMDALL_CONFIG_HASH,
 		.tx_timestamp = programmed,
-		.subreport_count = report.subreport_count,
+		.subreport_count = heimdall_report_frame_subreport_count(
+			&report, m, HEIMDALL_FRAME_PAYLOAD_BYTES),
 		.pooled_total_bytes = report.total_bytes,
 		.peer_observed_bitmap = report.peer_observed_bitmap,
-		.evidence_age = CONFIG_HEIMDALL_NODE_ID == HEIMDALL_MASTER_NODE_ID ?
-			0U : runtime.evidence_age,
-		.flags = runtime.synchronized ? 0U : FRAME_FLAG_BOOTSTRAP,
+		.evidence_age = runtime.tx_report_evidence_age,
+		.flags = runtime.tx_report_flags,
 	};
 
 	ret = heimdall_frame_header_encode(&header, tx_frame, sizeof(tx_frame));
 	if (ret == 0) {
 		ret = heimdall_report_copy_frame(
-			&report, 0U, HEIMDALL_FRAME_PAYLOAD_BYTES,
+			&report, m, HEIMDALL_FRAME_PAYLOAD_BYTES,
 			&tx_frame[HEIMDALL_FRAME_HEADER_BYTES],
 			HEIMDALL_FRAME_PAYLOAD_BYTES);
 	}
@@ -365,21 +618,26 @@ static int build_and_schedule(uint32_t k, uint64_t desired_programmed_timestamp,
 	if (dwt_starttx(DWT_START_TX_DELAYED) == DWT_ERROR) {
 		heimdall_runtime_counters.tx_start_late++;
 #if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
-		(void)heimdall_usb_emit_error(0x0007U, 0U, k,
-					      !runtime.synchronized);
+		gateway_queue_error(0x0007U, m, k, !runtime.synchronized);
 #endif
 		rearm_rx();
 		return -ETIME;
 	}
 
-	memset(subreport_ptrs, 0, sizeof(subreport_ptrs));
-	memset(subreport_lengths, 0, sizeof(subreport_lengths));
+	if (m == 0U) {
+		memset(subreport_ptrs, 0, sizeof(subreport_ptrs));
+		memset(subreport_lengths, 0, sizeof(subreport_lengths));
+		runtime.prepared_report_valid = false;
+	}
 	runtime.tx_armed = true;
 	runtime.fallback_valid = false;
 	runtime.have_tx_k = true;
 	runtime.last_tx_k = k;
+	runtime.last_tx_m = m;
+	runtime.tx_generation++;
+	tx_timeout_contexts[m].generation = runtime.tx_generation;
 	runtime.last_programmed_tx_timestamp = programmed;
-	(void)k_work_reschedule(&tx_timeout_work,
+	(void)k_work_reschedule(&tx_timeout_contexts[m].work,
 				 K_USEC(TX_COMPLETION_TIMEOUT_US));
 	heimdall_runtime_counters.last_tx_k = k;
 	heimdall_runtime_counters.last_programmed_tx_timestamp = programmed;
@@ -387,20 +645,24 @@ static int build_and_schedule(uint32_t k, uint64_t desired_programmed_timestamp,
 		heimdall_runtime_counters.watchdog_transmissions++;
 	}
 #if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
-	if (summary_cycle_active) {
-		cycle_summary_handler(NULL);
+	if (m == 0U) {
+		if (summary_cycle_active) {
+			cycle_summary_handler(NULL);
+		}
+		gateway_begin_cycle(k);
 	}
-	gateway_begin_cycle(k);
 #endif
-	runtime.have_cycle_evidence = false;
-	runtime.master_heard_this_cycle = false;
-	runtime.evidence_min_received = UINT8_MAX;
-	runtime.evidence_target_valid = false;
+	if (m == 0U) {
+		runtime.have_cycle_evidence = false;
+		runtime.master_heard_this_cycle = false;
+		runtime.evidence_min_received = UINT8_MAX;
+		runtime.evidence_target_valid = false;
+	}
 	update_counter_state();
 	return 0;
 }
 
-static int validate_frame_header(uint16_t length,
+static int validate_frame_header(const uint8_t *frame, uint16_t length,
 				 struct heimdall_frame_header *header,
 				 uint8_t *usb_rx_flags)
 {
@@ -408,13 +670,13 @@ static int validate_frame_header(uint16_t length,
 		heimdall_runtime_counters.reject_length++;
 		return -EMSGSIZE;
 	}
-	if (rx_frame[9] != HEIMDALL_PROTOCOL_VERSION) {
+	if (frame[9] != HEIMDALL_PROTOCOL_VERSION) {
 		*usb_rx_flags |= BIT(2);
 	}
-	if (heimdall_frame_header_decode(header, rx_frame,
+	if (heimdall_frame_header_decode(header, frame,
 					 FRAME_DATA_BYTES) != 0 ||
-	    sys_get_le16(&rx_frame[7]) != header->src_addr ||
-	    header->frame_type != 0U || header->m != 0U ||
+	    sys_get_le16(&frame[7]) != header->src_addr ||
+	    header->frame_type != 0U || header->m >= HEIMDALL_M ||
 	    (header->flags & ~FRAME_FLAG_BOOTSTRAP) != 0U) {
 		heimdall_runtime_counters.reject_header++;
 		return -EBADMSG;
@@ -425,7 +687,9 @@ static int validate_frame_header(uint16_t length,
 		heimdall_runtime_counters.reject_schedule++;
 		return -ERANGE;
 	}
-	if (runtime.have_rx_k && !k_is_newer(header->k, runtime.last_rx_k) &&
+	if (runtime.have_rx_k &&
+	    !(k_is_newer(header->k, runtime.last_rx_k) ||
+	      (header->k == runtime.last_rx_k && header->m > runtime.last_rx_m)) &&
 	    (uint32_t)(k_uptime_get_32() - runtime.last_valid_uptime_ms) <
 		EPOCH_EXPIRY_MS) {
 		heimdall_runtime_counters.reject_stale++;
@@ -450,8 +714,8 @@ static int validate_frame_header(uint16_t length,
 			runtime.configuration_inhibited = true;
 			heimdall_runtime_counters.configuration_inhibitions++;
 #if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
-			(void)heimdall_usb_emit_error(0x0005U, header->config_hash,
-						      header->k, !runtime.synchronized);
+			gateway_queue_error(0x0005U, header->config_hash,
+					    header->k, !runtime.synchronized);
 #endif
 		}
 		return -EPROTO;
@@ -467,91 +731,23 @@ static int validate_frame_header(uint16_t length,
 		runtime.identity_collision = true;
 		heimdall_runtime_counters.identity_collisions++;
 #if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
-		(void)heimdall_usb_emit_error(0x0004U, header->src_addr,
-					      header->k, !runtime.synchronized);
+		gateway_queue_error(0x0004U, header->src_addr, header->k,
+				    !runtime.synchronized);
 #endif
 		return -EADDRINUSE;
 	}
+	if (header->subreport_count > HEIMDALL_N_NODES - 1U ||
+	    header->pooled_total_bytes > (HEIMDALL_N_NODES - 1U) *
+		HEIMDALL_SUBREPORT_BYTES ||
+	    (header->peer_observed_bitmap & ~((1U << HEIMDALL_N_NODES) - 1U)) != 0U ||
+	    (header->peer_observed_bitmap & BIT(header->src_addr)) != 0U ||
+	    ((header->pooled_total_bytes == 0U) !=
+	     (header->peer_observed_bitmap == 0U))) {
+		heimdall_runtime_counters.reject_subreport++;
+		return -EBADMSG;
+	}
 	*usb_rx_flags |= BIT(0);
 	return 0;
-}
-
-static void validate_relayed_subreport(const struct heimdall_frame_header *header)
-{
-	struct heimdall_subreport decoded;
-	uint16_t offset = 0U;
-	uint8_t order_cursor = 0U;
-	uint8_t valid_bitmap = (uint8_t)((1U << HEIMDALL_N_NODES) - 1U);
-
-	if (header->pooled_total_bytes == 0U) {
-		if (header->subreport_count != 0U ||
-		    header->peer_observed_bitmap != 0U) {
-			heimdall_runtime_counters.reject_subreport++;
-		}
-		return;
-	}
-	if (header->subreport_count == 0U ||
-	    header->subreport_count > HEIMDALL_N_NODES - 1U ||
-	    header->pooled_total_bytes > HEIMDALL_FRAME_PAYLOAD_BYTES ||
-	    header->pooled_total_bytes >
-		header->subreport_count * HEIMDALL_SUBREPORT_BYTES ||
-	    (header->peer_observed_bitmap & ~valid_bitmap) != 0U ||
-	    (header->peer_observed_bitmap & BIT(header->src_addr)) != 0U ||
-	    __builtin_popcount((unsigned int)header->peer_observed_bitmap) !=
-		header->subreport_count) {
-		heimdall_runtime_counters.reject_subreport++;
-		return;
-	}
-
-	for (uint8_t i = 0U; i < header->subreport_count; ++i) {
-		const uint8_t *raw = &rx_frame[HEIMDALL_FRAME_HEADER_BYTES + offset];
-		uint16_t length;
-		uint8_t expected_node = UINT8_MAX;
-
-		if (header->pooled_total_bytes - offset < HEIMDALL_SUBREPORT_FIXED_BYTES ||
-		    raw[35] == 0U || raw[35] > HEIMDALL_CIR_TAPS) {
-			heimdall_runtime_counters.reject_subreport++;
-			return;
-		}
-		length = HEIMDALL_SUBREPORT_FIXED_BYTES + 4U * raw[35];
-		if (offset + length > header->pooled_total_bytes) {
-			heimdall_runtime_counters.reject_subreport++;
-			return;
-		}
-		if (sys_get_le32(&raw[length - 4U]) !=
-		    heimdall_crc32(raw, length - 4U)) {
-			heimdall_runtime_counters.reject_subreport++;
-			heimdall_runtime_counters.subreport_crc_failures++;
-			return;
-		}
-		if (heimdall_subreport_decode(&decoded, decoded_cir_iq,
-			ARRAY_SIZE(decoded_cir_iq), raw, length) != 0) {
-			heimdall_runtime_counters.reject_subreport++;
-			return;
-		}
-		while (order_cursor < HEIMDALL_N_NODES - 1U) {
-			uint8_t candidate = heimdall_schedule_order(
-				header->k, header->src_addr, HEIMDALL_N_NODES,
-				order_cursor++);
-
-			if ((header->peer_observed_bitmap & BIT(candidate)) != 0U) {
-				expected_node = candidate;
-				break;
-			}
-		}
-		if (decoded.observed_node_id != expected_node ||
-		    decoded.observed_m != 0U ||
-		    decoded.round_delta != heimdall_schedule_round_delta(
-			    header->src_addr, decoded.observed_node_id,
-			    HEIMDALL_N_NODES)) {
-			heimdall_runtime_counters.reject_subreport++;
-			return;
-		}
-		offset += length;
-	}
-	if (offset != header->pooled_total_bytes) {
-		heimdall_runtime_counters.reject_subreport++;
-	}
 }
 
 static int make_observation(const struct heimdall_frame_header *header,
@@ -640,43 +836,43 @@ static void rx_ok_cb(const dwt_cb_data_t *cb_data)
 	uint32_t elapsed;
 	uint8_t slots_to_tx;
 	uint16_t captured_length = MIN(cb_data->datalength, sizeof(rx_frame));
-	uint16_t frame_body_length;
 	uint16_t observation_length = 0U;
 	uint8_t usb_rx_flags = 0U;
+	uint8_t *frame_data = rx_frame;
 	int validation_result;
-	int observation_result;
+	int observation_result = -ENODATA;
 #if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
+	struct gateway_rx_event *gateway_event = NULL;
 	bool gateway_cycle_started = false;
+	bool gateway_event_submitted = false;
+
+	if (k_mem_slab_alloc(&gateway_rx_event_slab,
+			     (void **)&gateway_event, K_NO_WAIT) == 0) {
+		frame_data = gateway_event->frame;
+	}
 #endif
 
 	heimdall_runtime_counters.rx_frames++;
-	dwt_readrxdata(rx_frame, captured_length, 0U);
+	dwt_readrxdata(frame_data, captured_length, 0U);
 	dwt_readrxtimestamp(rx_timestamp_bytes, DWT_IP_M);
 	rx_timestamp = timestamp40(rx_timestamp_bytes);
 	if (cb_data->datalength > sizeof(rx_frame)) {
 		usb_rx_flags |= BIT(3);
 #if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
-		(void)heimdall_usb_emit_error(0x0008U, cb_data->datalength, 0U,
-					      !runtime.synchronized);
+		gateway_queue_error(0x0008U, cb_data->datalength, 0U,
+				    !runtime.synchronized);
 #endif
 	}
-	validation_result = validate_frame_header(cb_data->datalength, &header,
+	validation_result = validate_frame_header(frame_data, cb_data->datalength, &header,
 						  &usb_rx_flags);
 	if (validation_result != 0) {
-#if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
-		frame_body_length = captured_length >= 2U ? captured_length - 2U : 0U;
-		(void)heimdall_usb_emit_radio_frame(
-			rx_timestamp, usb_rx_flags, rx_frame, frame_body_length,
-			!runtime.synchronized);
-#else
-		ARG_UNUSED(frame_body_length);
-#endif
 		rearm_rx();
 		goto out;
 	}
 	heimdall_runtime_counters.rx_validated++;
 	runtime.have_rx_k = true;
 	runtime.last_rx_k = header.k;
+	runtime.last_rx_m = header.m;
 	runtime.last_valid_uptime_ms = k_uptime_get_32();
 	runtime.synchronized = true;
 	update_evidence(&header);
@@ -685,20 +881,36 @@ static void rx_ok_cb(const dwt_cb_data_t *cb_data)
 	heimdall_runtime_counters.peer_adoptions++;
 	(void)k_work_cancel_delayable(&bootstrap_work);
 	update_counter_state();
-	validate_relayed_subreport(&header);
-	observation_result = make_observation(&header, rx_timestamp,
-					      cb_data->rx_flags);
+	observation_result = header.m == 0U ?
+		make_observation(&header, rx_timestamp, cb_data->rx_flags) : -ENODATA;
 	if (observation_result == 0) {
 		observation_length = subreport_lengths[header.src_addr];
 	}
 #if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
-	summary_peer_received[header.src_addr] = true;
+	if (header.m == 0U) {
+		summary_peer_received[header.src_addr] = true;
+	}
 #endif
 
-	slots_to_tx = slots_until_local_owner(header.k);
-	next_k = header.k + slots_to_tx;
+	slots_to_tx = slots_until_local_owner(header.k, header.m);
+	next_k = header.k + heimdall_schedule_slots_until_owner(
+		header.k, CONFIG_HEIMDALL_NODE_ID, HEIMDALL_N_NODES);
+	if (slots_to_tx > 1U) {
+		rearm_rx();
+	}
+	if (header.m == 0U || !runtime.prepared_report_valid ||
+	    runtime.prepared_report_k != next_k) {
+		(void)prepare_transmit_report(next_k);
+	}
 	next_timestamp = (rx_timestamp + slots_to_tx * SLOT_DTU) &
 		DWT_TIMESTAMP_MASK;
+#if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
+	gateway_submit_rx(&gateway_event, &gateway_event_submitted,
+		rx_timestamp, usb_rx_flags, captured_length,
+		observation_length != 0U ? header.k : 0U,
+		observation_length != 0U ? subreport_bytes[header.src_addr] : NULL,
+		observation_length, !runtime.synchronized);
+#endif
 	if (slots_to_tx == 1U) {
 		int schedule_result;
 
@@ -711,35 +923,45 @@ static void rx_ok_cb(const dwt_cb_data_t *cb_data)
 		}
 #endif
 		(void)k_work_cancel_delayable(&watchdog_work);
-		schedule_result = build_and_schedule(next_k, next_timestamp, false);
+		schedule_result = build_and_schedule(next_k, 0U, next_timestamp, false);
 		if (schedule_result != 0) {
 			rearm_rx();
+			if (schedule_result == -ETIME) {
+				schedule_after_frame(next_k, 0U, next_timestamp, 0U);
+			}
 		}
 #if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
 		gateway_cycle_started = schedule_result == 0;
 #endif
 	} else {
-		schedule_fallback(next_k, next_timestamp,
-			slots_to_tx * HEIMDALL_SLOT_DURATION_US -
-			FALLBACK_PREP_LEAD_US);
-		rearm_rx();
+		uint32_t partial_elapsed = k_cyc_to_us_floor32(
+			k_cycle_get_32() - callback_start);
+		uint32_t fallback_window =
+			slots_to_tx * HEIMDALL_SLOT_DURATION_US;
+		uint32_t consumed = FALLBACK_PREP_LEAD_US +
+			FRAME_COMPLETION_BUDGET_US + partial_elapsed;
+
+		schedule_fallback(next_k, 0U, next_timestamp,
+			fallback_window > consumed ? fallback_window - consumed : 0U);
 	}
-#if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
-	frame_body_length = captured_length - 2U;
-	(void)heimdall_usb_emit_radio_frame(rx_timestamp, usb_rx_flags, rx_frame,
-					   frame_body_length, !runtime.synchronized);
-	if (observation_result == 0) {
-		(void)heimdall_usb_emit_local_observation(
-			header.k, subreport_bytes[header.src_addr],
-			observation_length,
-			!runtime.synchronized);
-	}
-#else
+#if !defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
 	ARG_UNUSED(observation_result);
 #endif
 out:
+#if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
+	gateway_submit_rx(&gateway_event, &gateway_event_submitted,
+		rx_timestamp, usb_rx_flags, captured_length,
+		observation_length != 0U ? header.k : 0U,
+		observation_length != 0U ? subreport_bytes[header.src_addr] : NULL,
+		observation_length, !runtime.synchronized);
+	if (!gateway_event_submitted) {
+		heimdall_usb_note_drop();
+		if (observation_length != 0U) {
+			heimdall_usb_note_drop();
+		}
+	}
+#endif
 	elapsed = k_cyc_to_us_floor32(k_cycle_get_32() - callback_start);
-
 	if (elapsed > heimdall_runtime_counters.callback_max_us) {
 		heimdall_runtime_counters.callback_max_us = elapsed;
 	}
@@ -766,9 +988,15 @@ static void tx_done_cb(const dwt_cb_data_t *cb_data)
 {
 	uint8_t timestamp[5];
 	int64_t error;
+	int next_result = -ENODATA;
 
 	ARG_UNUSED(cb_data);
-	(void)k_work_cancel_delayable(&tx_timeout_work);
+	/* A timeout may have won the boundary race while TXFRS was pending. */
+	if (!runtime.tx_armed) {
+		return;
+	}
+	(void)k_work_cancel_delayable(
+		&tx_timeout_contexts[runtime.last_tx_m].work);
 	dwt_readtxtimestamp(timestamp);
 	error = timestamp40_diff(timestamp40(timestamp),
 				 runtime.last_programmed_tx_timestamp);
@@ -779,38 +1007,53 @@ static void tx_done_cb(const dwt_cb_data_t *cb_data)
 	}
 	runtime.tx_armed = false;
 	update_counter_state();
-	rearm_rx();
 #if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
-	(void)heimdall_usb_emit_tx_record(runtime.last_tx_k,
-		runtime.last_programmed_tx_timestamp, HEIMDALL_FRAME_BYTES, true,
-		!runtime.synchronized);
+	gateway_queue_tx(runtime.last_tx_k, runtime.last_tx_m,
+		runtime.last_programmed_tx_timestamp, true, !runtime.synchronized);
 #endif
-	schedule_next_owned_fallback(runtime.last_tx_k,
-		runtime.last_programmed_tx_timestamp,
-		slots_until_local_owner(runtime.last_tx_k) *
-			HEIMDALL_SLOT_DURATION_US - FALLBACK_PREP_LEAD_US);
+	if (runtime.last_tx_m + 1U < HEIMDALL_M) {
+		next_result = build_and_schedule(
+			runtime.last_tx_k, runtime.last_tx_m + 1U,
+			(runtime.last_programmed_tx_timestamp + SLOT_DTU) &
+				DWT_TIMESTAMP_MASK, false);
+	}
+	if (next_result != 0) {
+		if (runtime.last_tx_m + 1U >= HEIMDALL_M) {
+			runtime.tx_report_valid = false;
+		}
+		rearm_rx();
+		schedule_after_frame(runtime.last_tx_k, runtime.last_tx_m,
+			runtime.last_programmed_tx_timestamp, 0U);
+	}
 }
 
 static void tx_timeout_handler(struct k_work *work)
 {
-	ARG_UNUSED(work);
-	if (!runtime.tx_armed) {
+	struct k_work_delayable *delayable = k_work_delayable_from_work(work);
+	struct tx_timeout_context *context = CONTAINER_OF(
+		delayable, struct tx_timeout_context, work);
+	uint32_t k;
+	uint64_t timestamp;
+	uint8_t m;
+	unsigned int key = irq_lock();
+
+	if (!runtime.tx_armed || context->generation != runtime.tx_generation) {
+		irq_unlock(key);
 		return;
 	}
 	dwt_forcetrxoff();
 	runtime.tx_armed = false;
+	k = runtime.last_tx_k;
+	m = runtime.last_tx_m;
+	timestamp = runtime.last_programmed_tx_timestamp;
+	irq_unlock(key);
 	heimdall_runtime_counters.tx_timeout_recoveries++;
 	update_counter_state();
 	rearm_rx();
 #if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
-	(void)heimdall_usb_emit_tx_record(runtime.last_tx_k,
-		runtime.last_programmed_tx_timestamp, HEIMDALL_FRAME_BYTES, false,
-		!runtime.synchronized);
+	gateway_queue_tx(k, m, timestamp, false, !runtime.synchronized);
 #endif
-	schedule_next_owned_fallback(runtime.last_tx_k,
-		runtime.last_programmed_tx_timestamp,
-		MAX(0U, slots_until_local_owner(runtime.last_tx_k) *
-			HEIMDALL_SLOT_DURATION_US - TX_COMPLETION_TIMEOUT_US));
+	schedule_after_frame(k, m, timestamp, TX_COMPLETION_TIMEOUT_US);
 }
 
 #if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
@@ -821,13 +1064,25 @@ static void gateway_status_handler(struct k_work *work)
 
 	ARG_UNUSED(work);
 	if (gateway_emit_hello_next) {
-		(void)heimdall_usb_emit_hello(gateway_device_id,
-					      !runtime.synchronized);
+		struct gateway_rx_event *hello = gateway_event_alloc(
+			GATEWAY_EVENT_HELLO, !runtime.synchronized);
+
+		if (hello != NULL) {
+			hello->hello_device_id = gateway_device_id;
+			gateway_event_submit(hello);
+		}
 	}
 	gateway_emit_hello_next = !gateway_emit_hello_next;
-	(void)heimdall_usb_emit_heartbeat(
-		heimdall_runtime_counters.tx_completed, sync_state,
-		runtime.evidence_age);
+	struct gateway_rx_event *heartbeat = gateway_event_alloc(
+		GATEWAY_EVENT_HEARTBEAT, sync_state != 1U);
+
+	if (heartbeat != NULL) {
+		heartbeat->heartbeat.cycles_completed =
+			heimdall_runtime_counters.tx_completed;
+		heartbeat->heartbeat.sync_state = sync_state;
+		heartbeat->heartbeat.evidence_age = runtime.evidence_age;
+		gateway_event_submit(heartbeat);
+	}
 	(void)k_work_reschedule(&gateway_status_work, K_MSEC(500));
 }
 
@@ -837,7 +1092,7 @@ static void cycle_summary_handler(struct k_work *work)
 	uint32_t validation_rejects = validation_reject_total();
 	uint32_t usb_queue_drops;
 	uint16_t received;
-	bool queued;
+	struct gateway_rx_event *event;
 
 	ARG_UNUSED(work);
 	summary.k_cycle_start = summary_k_cycle_start;
@@ -857,9 +1112,6 @@ static void cycle_summary_handler(struct k_work *work)
 	summary.subreport_crc_failures = saturating_delta(
 		heimdall_runtime_counters.subreport_crc_failures,
 		summary_subreport_crc_failures, &summary.flags);
-	usb_queue_drops = heimdall_usb_drop_count_get();
-	summary.usb_queue_drops = saturating_delta(
-		usb_queue_drops, 0U, &summary.flags);
 	summary.rx_callback_max_us = MIN(cycle_callback_max_us, UINT16_MAX);
 	if (cycle_callback_max_us > UINT16_MAX) {
 		summary.flags |= BIT(0);
@@ -871,9 +1123,14 @@ static void cycle_summary_handler(struct k_work *work)
 		}
 	}
 	summary.evidence_age = runtime.evidence_age;
-	queued = heimdall_usb_emit_cycle_summary(&summary, !runtime.synchronized);
-	if (queued) {
-		heimdall_usb_drop_count_ack(usb_queue_drops);
+	event = gateway_event_alloc(GATEWAY_EVENT_SUMMARY, !runtime.synchronized);
+	if (event != NULL) {
+		usb_queue_drops = heimdall_usb_drop_count_take();
+		summary.usb_queue_drops = saturating_delta(
+			usb_queue_drops, 0U, &summary.flags);
+		event->summary.value = summary;
+		event->summary.drop_ack = usb_queue_drops;
+		gateway_event_submit(event);
 	}
 	summary_rx_validated = heimdall_runtime_counters.rx_validated;
 	summary_rx_fcs_errors = heimdall_runtime_counters.rx_fcs_errors;
@@ -904,7 +1161,7 @@ static void bootstrap_handler(struct k_work *work)
 		return;
 	}
 	target = (read_system_timestamp40() + SLOT_DTU) & DWT_TIMESTAMP_MASK;
-	if (build_and_schedule(0U, target, false) == 0) {
+	if (build_and_schedule(0U, 0U, target, false) == 0) {
 		heimdall_runtime_counters.bootstrap_transmissions++;
 	} else {
 		(void)k_work_reschedule(&bootstrap_work,
@@ -915,6 +1172,7 @@ static void bootstrap_handler(struct k_work *work)
 static void watchdog_handler(struct k_work *work)
 {
 	uint32_t attempted_k;
+	uint8_t attempted_m;
 	uint64_t attempted_timestamp;
 	int ret;
 
@@ -923,17 +1181,14 @@ static void watchdog_handler(struct k_work *work)
 		return;
 	}
 	attempted_k = runtime.fallback_k;
+	attempted_m = runtime.fallback_m;
 	attempted_timestamp = runtime.fallback_timestamp;
-	ret = build_and_schedule(attempted_k, attempted_timestamp, true);
+	ret = build_and_schedule(attempted_k, attempted_m, attempted_timestamp, true);
 	if (ret != 0) {
 		rearm_rx();
 	}
 	if (ret == -ETIME) {
-		uint8_t slots = slots_until_local_owner(attempted_k);
-
-		schedule_next_owned_fallback(attempted_k, attempted_timestamp,
-			slots * HEIMDALL_SLOT_DURATION_US -
-			FALLBACK_PREP_LEAD_US);
+		schedule_after_frame(attempted_k, attempted_m, attempted_timestamp, 0U);
 	}
 }
 
@@ -963,8 +1218,7 @@ int heimdall_beacon_runtime_run(void)
 		       CONFIG_HEIMDALL_EXPECTED_DEVICE_ID_HIGH,
 		       CONFIG_HEIMDALL_EXPECTED_DEVICE_ID_LOW);
 #if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
-		(void)heimdall_usb_emit_error(0x0002U, CONFIG_HEIMDALL_NODE_ID, 0U,
-					      true);
+		gateway_queue_error(0x0002U, CONFIG_HEIMDALL_NODE_ID, 0U, true);
 #endif
 		return -EACCES;
 	}
@@ -983,7 +1237,10 @@ int heimdall_beacon_runtime_run(void)
 	update_counter_state();
 	k_work_init_delayable(&bootstrap_work, bootstrap_handler);
 	k_work_init_delayable(&watchdog_work, watchdog_handler);
-	k_work_init_delayable(&tx_timeout_work, tx_timeout_handler);
+	for (uint8_t m = 0U; m < HEIMDALL_M; ++m) {
+		k_work_init_delayable(&tx_timeout_contexts[m].work,
+				      tx_timeout_handler);
+	}
 #if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
 	k_work_init_delayable(&gateway_status_work, gateway_status_handler);
 	gateway_emit_hello_next = true;
@@ -1001,7 +1258,7 @@ int heimdall_beacon_runtime_run(void)
 	if (dw3000_hw_init_interrupt() != 0) {
 		printk("heimdall: IRQ init failed\n");
 #if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
-		(void)heimdall_usb_emit_error(0x0003U, 0U, 0U, true);
+		gateway_queue_error(0x0003U, 0U, 0U, true);
 #endif
 		return -EIO;
 	}

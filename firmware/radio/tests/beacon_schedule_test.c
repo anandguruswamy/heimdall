@@ -38,5 +38,11 @@ int main(void)
 
 	assert(heimdall_schedule_slots_until_owner(0U, 3U, 3U) == 0U);
 	assert(heimdall_schedule_slots_until_owner(0U, 0U, 0U) == 0U);
+
+	/* N=5/M=2 derives local m=0 timing from either peer fragment. */
+	assert(heimdall_schedule_frame_slots_until_owner(0U, 0U, 1U, 5U, 2U) == 2U);
+	assert(heimdall_schedule_frame_slots_until_owner(0U, 1U, 1U, 5U, 2U) == 1U);
+	assert(heimdall_schedule_frame_slots_until_owner(2U, 1U, 0U, 5U, 2U) == 5U);
+	assert(heimdall_schedule_frame_slots_until_owner(0U, 2U, 1U, 5U, 2U) == 0U);
 	return 0;
 }

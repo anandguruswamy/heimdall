@@ -29,7 +29,7 @@ bool heimdall_usb_emit_local_observation(uint32_t k,
 					 const uint8_t *subreport,
 					 uint16_t subreport_length,
 					 bool unsynchronized);
-bool heimdall_usb_emit_tx_record(uint32_t k, uint64_t tx_timestamp,
+bool heimdall_usb_emit_tx_record(uint32_t k, uint8_t m, uint64_t tx_timestamp,
 				 uint16_t frame_length, bool confirmed,
 				 bool unsynchronized);
 bool heimdall_usb_emit_cycle_summary(

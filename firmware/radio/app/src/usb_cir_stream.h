@@ -16,4 +16,6 @@ bool heimdall_usb_enqueue_record(uint8_t type, uint8_t flags,
 				 const void *prefix, uint16_t prefix_length,
 				 const void *body, uint16_t body_length);
 uint32_t heimdall_usb_drop_count_get(void);
-void heimdall_usb_drop_count_ack(uint32_t count);
+uint32_t heimdall_usb_drop_count_take(void);
+void heimdall_usb_drop_count_restore(uint32_t count);
+void heimdall_usb_note_drop(void);

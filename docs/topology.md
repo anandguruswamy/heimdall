@@ -1,26 +1,30 @@
 # Heimdall Topology
 
-## Initial topology
+## Current topology
 
 Beacon v1 uses exactly N occupied superslots with no empty or reserved
-superslots. The validated N=2 deployment uses 10,000 us superslots and a
-20,000 us cycle, giving each node a 50 Hz transmit opportunity.
+superslots. The current N=5 profile uses two 3,500 us slots per superslot and a
+35,000 us cycle, giving each node a 28.571 Hz transmit opportunity. Nodes 0-2
+are hardware-qualified; nodes 3-4 are intentionally absent until their physical
+boards and FICR identities are added to the roster.
 
 ```text
-slot 0: gateway / board 1
-slot 1: peer / board 2
+superslot 0: gateway / board 1, frames m=0 and m=1
+superslot 1: fixed node / board 2, frames m=0 and m=1
+superslot 2: fixed node / board 3, frames m=0 and m=1
+superslot 3: pending board 4
+superslot 4: pending board 5
 ```
 
 The gateway receives the same radio traffic as other nodes. Its USB connection
 is an export path, not part of the UWB timing loop.
 
-## Growth path
+## Qualification path
 
-- N=2: link reliability, timestamps, CIR, USB export.
-- N=3: add one occupied superslot for node 2; at the initial 10,000 us profile,
-  the cycle becomes 30,000 us and each node transmits at 33.333 Hz.
-- N=4: collision and payload-budget validation after N=3 passes.
-- N=6: all-pairs geometry and room deployment.
+- N=3: completed link reliability, timestamps, CIR, USB export, and fallback.
+- N=5 with three active nodes: completed M=2 framing and missing-node recovery.
+- N=5 with all nodes: pending eight-frame gateway cycles and all 20 directed
+  observations per cycle.
 
 Node identity is stable and assigned in the roster. Discovery is initially
 configuration-based; autonomous discovery can be added after the radio and

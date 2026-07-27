@@ -271,6 +271,11 @@ callback duration observable in the field rather than measured once on a bench,
 and lets the host verify that the configured `slot_duration_us` retains its
 intended margin.
 
+`subreport_crc_failures` is zero in the thin-gateway implementation because the
+gateway does not parse relayed pooled reports. The UNO Q decoder owns this count
+for live ingestion and replay. The field remains reserved in v1 so captures from
+older validating gateways retain their meaning without a wire-format change.
+
 ---
 
 ## 10. `ERROR`, 0x06
@@ -305,11 +310,17 @@ transmission, so that a silent network is always explained.
 The radio MUST NOT block on USB. This is a hard requirement from `AGENTS.md`:
 radio timing is independent of USB backpressure.
 
+The gateway therefore snapshots received frame bytes and any local observation
+into a bounded preallocated FIFO. One export thread serializes every record type,
+assigns USB sequence numbers, computes outer CRC32 values, and submits complete
+records to the CDC queue. This single producer preserves wire order without
+performing USB framing in the DW3000 callback.
+
 The gateway maintains a bounded queue with **drop-newest** behaviour: when the
 queue is full the producer fails to enqueue and increments `usb_queue_drops` at
-the point of loss. Drops MUST NOT be silent, which the current implementation
-violates by discarding with `K_NO_WAIT` and no counter
-(`firmware/radio/app/src/usb_cir_stream.c:33, 66`).
+the point of loss. Drops MUST NOT be silent. Summary creation atomically claims
+the accumulated count so multiple queued summaries cannot acknowledge the same
+drops; a failed summary enqueue restores its claimed count.
 
 Records MUST NOT be partially written. A record is either fully enqueued or
 dropped whole.

@@ -405,3 +405,47 @@ left explicitly pending rather than inferred from build success.
   boundary, N=3 necessarily repeats owner 0 because `2^32` is not divisible by
   3; wrap-safe next-owner selection is tested, while cycle-summary semantics at
   that approximately 545-year boundary remain a protocol clarification item.
+
+## N=5 / M=2 rate qualification
+
+- Final PHY and framing remain channel 9, PRF 64 MHz, preamble 128, PAC 8,
+  SFD type 1, 6.8 Mb/s, EXT PHR, 625-byte frames, and 64 CIR taps. N=5 derives
+  M=2 with 592 payload bytes per frame and 1,184 pooled-report bytes.
+- The fastest reliable profile uses 3,500 us slots, 7,000 us superslots,
+  35,000 us cycles, 28.571 Hz per directed link, modeled 187,200 B/s gateway
+  USB, and config hash `0x8885`. Nodes 0-2 were active; nodes 3-4 were
+  deliberately absent without schedule compression.
+- Firmware now chains `m=0` and `m=1`, accepts same-`k` increasing fragments,
+  derives delayed phase from both fields, captures CIR only on `m=0`, retains
+  the pooled report across both TX frames, and emits m-aware TX records. Report
+  prepacking and corrected RX-timestamp-to-work-delay accounting preserve
+  missing-node fallback deadlines.
+- The gateway callback now snapshots into a 16-event slab and rearms RX after
+  accumulator-sensitive reads. One export thread serializes all USB record
+  types, eliminating the observed multi-producer sequence inversion. Relayed
+  fragment reassembly, padding/start-count checks, and subreport CRC validation
+  run on the UNO Q host.
+- Final identity-bound images flashed with J-Link V9.62 and verified `O.K.`:
+  node 0 `436CDAC15FD2152EC3AFD7E8BE813D3BDA1D159CB6EA7593B89316CA98B78FA1`
+  (79,908 B flash / 69,624 B RAM), node 1
+  `AE8EFB80E564720C3844DD927497157970C12F736755CDAC3A8E85580CC92FC7`
+  (42,444 B / 18,112 B), and node 2
+  `DDE8D935F7916C59706AD1E8054A5D99C976DB44D344FB5076153CC39B5D6175`
+  (42,428 B / 18,112 B).
+- The 30-second rate-qualification capture contained 861 summaries, 3,442 radio frames,
+  1,721 local observations, 1,726 confirmed TX records, and 5,156 canonical
+  observations. USB ordering, CRC, framing, ownership, cycle binding, firmware
+  error, FCS, filter, validation, and tail-drop checks passed. Pair counts were
+  855-861. Two isolated `m>0` losses and one capture-boundary cycle occurred;
+  the last 100 summaries reported exactly the expected 200 node 3/4 misses.
+  Gateway callback maximum was 1,892 us.
+- Post-review binaries additionally bind timeout work to a TX generation, reject
+  stale TXFRS callbacks after timeout recovery, atomically claim USB-drop counts,
+  and enqueue each RX record before the summary that counts it. A final
+  five-second smoke capture covered 146 summaries with all TX confirmed, valid
+  ownership, zero CRC/framing/validation failures, and exactly the expected
+  node 3/4 misses in the last 100 summaries.
+- A 3,000 us / 33.333 Hz candidate was rejected despite zero delayed-start
+  errors: 11 of 1,003 summaries missed one `m>0` frame and four summaries had
+  an active-node `m=0` miss. The approximately 173 us measured margin is not a
+  reliable operating point.
