@@ -56,6 +56,8 @@ static const struct gpio_dt_spec peer_leds[PEER_LED_COUNT] = {
 	GPIO_DT_SPEC_GET(DT_ALIAS(led3), gpios),
 };
 static bool peer_leds_ready;
+static bool peer_led_seen[HEIMDALL_REPORT_NODE_SLOTS];
+static uint32_t peer_led_last_k[HEIMDALL_REPORT_NODE_SLOTS];
 #if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
 struct heimdall_gateway_queue_diagnostics
 	heimdall_gateway_queue_diagnostics;
@@ -356,16 +358,39 @@ static void peer_leds_init(void)
 	peer_leds_ready = true;
 }
 
-static void peer_led_toggle(uint16_t source)
+static void peer_led_expire(uint32_t k)
+{
+	if (!peer_leds_ready) {
+		return;
+	}
+	for (uint16_t source = 0U; source < HEIMDALL_N_NODES; ++source) {
+		uint16_t peer_index;
+
+		if (source == CONFIG_HEIMDALL_NODE_ID || !peer_led_seen[source] ||
+		    k - peer_led_last_k[source] <= HEIMDALL_N_NODES) {
+			continue;
+		}
+		peer_index = source < CONFIG_HEIMDALL_NODE_ID ? source : source - 1U;
+		if (peer_index < PEER_LED_COUNT) {
+			(void)gpio_pin_set_dt(&peer_leds[peer_index], 0);
+		}
+		peer_led_seen[source] = false;
+	}
+}
+
+static void peer_led_toggle(uint16_t source, uint32_t k)
 {
 	uint16_t peer_index;
 
 	if (!peer_leds_ready || source == CONFIG_HEIMDALL_NODE_ID) {
 		return;
 	}
+	peer_led_expire(k);
 	peer_index = source < CONFIG_HEIMDALL_NODE_ID ? source : source - 1U;
 	if (peer_index < PEER_LED_COUNT) {
 		(void)gpio_pin_toggle_dt(&peer_leds[peer_index]);
+		peer_led_seen[source] = true;
+		peer_led_last_k[source] = k;
 	}
 }
 
@@ -586,6 +611,7 @@ static int build_and_schedule(uint32_t k, uint8_t m,
 		return -EPERM;
 	}
 	if (m == 0U) {
+		peer_led_expire(k);
 		prepare_transmit_evidence(k);
 	}
 	if (CONFIG_HEIMDALL_NODE_ID != HEIMDALL_MASTER_NODE_ID &&
@@ -935,7 +961,7 @@ static void rx_ok_cb(const dwt_cb_data_t *cb_data)
 	runtime.synchronized = true;
 	update_evidence(&header);
 	if (header.m == 0U) {
-		peer_led_toggle(header.src_addr);
+		peer_led_toggle(header.src_addr, header.k);
 	}
 	heimdall_runtime_counters.last_rx_k = header.k;
 	heimdall_runtime_counters.last_rx_timestamp = rx_timestamp;

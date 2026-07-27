@@ -381,6 +381,30 @@ calibration remains before timestamps can be treated as accurate ranges.
   rejected: 11/1,003 summaries missed one `m>0` frame and four summaries had an
   active-node `m=0` miss. Early RX rearm reduced this from 147 incomplete cycles,
   but the remaining approximately 173 us timing margin was not reliable.
+- Peer activity LEDs now retain their per-reception toggle behavior while
+  tracking each peer's last `k`. Once the schedule advances beyond the peer's
+  next expected N-slot recurrence, its LED is forced off and its toggle phase is
+  reset. This prevents a disconnected peer from leaving an LED on without adding
+  timers, work items, allocation, logging, or USB traffic.
+- The LED-expiry change was built for the qualified N=5/M=2 profile on 2026-07-27:
+  32 MHz SPIM3, channel 9, PRF 64 MHz, PLEN 128, PAC 8, SFD type 1, 6.8 Mb/s,
+  EXT PHR, hardware filtering, 64 CIR taps, 3,500 us slots, 35,000 us cycles,
+  and config hash `0x8885`. Image SHA-256 values are node 0
+  `8C36F8706A6AC53307BC8F50CC74129910283C53657BCA99DA6DCBCE2B48C4B1`,
+  node 1 `D03A7C2C0069F6A8094EB2DB8ABCD5DAFF630E000E2D3D865E4C09AB8F82E818`,
+  node 2 `8F38E2964459308ED92271FE27DBCEDB92D13AC347A5A2ABFBD8C5270B5BB58F`,
+  node 3 `12B4B252BF266CF5F54A4DD68B2FD076FAB8BE7B64C9E3D2A144E39723545DAC`,
+  and node 4 `85BC3DB3648CDE9222D2A9AC187B12BFEE0CA84D71FD42D8B10F82CA7180606E`.
+  All five identity-bound boards (`760223921`, `760197419`, `760197416`,
+  `760200606`, and `760223924`) flashed and verified `O.K.` with J-Link V9.62.
+- Automated LED-expiry qualification passed the unchanged radio/export path.
+  A controlled eight-second halt of node 2 produced one peer miss in every final
+  100 gateway summary while ownership, cycle binding, TX confirmation, CRC,
+  framing, filtering, and validation remained valid and tail USB drops were zero.
+  After release, a five-second full-roster capture had 145 summaries, two
+  isolated peer misses in the final 100, zero tail drops or protocol errors, all
+  TX confirmed, and a 2,166 us callback maximum. Direct visual confirmation that
+  the affected LED clears was skipped by operator choice and remains pending.
 
 ## Next executable checkpoint
 

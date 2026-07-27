@@ -35,4 +35,6 @@ payload contracts are stable.
 
 D9-D12 indicate validated `m=0` reception from the four peers in ascending node
 ID order, excluding the local node. D9 is green, D10-D11 are red, and D12 is
-blue. D13 is the board power/USB indicator and is not controlled by firmware.
+blue. Each LED toggles on reception and is forced off when its peer misses a
+full expected recurrence, so a disconnected peer cannot leave an LED on. D13 is
+the board power/USB indicator and is not controlled by firmware.

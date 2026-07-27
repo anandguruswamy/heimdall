@@ -48,3 +48,5 @@ Beacon runtime uses D9-D12 for peer reception activity. Each LED toggles after
 a validated `m=0` frame; peers are mapped in ascending node-ID order with the
 local node omitted. D9 is green, D10-D11 are red, and D12 is blue. D13 is the
 board power/USB indicator and cannot be controlled by the nRF52833 firmware.
+If a peer misses a full expected recurrence, its LED is forced off and its
+toggle phase resets so a disconnected peer cannot leave an LED on.
