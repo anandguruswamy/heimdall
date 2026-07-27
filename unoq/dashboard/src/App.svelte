@@ -14,6 +14,7 @@
   let status: StreamStatus = $state('connecting');
   let phaseMode = $state(false);
   let periodogramMode = $state(false);
+  let dbMode = $state(false);
   let halfLife = $state(2);
   let smoothing = $state(1);
   let range = $state(4);
@@ -68,8 +69,19 @@
         const [min, max] = [0, Math.max(...squared)];
         return { series: [{ data: squared, color: frame.series[0].color }], min, max, xLabel: frame.xLabel, yLabel: 'power' };
       }
+      if (dbMode && frame) return toDbFrame(frame);
       return frame ?? EMPTY_FRAME;
     };
+  }
+
+  function toDbFrame(frame: PlotFrame): PlotFrame {
+    const toDb = (value: number) => 20 * Math.log10(Math.max(value, 1e-12));
+    const convert = (src: Float32Array) => { const out = new Float32Array(src.length); for (let i = 0; i < src.length; i++) out[i] = toDb(src[i]); return out; };
+    const series = frame.series?.map((s) => ({ ...s, data: convert(s.data) }));
+    const heatmap = frame.heatmap ? convert(frame.heatmap) : undefined;
+    const min = frame.min !== undefined && frame.max !== undefined ? toDb(Math.max(frame.min, 1e-12)) : undefined;
+    const max = frame.min !== undefined && frame.max !== undefined ? toDb(frame.max) : undefined;
+    return { ...frame, series, heatmap, min, max, yLabel: 'dB' };
   }
 
   function topicFor(tab: Tab): TopicKey {
@@ -373,6 +385,9 @@
           <label>HISTORY <output>{waterfallSeconds.toFixed(0)} s</output><input type="range" min="1" max="30" step="1" value={waterfallSeconds} oninput={(e) => { waterfallSeconds=+e.currentTarget.value; live.setWaterfallSeconds(waterfallSeconds); }} /></label>
         {:else if active === 'Slow-Time FFT'}
           <label>HISTORY <output>{slowFftSeconds.toFixed(0)} s</output><input type="range" min="1" max="30" step="1" value={slowFftSeconds} oninput={(e) => { slowFftSeconds=+e.currentTarget.value; settingChanged('slow_fft_history_s',slowFftSeconds); }} /></label>
+        {/if}
+        {#if ['Instantaneous CIR','CIR Waterfall','Slow-Time FFT','Fast-Time FFT'].includes(active)}
+          <div class="segmented" aria-label="Scale"><button class:active={!dbMode} onclick={() => dbMode = false}>Linear</button><button class:active={dbMode} onclick={() => dbMode = true}>dB</button></div>
         {/if}
         <label class="node-picker">ACTIVE NODES<select value={nodeCount} onchange={(e) => chooseNodeCount(+e.currentTarget.value)}>{#each [2,3,4,5,6,7,8] as n}<option value={n}>{n}</option>{/each}</select></label>
       </div>
