@@ -490,7 +490,7 @@ impl Pipeline {
         let want_waterfall = topics & Topic::Waterfall.bit() != 0;
         let want_fast = topics & Topic::FastFft.bit() != 0;
         let want_slow = topics & Topic::SlowFft.bit() != 0;
-        let magnitude_16x = if want_waterfall {
+        let magnitude_16x = if want_waterfall || want_cir {
             resample_cir_16x(&aligned)
                 .iter()
                 .map(|value| value.norm() as f32)

@@ -62,7 +62,8 @@ function cirFrame(payload: Record<string, unknown>): PlotFrame | undefined {
   let raw = firstArray(sample, ['magnitude', 'raw']);
   if (!raw && i) { raw = new Float32Array(i.length); for (let n=0;n<i.length;n++) raw[n] = Math.hypot(i[n],q?.[n] ?? 0); }
   if (!raw?.length) return undefined;
-  const curve = firstArray(sample, ['resampled', 'curve']) ?? resample(raw, Math.max(2, raw.length * 16));
+  const backendCurve = firstArray(sample, ['resampled', 'curve']);
+  const curve = (backendCurve && backendCurve.length > 0) ? backendCurve : resample(raw, Math.max(2, raw.length * 16));
   const [,max] = extrema([raw,curve],[0,1]);
   const markerRaw=number(sample.marker_raw),markerAligned=number(sample.marker_aligned),denominator=Math.max(1,raw.length-1);
   return { series: [{ data: curve, color: colors.teal, width: 2 }, { data: raw, color: colors.amber, points: true }], min: 0, max: max * 1.08, markers: [markerRaw !== undefined && { at: Math.max(0,Math.min(1,markerRaw/denominator)), color: colors.amber }, markerAligned !== undefined && { at: Math.max(0,Math.min(1,markerAligned/denominator)), color: colors.violet }].filter(Boolean) as NonNullable<PlotFrame['markers']>, xLabel:'aligned CIR tap', yLabel:'linear magnitude' };
