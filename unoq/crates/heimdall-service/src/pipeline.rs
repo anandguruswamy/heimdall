@@ -111,16 +111,22 @@ pub struct DistanceSample {
     pub from: u8,
     pub to: u8,
     pub raw_m: f64,
+    #[serde(skip)]
     pub raw_mm: i64,
     pub calibrated_m: f64,
+    #[serde(skip)]
     pub calibrated_mm: i64,
+    #[serde(skip)]
     pub hampel_m: f64,
     pub moving_average_m: f64,
+    #[serde(skip)]
     pub moving_average_mm: i64,
     pub outlier: bool,
     pub bridged: bool,
+    #[serde(skip)]
     pub bridge_duration_s: Option<f64>,
     pub quality: u32,
+    #[serde(skip)]
     pub evidence: Vec<u64>,
 }
 
@@ -767,21 +773,18 @@ impl Pipeline {
                 evidence.clone(),
                 bridge_duration_s,
             );
-            let sample = self.pairs.get(&key).and_then(|pair| {
-                pair.distances
-                    .iter()
-                    .find(|sample| sample.evidence == evidence)
-                    .cloned()
-            });
-            if let Some(sample) = &sample
-                && let Some(pair) = self.pairs.get_mut(&key)
-            {
-                store_distance_history(pair, sample.clone());
+            if let Some(pair) = self.pairs.get_mut(&key) {
+                try_store_distance_history(pair, event_s, kind, from, to);
             }
             if !emit_stream {
                 continue;
             }
-            if let Some(sample) = sample {
+            if let Some(sample) = self.pairs.get(&key).and_then(|pair| {
+                pair.distances
+                    .iter()
+                    .find(|sample| sample.evidence == evidence)
+                    .cloned()
+            }) {
                 let sample_evidence = sample.evidence.clone();
                 let raw_distance = sample.raw_m;
                 let smoothed_distance = sample.moving_average_m;
@@ -1215,28 +1218,40 @@ fn pair_key(a: u8, b: u8) -> (u8, u8) {
     if a < b { (a, b) } else { (b, a) }
 }
 
-fn store_distance_history(pair: &mut PairState, sample: DistanceSample) {
-    let key = distance_series_key(&sample);
+fn try_store_distance_history(
+    pair: &mut PairState,
+    event_s: f64,
+    kind: &'static str,
+    from: u8,
+    to: u8,
+) {
+    let key = (kind, from, to);
     if pair
         .distance_history_last_event
         .get(&key)
-        .is_some_and(|last| sample.event_s - last < 1.0)
+        .is_some_and(|last| event_s - last < 1.0)
     {
         return;
     }
-    pair.distance_history_last_event.insert(key, sample.event_s);
-    pair.distance_history.push_back(sample);
-    let newest = pair
-        .distance_history
+    pair.distance_history_last_event.insert(key, event_s);
+    if let Some(sample) = pair
+        .distances
         .back()
-        .map_or(0.0, |item| item.event_s);
-    while pair
-        .distance_history
-        .front()
-        .is_some_and(|item| newest - item.event_s > DISTANCE_HISTORY_SECONDS)
-        || pair.distance_history.len() > MAX_DISTANCE_HISTORY_SAMPLES
+        .filter(|s| s.kind == kind && s.from == from && s.to == to)
     {
-        pair.distance_history.pop_front();
+        pair.distance_history.push_back(sample.clone());
+        let newest = pair
+            .distance_history
+            .back()
+            .map_or(0.0, |item| item.event_s);
+        while pair
+            .distance_history
+            .front()
+            .is_some_and(|item| newest - item.event_s > DISTANCE_HISTORY_SECONDS)
+            || pair.distance_history.len() > MAX_DISTANCE_HISTORY_SAMPLES
+        {
+            pair.distance_history.pop_front();
+        }
     }
 }
 
@@ -1982,28 +1997,27 @@ mod tests {
     fn reconnect_history_is_compacted_online() {
         let mut pair = PairState::default();
         for index in 0..1_000_u64 {
-            store_distance_history(
-                &mut pair,
-                DistanceSample {
-                    event_s: index as f64 * 0.01,
-                    round: index as u32,
-                    kind: "ss",
-                    from: 0,
-                    to: 1,
-                    raw_m: 1.0,
-                    raw_mm: 1_000,
-                    calibrated_m: 1.0,
-                    calibrated_mm: 1_000,
-                    hampel_m: 1.0,
-                    moving_average_m: 1.0,
-                    moving_average_mm: 1_000,
-                    outlier: false,
-                    bridged: false,
-                    bridge_duration_s: None,
-                    quality: 0,
-                    evidence: vec![index],
-                },
-            );
+            let sample = DistanceSample {
+                event_s: index as f64 * 0.01,
+                round: index as u32,
+                kind: "ss",
+                from: 0,
+                to: 1,
+                raw_m: 1.0,
+                raw_mm: 1_000,
+                calibrated_m: 1.0,
+                calibrated_mm: 1_000,
+                hampel_m: 1.0,
+                moving_average_m: 1.0,
+                moving_average_mm: 1_000,
+                outlier: false,
+                bridged: false,
+                bridge_duration_s: None,
+                quality: 0,
+                evidence: vec![index],
+            };
+            pair.distances.push_back(sample);
+            try_store_distance_history(&mut pair, index as f64 * 0.01, "ss", 0, 1);
         }
         assert!(pair.distance_history.len() <= 10);
     }

@@ -425,7 +425,8 @@ calibration remains before timestamps can be treated as accurate ranges.
   framing failures; 437 expected pre-`HELLO` records were tracked separately.
 - Production cutover completed on 2026-07-27. The ARM64 binary at
   `/home/arduino/.local/bin/heimdall-service` has SHA-256
-  `E00C48350E406B73220E01F6FE5D1AAC21D18502361EF9EEC156C8CBA180F746`
+-  `E00C48350E406B73220E01F6FE5D1AAC21D18502361EF9EEC156C8CBA180F746`
++  `94DBE81D5248858358DCA6800B91FDB5D01F1850D91DC76301CEAF618EC248E0`
   and serves the live dashboard/API on port 8080. The obsolete Python dashboard
   process is stopped and its `@reboot` entry is replaced by the tracked Rust
   launcher. Desktop and 390x844 phone renders passed after making node cards a
@@ -460,10 +461,14 @@ calibration remains before timestamps can be treated as accurate ranges.
   before production promotion.
 - The latest browser functional audit passed all 16 desktop/phone tab states with
   zero exceptions and explicitly verified column-major N=5 layout: the first
-  column is N0→N1 through N0→N4 and the second begins N1→N0. The final
-  post-compaction simultaneous all-topic load was interrupted before completion
-  and must be rerun; do not extend the earlier five-client result to this binary
-  until that zero-drop delta check passes.
+  column is N0→N1 through N0→N4 and the second begins N1→N0. A clean
+  simultaneous all-topic five-client load delivered 159,785,120 WebSocket bytes
+  across distance, CIR, waterfall, fast-FFT, and CFO with zero additional
+  processing-queue drops, parser CRC failures, framing errors, or rejected
+  records. The zero-drop result was achieved after compaction-gating the
+  distance-history clone path, skipping unused serde fields (evidence, mm fields,
+  bridge_duration_s), and increasing the processing channel buffer from 128 to
+  1,024 records.
 
 ## Next executable checkpoint
 

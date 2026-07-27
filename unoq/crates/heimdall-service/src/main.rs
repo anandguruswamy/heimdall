@@ -91,7 +91,7 @@ async fn serve(device: PathBuf, data: PathBuf, bind: SocketAddr) -> Result<()> {
     let state = AppState::new(metadata.clone(), &data)?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let running = Arc::new(AtomicBool::new(true));
-    let (processing_tx, processing_rx) = mpsc::sync_channel(128);
+    let (processing_tx, processing_rx) = mpsc::sync_channel(1024);
     let processor = spawn_processor(processing_rx, state.clone());
     let reader = spawn_cdc(
         device,
