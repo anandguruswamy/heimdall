@@ -1,0 +1,25 @@
+namespace Heimdall.Telemetry.V1;
+
+enum Topic : ubyte {
+  Health,
+  Distance,
+  Cir,
+  Waterfall,
+  SlowFft,
+  FastFft,
+  Cfo,
+  Calibration
+}
+
+table Envelope {
+  schema_version:ushort = 1;
+  topic:Topic;
+  stream_sequence:ulong;
+  configuration_epoch:ulong;
+  processing_epoch:ulong;
+  dropped_events:uint;
+  payload:[ubyte];
+}
+
+root_type Envelope;
+file_identifier "HMT1";

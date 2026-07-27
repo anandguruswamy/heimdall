@@ -1,0 +1,192 @@
+openapi: 3.1.0
+info:
+  title: Heimdall UNO Q API
+  version: 1.0.0
+servers:
+  - url: /api/v1
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      responses:
+        "200":
+          description: Current service, archive, gateway, node, and link health
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /topology:
+    get:
+      operationId: getTopology
+      responses:
+        "200":
+          description: Current configuration and directed-link topology
+  /history/distance:
+    get:
+      operationId: getDistanceHistory
+      responses:
+        "200":
+          description: Downsampled five-minute SS and DS distance history for reconnect resynchronization
+  /settings:
+    get:
+      operationId: getSettings
+      responses:
+        "200":
+          description: Current persisted processing settings
+    put:
+      operationId: updateSettings
+      responses:
+        "200":
+          description: New processing epoch
+  /clips:
+    get:
+      operationId: listClips
+      responses:
+        "200":
+          description: Protected capture clips
+    post:
+      operationId: createClip
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateClip"
+      responses:
+        "202":
+          description: Clip armed and collecting its post-trigger interval
+  /clips/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      operationId: downloadClip
+      responses:
+        "200":
+          description: Completed protected capture ZIP
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+    delete:
+      operationId: deleteClip
+      responses:
+        "204":
+          description: Clip deleted
+        "404":
+          description: Clip not found
+  /calibration:
+    get:
+      operationId: getCalibration
+      responses:
+        "200":
+          description: Live calibration collection and applied solution
+  /calibration/snapshot:
+    post:
+      operationId: startCalibrationSnapshot
+      responses:
+        "200":
+          description: Ten-second DS-TWR snapshot started
+  /calibration/solve:
+    post:
+      operationId: solveCalibration
+      responses:
+        "200":
+          description: Least-squares antenna-delay solution and rank diagnostics
+  /calibration/apply:
+    post:
+      operationId: applyCalibration
+      responses:
+        "200":
+          description: Full-rank calibration solution applied
+  /calibration/rollback:
+    post:
+      operationId: rollbackCalibration
+      responses:
+        "200":
+          description: Previous applied calibration restored
+  /stream:
+    get:
+      operationId: websocketStream
+      responses:
+        "101":
+          description: Versioned FlatBuffers WebSocket stream
+components:
+  schemas:
+    CreateClip:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 120
+        note:
+          type: string
+          maxLength: 2000
+    Health:
+      type: object
+      required:
+        - status
+        - uptime_seconds
+        - pipeline
+        - processing_queue_drops
+        - websocket_clients
+        - archive
+        - process
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        uptime_seconds:
+          type: number
+          minimum: 0
+        pipeline:
+          type: object
+          additionalProperties: true
+        processing_queue_drops:
+          type: integer
+          format: int64
+          minimum: 0
+        websocket_clients:
+          type: integer
+          minimum: 0
+        archive:
+          type: object
+          required: [closed_bytes, free_bytes, total_bytes, free_percent, paused, errors]
+          properties:
+            closed_bytes:
+              type: integer
+              format: int64
+              minimum: 0
+            free_bytes:
+              type: integer
+              format: int64
+              minimum: 0
+            total_bytes:
+              type: integer
+              format: int64
+              minimum: 0
+            free_percent:
+              type: number
+              minimum: 0
+              maximum: 100
+            paused:
+              type: boolean
+            errors:
+              type: integer
+              format: int64
+              minimum: 0
+            last_error:
+              type: [string, "null"]
+        process:
+          type: object
+          required: [rss_bytes]
+          properties:
+            rss_bytes:
+              type: integer
+              format: int64
+              minimum: 0

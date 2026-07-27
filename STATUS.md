@@ -405,6 +405,65 @@ calibration remains before timestamps can be treated as accurate ranges.
   isolated peer misses in the final 100, zero tail drops or protocol errors, all
   TX confirmed, and a 2,166 us callback maximum. Direct visual confirmation that
   the affected LED clears was skipped by operator choice and remains pending.
+- The production UNO Q Rust service and embedded Svelte/WebGL2 dashboard build
+  with Rust 1.93.1 and Zig 0.15.2. The protocol, DSP, and service suites pass all
+  48 Rust tests; the Python reference suite
+  passes 87 tests; Svelte checking and the production frontend build pass.
+- Live N=5/M=2 service qualification covered all 20 directed links at the
+  expected 28.571 Hz. A 15-second no-client run archived 2,822,533 bytes
+  (188.2 kB/s), matching the modeled 187.2 kB/s. A five-client run archived
+  2,813,651 bytes while serving distance, CIR, waterfall, fast-FFT, and CFO
+  streams concurrently; the CIR client received approximately 12 MB/s.
+- Host DSP optimizations cache the 16 fractional-phase Kaiser FIR coefficients,
+  use coarse plus 1/16-sample correlation refinement, update causal distance
+  filters incrementally, and bound the private DS matcher history to 120 ms.
+  The N=8 synthetic benchmark sustained 53,215 link updates/s.
+- Coordinated shutdown finalizes `.husb` segments before exit. A ten-second live
+  capture finalized at 1,886,715 bytes and replayed 4,346 records into 5,147
+  observations across all 20 links. Built-in verification reported SQLite
+  integrity `ok`, zero genuine rejects, zero buffered bytes, and zero CRC or
+  framing failures; 437 expected pre-`HELLO` records were tracked separately.
+- Production cutover completed on 2026-07-27. The ARM64 binary at
+  `/home/arduino/.local/bin/heimdall-service` has SHA-256
+  `E00C48350E406B73220E01F6FE5D1AAC21D18502361EF9EEC156C8CBA180F746`
+  and serves the live dashboard/API on port 8080. The obsolete Python dashboard
+  process is stopped and its `@reboot` entry is replaced by the tracked Rust
+  launcher. Desktop and 390x844 phone renders passed after making node cards a
+  readable horizontal rail on narrow screens. The tracked systemd unit passes
+  `systemd-analyze verify`, but rootless deployment currently uses cron because
+  installing a system unit requires privileged access.
+- The final dashboard release sends compact 64-tap CIR products and reserves
+  16x CIR interpolation for waterfall products. A 30-second five-client load
+  delivered 199,768,296 WebSocket bytes across distance, CIR, waterfall,
+  fast-FFT, and CFO clients with zero additional processing-queue drops, parser
+  CRC failures, framing errors, or rejected records. The prior concurrent-client
+  queue-drop regression is resolved.
+- The final live browser audit passed all eight tabs at 1440x1000 and 390x844:
+  all 16 views remained `LIVE`, all active links had data, canvases had valid
+  dimensions, no synthetic state appeared, and Edge reported zero exceptions.
+- Protected 30+30-second capture qualification produced clip 1 with 25,829
+  complete records and 11,207,035 raw bytes. Its raw SHA-256 is
+  `61420066BB7E595EB1129D487535C6D691F3C5E7F38D84F42A2AD704D140188D`;
+  replay yielded 33,956 observations across all 20 links with zero genuine
+  rejects, buffered bytes, CRC failures, or framing errors.
+- The circular archive enforces its 200 MB quota and checks the 20% filesystem
+  free-space floor before every write. Health now reports archive pause state,
+  error count, last error, and free percentage; clip finalization reserves its
+  expected space against the same floor. Full service-restart warm restoration
+  remains open, while WebSocket reconnect now resets stale state and restores a
+  compact five-minute distance snapshot on demand.
+- The Windows ARM64 Snapdragon host now cross-builds the Debian ARM64 release
+  with the pinned Rust 1.93.1 GNU/LLVM host toolchain and checksum-verified Zig
+  0.15.2. The first successful release took 36.98 seconds, an incremental service
+  rebuild took 21.59 seconds, and a no-change release check took 0.32 seconds.
+  The resulting ARM64 PIE was checked with `file`, `ldd`, and live USB/API startup
+  before production promotion.
+- The latest browser functional audit passed all 16 desktop/phone tab states with
+  zero exceptions and explicitly verified column-major N=5 layout: the first
+  column is N0→N1 through N0→N4 and the second begins N1→N0. The final
+  post-compaction simultaneous all-topic load was interrupted before completion
+  and must be rerun; do not extend the earlier five-client result to this binary
+  until that zero-drop delta check passes.
 
 ## Next executable checkpoint
 

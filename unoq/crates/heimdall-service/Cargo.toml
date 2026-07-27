@@ -1,0 +1,33 @@
+[package]
+name = "heimdall-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+flatbuffers.workspace = true
+heimdall-dsp = { path = "../heimdall-dsp" }
+heimdall-protocol = { path = "../heimdall-protocol" }
+libc.workspace = true
+num-complex.workspace = true
+parking_lot.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zip.workspace = true
+clap = { version = "=4.5.54", features = ["derive"] }
+fs2 = "=0.4.3"
+
+[dev-dependencies]
+http-body-util = "=0.1.3"
+tempfile = "=3.24.0"
+tower = { version = "=0.5.2", features = ["util"] }

@@ -40,6 +40,30 @@ Windows emulation.
 | J-Link software | Current compatible release | Windows ARM64 or x86-64 | Flash and debug through J9 | [SEGGER downloads](https://www.segger.com/downloads/jlink/) |
 | nrfutil | 8.2.0 if needed | Python package | Optional Nordic flashing/package tools | [PyPI](https://pypi.org/project/nrfutil/) |
 
+## UNO Q application tooling
+
+The production UNO Q service is a native Debian ARM64 binary with embedded web
+assets. Rust and Node are build-time tools only and are not required on the
+deployed UNO Q.
+
+| Tool | Required version | Host asset | Purpose | Download |
+|---|---|---|---|---|
+| Rust | 1.93.1 | Windows ARM64 development host / Linux ARM64 builder | Backend, protocol, DSP, and API build | [Rust 1.93.1](https://blog.rust-lang.org/2026/02/12/Rust-1.93.1/) |
+| Cargo | 1.93.1 | Installed with Rust | Rust dependency and build frontend | [rustup](https://rustup.rs/) |
+| Node.js | 24.18.0 | Windows development host | Svelte dashboard build | [Node.js downloads](https://nodejs.org/en/download) |
+| npm | 11.16.0 | Installed with Node.js | Locked frontend dependencies | [npm CLI](https://github.com/npm/cli) |
+| Svelte | 5.56.8 | npm package | Dashboard component runtime/compiler | [npm](https://www.npmjs.com/package/svelte/v/5.56.8) |
+| Vite | 6.4.3 | npm package | Dashboard development and production bundling | [npm](https://www.npmjs.com/package/vite/v/6.4.3) |
+| TypeScript | 5.7.3 | npm package | Dashboard type checking | [npm](https://www.npmjs.com/package/typescript/v/5.7.3) |
+| FlatBuffers JS | 25.9.23 | npm package, reserved for generated schemas | Browser binary telemetry decoder | [npm](https://www.npmjs.com/package/flatbuffers/v/25.9.23) |
+| FlatBuffers Rust | 25.12.19 | Cargo crate | Server binary telemetry encoder | [crates.io](https://crates.io/crates/flatbuffers/25.12.19) |
+| Zig | 0.15.2 | Windows ARM64 / Linux ARM64 | Cross compiler/linker on the Snapdragon host and native linker on UNO Q | [Zig 0.15.2](https://ziglang.org/download/0.15.2/release-notes.html) |
+
+Exact application dependency checksums are locked by `unoq/Cargo.lock` and
+`unoq/dashboard/package-lock.json`. Before acquiring an ARM64 build container
+or standalone `flatc`, record its immutable digest or archive SHA-256 here and
+retain the redistributable artifact under `tools/installers/linux-arm64/`.
+
 ## Zephyr SDK asset names
 
 For SDK 0.17.4 on Windows, the known assets are:
@@ -72,6 +96,7 @@ add the installer files themselves to Git.
 | `windows-arm64/7z2602-arm64.exe` | 26.02 | Windows ARM64 | `7C6FDE79ED5E11B81C7BB6573B7962D3B6322AA5FCE69C33ED19F672B55173AB` | Archive extractor |
 | `windows-arm64/ninja-1.13.2-winarm64.zip` | 1.13.2 | Windows ARM64 | `E52F0BDEF9DFB1003229DBD6508A508C4073FD017247002ADC66E5E806CB0391` | Build executor |
 | `windows-arm64/wget-1.21.4-winarm64.exe` | 1.21.4 | Windows ARM64 | `356DF847B5BE2478B74ECBE9AE0B2150EF328B10073F93B0E1719E4C88BADA02` | SDK setup dependency |
+| `windows-arm64/zig-aarch64-windows-0.15.2.zip` | 0.15.2 | Windows ARM64 | `B926465F8872BF983422257CD9EC248BB2B270996FBE8D57872CCA13B56FC370` | Official UNO Q Linux ARM64 cross-linker |
 | `windows-x86_64/cmake-3.31.10-py3-none-win_amd64.whl` | 3.31.10 | Windows x86-64 | `F1EA1FE826355560E8976C3D5794D9357444209BC0E0D56676C71E6A571FD474` | Pinned CMake |
 | `windows-x86_64/dtc-1.6.1-msys2-x86_64.zip` | 1.6.1 | Windows x86-64 | `7AAC366F989FD2450D5E641E118734653EA29D0DDB7DBFA33521D57AFE852AE3` | DeviceTree compiler |
 | `windows-x86_64/zephyr-sdk-0.17.4_windows-x86_64_minimal.7z` | 0.17.4 | Windows x86-64 | `3A1B7DE85811296A7193D010882A61D8AF1DDA7B2319AF30EB04665F6BBF1F99` | SDK base archive |
@@ -80,6 +105,8 @@ add the installer files themselves to Git.
 | `windows-x86_64/JLink_Windows_V962_x86_64.exe` | 9.62 | Windows x86-64 | `50F44E977285D76D45BB0BAEBE4C7867C96E6C9167112248093C3B18D7A7A137` | SEGGER fallback installer |
 | `windows-x86_64/zadig-2.9.exe` | 2.9 | Windows x86-64 | `4ECAA95DF3DA3621486A043AEF8B3050B8BAFE7C901402871E816229EF82039B` | WinUSB workaround; use only for J-Link MI_02 |
 | `linux-arm64/JLink_Linux_V962_arm64.deb` | 9.62 | Linux ARM64 | `F4BD3F3DC7EAD379EB9BC7BDF858CF8B1296FB82573B5A04B5A7248AA8877F74` | UNO Q J-Link package |
+| `linux-arm64/rustup-init-aarch64-unknown-linux-gnu` | current rustup bootstrap, fetched 2026-07-27 | Linux ARM64 | `9732D6C5E2A098D3521FCA8145D826AE0AAA067EF2385EAD08E6FEAC88FA5792` | Official Rust bootstrap; install pinned Rust 1.93.1 |
+| `linux-arm64/zig-aarch64-linux-0.15.2.tar.xz` | 0.15.2 | Linux ARM64 | `958ED7D1E00D0EA76590D27666EFBF7A932281B3D7BA0C6B01B0FF26498F667F` | Native compiler/linker without root installation |
 
 On PowerShell, calculate a checksum with:
 

@@ -1,0 +1,20 @@
+[Unit]
+Description=Heimdall UNO Q fusion service
+After=local-fs.target
+
+[Service]
+Type=simple
+User=arduino
+Group=arduino
+ExecStart=/home/arduino/projects/heimdall/unoq/deploy/run-heimdall.sh
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/arduino/heimdall-data
+
+[Install]
+WantedBy=multi-user.target
