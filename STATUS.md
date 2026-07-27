@@ -2,8 +2,9 @@
 
 ## Project state
 
-Scaffold created. No Heimdall-specific multi-node beacon protocol has been
-flashed yet.
+The N=2 Heimdall radio runtime and gateway USB export are hardware-validated.
+Gate H3 replayable ingest is implemented and host-tested; live UNO Q persistence
+and archive equivalence validation remain before Gate H3 passes.
 
 ## Starting point
 
@@ -231,24 +232,25 @@ flashed yet.
   validated RX/CIR reads, 13,291 completed TX, zero delayed-start, timestamp, or
   timeout failures, and `last_rx_k=26579`, `last_tx_k=26580`. All 63 host tests
   pass.
+- Gate H3 host implementation now archives the CDC stream before parsing into
+  rotating, checksummed segments; tracks runs, reconnects, configuration epochs,
+  outer-valid records, type-level rejections, health records, and canonical CIR
+  observations transactionally in SQLite; and replays ordered segments through
+  the same parser and canonical processor. Local gateway observations and
+  arbitrary-`M` relayed pooled reports use one immutable observation shape.
+  Rotation, fragmented input, corruption accounting, reconnect recovery,
+  out-of-order `M=2` reassembly, and live/replay observation equivalence are
+  covered by the host suite. All 68 host tests pass; live UNO Q validation is
+  pending.
 
 ## Next executable checkpoint
 
-Three measurements gate the protocol's numeric claims and must be taken before
-implementation is trusted:
+Run persistent ingestion on the UNO Q with a deliberately small rotation size,
+disconnect and reconnect the gateway CDC path, then stop cleanly. Replay every
+resulting connection archive into a fresh SQLite database and compare canonical
+observation fingerprints, parser loss counters, segment hashes, and SQLite
+integrity. Gate H3 passes only if every discrepancy is explained.
 
-1. RX callback duration, instrumented with a GPIO toggle or cycle counter at
-   32 MHz SPI, at both 64 and 128 taps. PASS for the Gate 1 read path at 1983 us
-   and 2868 us respectively; the 64-tap production assembly profile measured a
-   2227 us full callback with the optimized encoder.
-2. USB CDC throughput after replacing the byte-at-a-time `uart_poll_out()` path.
-   PASS at a 475 kB/s offered load with 20,000 complete ordered records; this
-   exceeds the modelled 234-433 kB/s gateway range.
-3. `DWT_PHRMODE_EXT` verified board-to-board, together with hardware frame
-   filtering, broadcast addressing, and auto-ACK confirmed disabled. PASS for
-   the current 1023-byte test profile; the 38 observed RX errors remain a
-   separate link-budget characterization item.
-
-The next task is persistent raw/canonical archival and the first fusion-facing
-adapter, followed by N=3 runtime generalisation. Per-board antenna-delay
-calibration remains required before treating timestamps as calibrated ranges.
+After Gate H3, generalise and validate the runtime at N=3. Per-board
+antenna-delay calibration remains required before treating timestamps as
+calibrated ranges.
