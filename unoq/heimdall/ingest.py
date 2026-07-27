@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
+import time
 
 from .archive import RawArchive, iter_archive_bytes
 from .canonical import CanonicalProcessor
@@ -19,6 +20,7 @@ class IngestSession:
         source: str,
         archive_root: Path | None,
         rotate_bytes: int = 64 * 1024 * 1024,
+        commit_interval_seconds: float = 0.25,
     ) -> None:
         self.storage = storage
         self.connection_id = storage.start_connection(run_id, source)
@@ -28,6 +30,8 @@ class IngestSession:
         self.ingest_index = 0
         self.records_rejected = 0
         self.closed = False
+        self.commit_interval_seconds = commit_interval_seconds
+        self.last_commit = time.monotonic()
         self.archive = (
             RawArchive(archive_root / f"connection-{self.connection_id:06d}", rotate_bytes)
             if archive_root is not None
@@ -63,7 +67,10 @@ class IngestSession:
             )
             self.ingest_index += 1
             accepted += 1
-        self.storage.commit()
+        now = time.monotonic()
+        if now - self.last_commit >= self.commit_interval_seconds:
+            self.storage.commit()
+            self.last_commit = now
         return accepted
 
     def close(self, status: str = "clean") -> dict[str, object]:
@@ -72,6 +79,7 @@ class IngestSession:
         self.closed = True
         if self.archive is not None:
             self.storage.add_segments(self.connection_id, self.archive.close())
+        self.storage.commit()
         stats = {
             **asdict(self.parser.stats),
             "records": self.ingest_index,

@@ -16,6 +16,7 @@ from unoq.heimdall.protocol import (
     encode_record,
 )
 from unoq.heimdall.storage import HeimdallStorage
+from unoq.heimdall.verify_h3 import verify
 
 
 def hello_payload(m_slots: int = 1, frame_payload_bytes: int = 296) -> bytes:
@@ -155,6 +156,10 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual(replay_stats["records"], 3)
             self.assertEqual(replay.observation_fingerprints(replay_run), fingerprints)
             replay.close()
+            verification = verify(
+                root / "live.sqlite3", root / "raw", root / "replay.sqlite3"
+            )
+            self.assertTrue(verification["equivalent"])
 
     def test_rejected_record_is_durable_and_new_connection_recovers(self):
         valid_hello = encode_record(HELLO, 0, 0, hello_payload())
@@ -181,6 +186,35 @@ class PersistenceTests(unittest.TestCase):
             connections = storage.db.execute("SELECT COUNT(*) FROM connections").fetchone()[0]
             self.assertEqual(connections, 2)
             storage.close()
+
+    def test_unclean_exit_recovers_epoch_and_segment_catalog(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            database = root / "events.sqlite3"
+            storage = HeimdallStorage(database)
+            run_id = storage.start_run({"mode": "crash-test"})
+            session = IngestSession(storage, run_id, "device", root / "raw")
+            session.feed(encode_record(HELLO, 0, 0, hello_payload()))
+            assert session.archive is not None
+            session.archive.close()
+            storage.close()
+
+            recovered = HeimdallStorage(database)
+            result = recovered.recover_interrupted(root / "raw")
+            self.assertEqual(result, {"connections": 1, "segments": 1})
+            self.assertEqual(
+                recovered.db.execute("SELECT status FROM runs").fetchone()[0],
+                "interrupted",
+            )
+            self.assertEqual(
+                recovered.db.execute("SELECT status FROM connections").fetchone()[0],
+                "interrupted",
+            )
+            segment = recovered.db.execute(
+                "SELECT byte_count,length(sha256) FROM raw_segments"
+            ).fetchone()
+            self.assertEqual(segment, (len(encode_record(HELLO, 0, 0, hello_payload())), 64))
+            recovered.close()
 
 
 if __name__ == "__main__":

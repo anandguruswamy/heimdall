@@ -21,10 +21,12 @@ sequence-gap reporting, and behavior while the UNO Q reader is unplugged.
 Run the CDC reader on the UNO Q, persist raw frames, decode them into canonical
 records, and replay the same capture through the fusion interface.
 
-Host implementation is complete. Acceptance still requires a live UNO Q run:
-verify rotation and reconnect behavior, replay its archive into a fresh SQLite
-database, and require exact canonical observation fingerprints and zero
-unexplained parser/producer loss.
+PASS on the UNO Q. The live run verified rotation, physical CDC reconnect,
+abrupt-exit recovery, clean `SIGTERM` shutdown, SQLite integrity, segment hashes,
+and exact raw/canonical replay. The final isolated capture had no outer framing
+or CRC failures, no trailing bytes, and one sequence gap exactly accounted for
+by the first post-attach producer-drop summary; no later summary reported a
+drop.
 
 ## Gate H4: multi-node schedule
 

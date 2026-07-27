@@ -32,6 +32,8 @@ The implemented first adapter provides:
   connection epoch without affecting radio operation.
 - `replay_ingest.py`: feed ordered archive segments through the production
   parser and canonical path into a fresh database.
+- `verify_h3.py`: verify SQLite integrity, archive hashes, ordered raw records,
+  canonical observations, rejection reasons, producer drops, and radio health.
 
 Run a finite capture on the UNO Q with:
 
@@ -65,3 +67,18 @@ python3 -m heimdall.replay_ingest \
 Use a new database for replay. Comparing `observation_fingerprints()` between
 the live and replay run verifies canonical observation equivalence independent
 of SQLite row identifiers.
+
+Run the complete Gate H3 comparison with:
+
+```bash
+python3 -m heimdall.verify_h3 \
+  data/heimdall.sqlite3 data/raw data/replay.sqlite3
+```
+
+The live service holds an exclusive lock for its database. It batches canonical
+SQLite commits at 250 ms while syncing the raw-first archive independently, so
+an abrupt exit can recover from the archive without imposing a disk sync on
+every USB read. `SIGTERM` completes any USB record already being read, closes
+the active segment, checkpoints SQLite, and marks the run stopped. On restart,
+stale open epochs are marked interrupted and their segment hashes are restored
+to the catalog before a new run begins.

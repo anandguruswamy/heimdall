@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -157,6 +158,44 @@ class HeimdallStorage:
         )
         self.db.commit()
         return int(cursor.lastrowid)
+
+    def recover_interrupted(self, archive_root: Path) -> dict[str, int]:
+        """Close stale epochs and catalog segments left by an unclean exit."""
+        rows = self.db.execute(
+            "SELECT id,run_id FROM connections WHERE status='open' ORDER BY id"
+        ).fetchall()
+        segment_count = 0
+        for connection_id, _run_id in rows:
+            directory = archive_root / f"connection-{connection_id:06d}"
+            segments: list[ClosedSegment] = []
+            for path in sorted(directory.glob("segment-*.husb")):
+                try:
+                    index = int(path.stem.removeprefix("segment-"))
+                except ValueError:
+                    continue
+                digest = hashlib.sha256()
+                with path.open("rb") as stream:
+                    while chunk := stream.read(1024 * 1024):
+                        digest.update(chunk)
+                segments.append(
+                    ClosedSegment(index, path, path.stat().st_size, digest.hexdigest())
+                )
+            self.add_segments(connection_id, segments)
+            segment_count += len(segments)
+            stats = {
+                "recovered_after_process_exit": True,
+                "segments_recovered": len(segments),
+            }
+            self.db.execute(
+                "UPDATE connections SET closed_utc=?,status='interrupted',stats_json=? WHERE id=?",
+                (utc_now(), json.dumps(stats, sort_keys=True), connection_id),
+            )
+        self.db.execute(
+            "UPDATE runs SET ended_utc=?,status='interrupted' WHERE status='running'",
+            (utc_now(),),
+        )
+        self.db.commit()
+        return {"connections": len(rows), "segments": segment_count}
 
     def close_run(self, run_id: int, status: str = "clean") -> None:
         self.db.execute(

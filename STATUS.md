@@ -2,9 +2,8 @@
 
 ## Project state
 
-The N=2 Heimdall radio runtime and gateway USB export are hardware-validated.
-Gate H3 replayable ingest is implemented and host-tested; live UNO Q persistence
-and archive equivalence validation remain before Gate H3 passes.
+The N=2 Heimdall radio runtime, gateway USB export, and Gate H3 replayable UNO Q
+ingest are hardware-validated. The next runtime milestone is N=3.
 
 ## Starting point
 
@@ -240,17 +239,38 @@ and archive equivalence validation remain before Gate H3 passes.
   arbitrary-`M` relayed pooled reports use one immutable observation shape.
   Rotation, fragmented input, corruption accounting, reconnect recovery,
   out-of-order `M=2` reassembly, and live/replay observation equivalence are
-  covered by the host suite. All 68 host tests pass; live UNO Q validation is
-  pending.
+  covered by the host suite.
+- Gate H3 UNO Q validation: PASS. The service ran on `chinny` against the stable
+  gateway by-id path, rotated 256 KiB segments, survived a physical J20
+  disconnect/reconnect as a new connection epoch, recovered nine catalog entries
+  after an intentional abrupt termination, and then stopped cleanly via
+  `SIGTERM`. The combined recovery run cataloged and verified 81 segments,
+  113,563 raw records, and 55,708 canonical observations. Live and replay raw
+  digests were both
+  `c4ecf659ec66fbb79c04e7052d503ee13470289ebf11ba609a13438eb350a87c`;
+  observation digests were both
+  `a96154cd91eef4930897779e355a9136bbfa9e3d4f3c60ede43d097e83970ef8`.
+- The final isolated acceptance capture verified the corrected clean-stop path:
+  four segments, 5,237 records, and 2,532 observations; zero outer CRC,
+  framing, duplicate/old, unknown-type, or trailing-byte failures; matching
+  live/replay record digest
+  `fa296ae4842dc01a7b7819aad52d3c86ac8652f98cce1c5b1222c5b3c99ca58b`;
+  and matching observation digest
+  `18adaf829233684272bf398cd60aaf77fef5ca8661065a68ba313e17bc433e10`.
+  All four segment sizes and hashes matched, and both SQLite databases passed
+  `integrity_check`.
+- The final capture's one sequence gap was 18,529 records and exactly matched
+  one first-post-attach `usb_queue_drops=18529` summary accumulated while no
+  reader was present; all subsequent summaries reported zero drops. Across
+  1,290 captured cycles there were zero FCS, filter, validation, or subreport
+  CRC failures, one boundary peer miss, and a maximum callback of 2,868 us.
+  The 46 rejected host records were all data arriving before the first periodic
+  `HELLO`, as required by the decoder gate. All 69 host tests pass.
 
 ## Next executable checkpoint
 
-Run persistent ingestion on the UNO Q with a deliberately small rotation size,
-disconnect and reconnect the gateway CDC path, then stop cleanly. Replay every
-resulting connection archive into a fresh SQLite database and compare canonical
-observation fingerprints, parser loss counters, segment hashes, and SQLite
-integrity. Gate H3 passes only if every discrepancy is explained.
-
-After Gate H3, generalise and validate the runtime at N=3. Per-board
-antenna-delay calibration remains required before treating timestamps as
-calibrated ranges.
+Generalise and validate the runtime at N=3: identify and bind the third board,
+derive the N=3 configuration, build all board-specific images, then measure
+schedule continuity, observation completeness, payload rate, callback margin,
+and USB behavior. Per-board antenna-delay calibration remains required before
+treating timestamps as calibrated ranges.

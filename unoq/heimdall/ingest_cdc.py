@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 from pathlib import Path
 import select
+import signal
+import struct
 import termios
+import threading
 import time
 import tty
 
@@ -23,10 +27,22 @@ def run(
     reconnect_seconds: float = 2.0,
     rotate_bytes: int = 64 * 1024 * 1024,
 ) -> None:
-    storage = HeimdallStorage(database)
-    run_id = storage.start_run({**metadata, "mode": "live", "device": str(device)})
+    database.parent.mkdir(parents=True, exist_ok=True)
+    lock = database.with_name(database.name + ".lock").open("a+b")
     try:
-        while True:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.close()
+        raise RuntimeError(f"another ingest process owns {database}")
+    storage = HeimdallStorage(database)
+    storage.recover_interrupted(archive_root)
+    run_id = storage.start_run({**metadata, "mode": "live", "device": str(device)})
+    stop_requested = threading.Event()
+    prior_sigterm = signal.signal(
+        signal.SIGTERM, lambda _signum, _frame: stop_requested.set()
+    )
+    try:
+        while not stop_requested.is_set():
             descriptor = None
             session = None
             previous = None
@@ -37,7 +53,7 @@ def run(
                 session = IngestSession(
                     storage, run_id, str(device), archive_root, rotate_bytes
                 )
-                while True:
+                while not stop_requested.is_set():
                     readable, _, _ = select.select([descriptor], [], [], 1.0)
                     if not readable:
                         continue
@@ -45,10 +61,11 @@ def run(
                     if not chunk:
                         raise OSError("CDC device returned end of stream")
                     session.feed(chunk)
+                _complete_pending_record(descriptor, session)
             except (OSError, termios.error):
                 if session is not None:
                     session.close("disconnected")
-                time.sleep(reconnect_seconds)
+                stop_requested.wait(reconnect_seconds)
             finally:
                 if descriptor is not None:
                     if previous is not None:
@@ -57,6 +74,9 @@ def run(
                         except termios.error:
                             pass
                     os.close(descriptor)
+        if session is not None and not session.closed:
+            session.close("stopped")
+        storage.close_run(run_id, "stopped")
     except KeyboardInterrupt:
         if session is not None and not session.closed:
             session.close("stopped")
@@ -67,7 +87,29 @@ def run(
         storage.close_run(run_id, "failed")
         raise
     finally:
+        signal.signal(signal.SIGTERM, prior_sigterm)
         storage.close()
+        lock.close()
+
+
+def _complete_pending_record(descriptor: int, session: IngestSession) -> None:
+    deadline = time.monotonic() + 2.0
+    while session.parser.buffer and time.monotonic() < deadline:
+        buffered = len(session.parser.buffer)
+        if buffered < 12:
+            needed = 12 - buffered
+        else:
+            payload_length = struct.unpack_from("<H", session.parser.buffer, 6)[0]
+            needed = 16 + payload_length - buffered
+        if needed <= 0:
+            return
+        readable, _, _ = select.select([descriptor], [], [], deadline - time.monotonic())
+        if not readable:
+            return
+        chunk = os.read(descriptor, needed)
+        if not chunk:
+            return
+        session.feed(chunk)
 
 
 def main() -> None:
