@@ -30,8 +30,12 @@ drop.
 
 ## Gate H4: multi-node schedule
 
-Add reserved slots, then a third node. Measure collision rate, round duration,
-payload size, and per-pair observation rate before attempting six nodes.
+Add a third occupied superslot and node. Beacon v1 currently defines exactly N
+occupied superslots; do not add old-design reserved empty slots unless the
+contract and configuration model are deliberately revised first. Follow
+`docs/gate-h4-handoff.md`, then measure collision rate, round duration, payload
+size, failure recovery, and per-pair observation rate before attempting more
+nodes.
 
 ## Gate H5: fusion
 

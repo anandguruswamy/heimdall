@@ -145,8 +145,10 @@ available observation data.
 ### Round and slot
 
 A round is one complete scheduled sensing cycle. A slot is a node's assigned
-transmit position within that round. The initial topology defines seven slots
-at 50 Hz.
+transmit position within that round. Beacon v1 calls each node's occupied
+position a superslot and defines exactly N superslots per cycle, with no empty
+reserved positions. The validated N=2 profile uses 10,000 us superslots and a
+20,000 us cycle.
 
 ### USB CDC
 

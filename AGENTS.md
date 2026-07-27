@@ -30,8 +30,11 @@ Heimdall work.
 
 - DWM3001CDK nodes with DW3110 radios and nRF52833 MCUs.
 - Gateway connection uses the DWM3001 J20/native USB path, not J9 J-Link.
-- Initial physical deployment has two real nodes and seven deterministic slots;
-  unused slots remain empty until more hardware is available.
+- The validated deployment has two active nodes. Beacon v1 defines exactly N
+  occupied superslots; Gate H4 should use three occupied slots for three nodes.
+  The older seven-slot/reserved-empty concept conflicts with the current
+  contract and must not be introduced without deliberately revising the
+  contract and configuration model.
 - The UNO Q Linux side is Debian aarch64 and is reachable as `chinny`.
 
 ## Safety

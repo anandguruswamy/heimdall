@@ -31,6 +31,21 @@ Start with `docs/firmware-glossary.md` if any term in this guide is unfamiliar.
 3. Mark the physical board with its inventory label.
 4. Treat the VCOM COM number as a temporary observation, not a stable ID.
 
+For a board-bound runtime image, also read the nRF52833 FICR `DEVICEID` words
+through J-Link and record both words in `deployment/node-roster.lab.yaml` before
+building. Gate H4's node 2 candidate is board label 3 / J-Link `760197416`; its
+FICR is still pending. On the UNO Q, the read-only query is:
+
+```bash
+printf 'connect\nmem32 0x10000060,2\nq\n' |
+  JLinkExe -device nRF52833_xxAA -if SWD -speed 4000 \
+    -SelectEmuBySN 760197416
+```
+
+Confirm the low/high word ordering against an existing rostered board before
+recording the combined 64-bit device ID. See `docs/gate-h4-handoff.md` for the
+current N=3 candidate, blockers, and build sequence.
+
 J9 is used for programming, debugging, and J-Link VCOM. J20 is reserved for
 testing the native USB CDC data path.
 
@@ -159,6 +174,7 @@ separately from protocol work.
 
 ## Where to continue
 
+- For the current next milestone, read `docs/gate-h4-handoff.md` first.
 - Read `firmware/radio/BRINGUP-NOTES.md` for proven Phase 1 measurements.
 - Read `docs/architecture.md` for the complete system data flow.
 - Read `docs/beacon-protocol-explained.md` for how the beacon scheme works and

@@ -269,8 +269,18 @@ ingest are hardware-validated. The next runtime milestone is N=3.
 
 ## Next executable checkpoint
 
-Generalise and validate the runtime at N=3: identify and bind the third board,
-derive the N=3 configuration, build all board-specific images, then measure
-schedule continuity, observation completeness, payload rate, callback margin,
-and USB behavior. Per-board antenna-delay calibration remains required before
-treating timestamps as calibrated ranges.
+Gate H4 handoff is in `docs/gate-h4-handoff.md`. Candidate node 2 is already
+inventoried as physical board label 3 / J-Link `760197416`; its FICR identity
+and radio acceptance remain unknown. Read and bind that identity before build.
+
+The N=3 audit found confirmed runtime blockers: a compile-time N=2 assertion,
+single-peer observation retention, one-subreport relay validation, N=2-only
+peer-miss indexing, and a master-watchdog stall when node 2 is absent after node
+1 has been received. Host capture inspection also uses N=2 parity checks. Fix
+these and add N=3 fixtures before flashing.
+
+The conservative derived first profile is N=3, M=1, 10,000 us slots, 30,000 us
+cycles, 592-byte report payloads, 625-byte frames, approximately 66,900 B/s
+gateway USB, and config hash `0xC8CF`. Build all three board-bound images from
+one explicit N=3 configuration. Per-board antenna-delay calibration remains
+required before treating timestamps as calibrated ranges.
