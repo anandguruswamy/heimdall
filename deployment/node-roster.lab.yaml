@@ -1,9 +1,7 @@
 schema: heimdall-node-roster/1
 beacon_config: beacon-config.n5.json
-deployment_status: incomplete-n5-roster
-notes: Nodes 0-2 are available for an N=5 missing-node test. Nodes 3-4 require FICR identification before images can be built. Antenna delays are uncalibrated bring-up values and must not be used for calibrated ranging.
-pending_node_ids: [3, 4]
-candidate_jlink_serials: ["760200606", "760223924"]
+deployment_status: complete-n5-roster
+notes: Nodes 0-4 are identified and flashed. Antenna delays are uncalibrated bring-up values and must not be used for calibrated ranging.
 nodes:
   - node_id: 0
     role: gateway
@@ -29,6 +27,24 @@ nodes:
     device_id: "6402f3a7947f4a25"
     ficr_deviceid_low: "0x947f4a25"
     ficr_deviceid_high: "0x6402f3a7"
+    tx_antenna_delay_dtu: 16385
+    rx_antenna_delay_dtu: 16385
+    calibration_status: uncalibrated-bring-up
+  - node_id: 3
+    role: fixed
+    jlink_serial: "760200606"
+    device_id: "86b7ac3a20f3ab47"
+    ficr_deviceid_low: "0x20f3ab47"
+    ficr_deviceid_high: "0x86b7ac3a"
+    tx_antenna_delay_dtu: 16385
+    rx_antenna_delay_dtu: 16385
+    calibration_status: uncalibrated-bring-up
+  - node_id: 4
+    role: fixed
+    jlink_serial: "760223924"
+    device_id: "454d48015b214cd7"
+    ficr_deviceid_low: "0x5b214cd7"
+    ficr_deviceid_high: "0x454d4801"
     tx_antenna_delay_dtu: 16385
     rx_antenna_delay_dtu: 16385
     calibration_status: uncalibrated-bring-up

@@ -3,8 +3,9 @@
 ## Project state
 
 The N=5/M=2 Heimdall radio runtime, thin gateway USB export, and replayable UNO Q
-ingest are hardware-validated with three active boards and two deliberately
-missing nodes. The fastest reliable 64-tap profile is 28.571 Hz; antenna
+ingest are hardware-validated with all five nodes active at 28.571 Hz and 64 CIR
+taps. Full-roster USB export is lossless after startup; the current physical
+placement still has low-rate radio loss concentrated on node 2. Antenna
 calibration remains before timestamps can be treated as accurate ranges.
 
 ## Starting point
@@ -314,7 +315,7 @@ calibration remains before timestamps can be treated as accurate ranges.
   eliminating sequence inversions while keeping USB backpressure independent of
   radio timing. The UNO Q owns M=2 reassembly, padding/count checks, subreport
   CRC validation, canonicalization, and replay.
-- Final N=5 images all flashed and verified `O.K.`. Node 0 SHA-256 is
+- Final N=5 images for nodes 0-2 were flashed and verified `O.K.`. Node 0 SHA-256 is
   `436CDAC15FD2152EC3AFD7E8BE813D3BDA1D159CB6EA7593B89316CA98B78FA1`
   (79,908 B flash / 69,624 B RAM), node 1 is
   `AE8EFB80E564720C3844DD927497157970C12F736755CDAC3A8E85580CC92FC7`
@@ -333,6 +334,49 @@ calibration remains before timestamps can be treated as accurate ranges.
   five-second smoke capture covered 146 summaries with valid ownership, all TX
   confirmed, no CRC/framing/validation errors, and exactly the expected node 3/4
   misses in the last 100 summaries.
+- Board 5 is bound to node 4: J-Link `760223924`, FICR
+  `454D4801:5B214CD7`. Its image built at 42,444 B flash / 18,112 B RAM with
+  SHA-256
+  `50B84078564EC88A8FCD9C67647136E3874473AE48CB7F0A7C2EC68FFA29527F`
+  and flashed with J-Link verification `O.K.`. A 15-second capture had all node
+  4 transmissions confirmed, valid ownership, zero CRC/framing/validation
+  errors, and zero node 4 misses in the last 100 summaries. Moved node 2 missed
+  19 of those 100 cycles, so four-active-node qualification is not yet a pass.
+- Board 4's J-Link `760200606` initially entered USB product `1366:0101` after
+  its old onboard firmware failed to finish an automatic update.
+- Board 4 recovered after reconnecting J9 and is bound to node 3: J-Link
+  `760200606`, FICR `86B7AC3A:20F3AB47`.
+- Full-roster USB optimization: PASS at the original 3,500 us slot. The gateway
+  uses a dedicated CDC workqueue, an 8 KiB CDC TX FIFO, speed-optimized code,
+  and a 256-entry IEEE CRC32 table. RAM-only diagnostics separate the 16-event
+  gateway slab from the 32-record stream slab without changing USB records.
+  The final gateway image is 97,820 B flash / 79,160 B RAM with SHA-256
+  `FC34D01ED2594084D0698D33C6E046442856A03808772F174D4F956A9A06E1B8`.
+- D9-D12 now toggle on validated `m=0` reception from each board's four peers,
+  ordered by peer node ID with the local ID omitted. D13 remains the
+  non-programmable power/USB indicator. Final fixed-node images are 42,620-42,636
+  B flash / 19,136 B RAM. SHA-256 values are node 1
+  `53E83586EE4FDE2FF181526D5FA2383E65F28D9D0C0CD21FE83983ABD8B63C56`,
+  node 2 `9C109FC6DA7018A80AE1703938CEF43A0026C40E7ABC93696449DB8740E2275B`,
+  node 3 `C7D7A2ACBB9A19425B4CF8CD78F81203B251913498EA75E9CFF6D5E897F8D31E`,
+  and node 4 `AA61156678F80E9239F1F1E4552391B1513ED406B1D6AAE5E4727C89AD2C3A16`.
+  All five flashes verified `O.K.` with J-Link V9.62.
+- A 60-second LED-enabled capture passed sustained export and protocol
+  integrity. It contained 11,221,153 bytes and 1,717 summaries; after the first
+  summary acknowledged pre-capture backlog, USB drops were zero. All TX records
+  were confirmed; ownership and cycle binding were valid; CRC, framing,
+  validation, FCS, and filter errors were zero. Gateway callback maximum was
+  2,105 us. Radio delivery was 13,690/13,736 expected peer frames (99.665%):
+  1,671 cycles received 8/8 and 46 received 7/8, primarily due to the current
+  node 2 placement. Capture SHA-256 is
+  `DD913D7F7CB6B773AA5FC65B12B2527ADADF0A1C64E5145CFD30599F809D34C4`.
+- After review, the gateway explicitly initializes its CRC table before RX or
+  USB export can start. The exact final image set passed a 30-second confirmation
+  with 5,625,173 bytes and 859 summaries. The initial backlog acknowledgement
+  and two residual startup drops were followed by zero tail drops; all TX was
+  confirmed and protocol checks passed. Radio delivery was 6,853/6,872 frames
+  (99.724%): 841 cycles were 8/8, 17 were 7/8, and one was 6/8. Capture SHA-256
+  is `D97BCC529BFC629680D6690D086D5097634A0CF334857F0DA574B2A6A2C5A652`.
 - A 3,000 us candidate reached 33.333 Hz with no delayed-start errors, but was
   rejected: 11/1,003 summaries missed one `m>0` frame and four summaries had an
   active-node `m=0` miss. Early RX rearm reduced this from 147 incomplete cycles,
@@ -340,10 +384,10 @@ calibration remains before timestamps can be treated as accurate ranges.
 
 ## Next executable checkpoint
 
-N=5/M=2 is hardware-qualified with nodes 0-2 at 28.571 Hz. The next deployment
-checkpoint is identifying the FICR IDs of physical boards 4 and 5, completing
-roster positions 3 and 4, building their identity-bound images, and validating
-all eight received peer frames plus all 20 directed observations per cycle.
+N=5/M=2 is hardware-qualified with all nodes active at 28.571 Hz, including
+lossless steady-state gateway export at the full modeled 187,200 B/s. The next
+deployment checkpoint is improving node 2 placement/link reliability, then
+performing per-board antenna-delay calibration and ranging validation.
 
 Per-board antenna-delay calibration and ranging validation remain required. All
 current boards still use the explicit uncalibrated 16385 DTU bring-up value; do

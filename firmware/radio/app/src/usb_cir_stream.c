@@ -36,6 +36,7 @@ static struct stream_message *tx_message;
 static uint16_t tx_offset;
 #endif
 static atomic_t stream_drop_count;
+struct heimdall_usb_queue_diagnostics heimdall_usb_queue_diagnostics;
 #if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
 static atomic_t heimdall_record_sequence;
 static atomic_t heimdall_drop_pending;
@@ -44,13 +45,24 @@ static atomic_t heimdall_drop_pending;
 static struct stream_message *stream_message_alloc(void)
 {
 	struct stream_message *message;
+	atomic_val_t depth;
+	atomic_val_t high_water;
 
 	if (k_mem_slab_alloc(&stream_slab, (void **)&message, K_NO_WAIT) != 0) {
+		atomic_inc(&heimdall_usb_queue_diagnostics.allocation_failures);
 		atomic_inc(&stream_drop_count);
 #if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
 		atomic_set(&heimdall_drop_pending, 1);
 #endif
 		return NULL;
+	}
+	depth = atomic_inc(&heimdall_usb_queue_diagnostics.depth) + 1;
+	high_water = atomic_get(&heimdall_usb_queue_diagnostics.depth_high_water);
+	while (depth > high_water &&
+	       !atomic_cas(&heimdall_usb_queue_diagnostics.depth_high_water,
+			   high_water, depth)) {
+		high_water = atomic_get(
+			&heimdall_usb_queue_diagnostics.depth_high_water);
 	}
 	return message;
 }
@@ -206,6 +218,7 @@ void heimdall_usb_note_drop(void)
 static void cir_stream_uart_irq(const struct device *dev, void *user_data)
 {
 	ARG_UNUSED(user_data);
+	atomic_inc(&heimdall_usb_queue_diagnostics.callback_count);
 
 	if (!uart_irq_update(dev) || !uart_irq_tx_ready(dev)) {
 		return;
@@ -226,12 +239,16 @@ static void cir_stream_uart_irq(const struct device *dev, void *user_data)
 
 		int sent = uart_fifo_fill(dev, &tx_message->data[tx_offset],
 					  tx_message->length - tx_offset);
+		atomic_inc(&heimdall_usb_queue_diagnostics.fill_calls);
 		if (sent <= 0) {
+			atomic_inc(&heimdall_usb_queue_diagnostics.fill_zero_returns);
 			return;
 		}
+		atomic_add(&heimdall_usb_queue_diagnostics.bytes_accepted, sent);
 		tx_offset += (uint16_t)sent;
 		if (tx_offset == tx_message->length) {
 			k_mem_slab_free(&stream_slab, tx_message);
+			atomic_dec(&heimdall_usb_queue_diagnostics.depth);
 			tx_message = NULL;
 		}
 	}
@@ -310,12 +327,14 @@ static void cir_stream_thread(void *a, void *b, void *c)
 		struct stream_message *message = k_fifo_get(&stream_fifo, K_FOREVER);
 		if (!device_is_ready(cdc_uart)) {
 			k_mem_slab_free(&stream_slab, message);
+			atomic_dec(&heimdall_usb_queue_diagnostics.depth);
 			continue;
 		}
 		for (uint16_t i = 0; i < message->length; ++i) {
 			uart_poll_out(cdc_uart, message->data[i]);
 		}
 		k_mem_slab_free(&stream_slab, message);
+		atomic_dec(&heimdall_usb_queue_diagnostics.depth);
 	}
 #endif
 }

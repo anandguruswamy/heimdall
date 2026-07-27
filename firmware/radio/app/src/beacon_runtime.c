@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include <zephyr/drivers/hwinfo.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/printk.h>
@@ -36,6 +37,7 @@
 #define OBS_FLAG_CIR_TRUNCATED BIT(1)
 #define OBS_FLAG_FP_VALID BIT(2)
 #define GATEWAY_RX_EVENT_COUNT 16U
+#define PEER_LED_COUNT 4U
 
 BUILD_ASSERT(HEIMDALL_N_NODES >= 2U && HEIMDALL_N_NODES <= 8U,
 	     "the beacon runtime supports two through eight nodes");
@@ -47,6 +49,17 @@ BUILD_ASSERT(HEIMDALL_SUBREPORT_BYTES <= HEIMDALL_FRAME_PAYLOAD_BYTES);
 BUILD_ASSERT(HEIMDALL_CIR_TAPS <= DWT_CIR_LEN_IP_PRF64);
 
 volatile struct heimdall_runtime_counters heimdall_runtime_counters;
+static const struct gpio_dt_spec peer_leds[PEER_LED_COUNT] = {
+	GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios),
+	GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios),
+	GPIO_DT_SPEC_GET(DT_ALIAS(led2), gpios),
+	GPIO_DT_SPEC_GET(DT_ALIAS(led3), gpios),
+};
+static bool peer_leds_ready;
+#if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
+struct heimdall_gateway_queue_diagnostics
+	heimdall_gateway_queue_diagnostics;
+#endif
 
 static struct {
 	bool synchronized;
@@ -150,6 +163,21 @@ K_MEM_SLAB_DEFINE(gateway_rx_event_slab, sizeof(struct gateway_rx_event),
 		  GATEWAY_RX_EVENT_COUNT, 4);
 K_FIFO_DEFINE(gateway_rx_event_fifo);
 
+static void gateway_event_depth_increment(void)
+{
+	atomic_val_t depth = atomic_inc(
+		&heimdall_gateway_queue_diagnostics.depth) + 1;
+	atomic_val_t high_water = atomic_get(
+		&heimdall_gateway_queue_diagnostics.depth_high_water);
+
+	while (depth > high_water &&
+	       !atomic_cas(&heimdall_gateway_queue_diagnostics.depth_high_water,
+			   high_water, depth)) {
+		high_water = atomic_get(
+			&heimdall_gateway_queue_diagnostics.depth_high_water);
+	}
+}
+
 static struct k_work_delayable gateway_status_work;
 static uint64_t gateway_device_id;
 static uint32_t cycle_callback_max_us;
@@ -217,6 +245,7 @@ static void gateway_export_thread(void *a, void *b, void *c)
 			break;
 		}
 		k_mem_slab_free(&gateway_rx_event_slab, event);
+		atomic_dec(&heimdall_gateway_queue_diagnostics.depth);
 	}
 }
 
@@ -230,9 +259,11 @@ static struct gateway_rx_event *gateway_event_alloc(enum gateway_event_type type
 
 	if (k_mem_slab_alloc(&gateway_rx_event_slab, (void **)&event,
 			     K_NO_WAIT) != 0) {
+		atomic_inc(&heimdall_gateway_queue_diagnostics.allocation_failures);
 		heimdall_usb_note_drop();
 		return NULL;
 	}
+	gateway_event_depth_increment();
 	event->type = type;
 	event->unsynchronized = unsynchronized;
 	return event;
@@ -312,6 +343,30 @@ static uint64_t timestamp40(const uint8_t timestamp[5])
 		value = (value << 8) | timestamp[i];
 	}
 	return value;
+}
+
+static void peer_leds_init(void)
+{
+	for (size_t i = 0U; i < PEER_LED_COUNT; ++i) {
+		if (!gpio_is_ready_dt(&peer_leds[i]) ||
+		    gpio_pin_configure_dt(&peer_leds[i], GPIO_OUTPUT_INACTIVE) != 0) {
+			return;
+		}
+	}
+	peer_leds_ready = true;
+}
+
+static void peer_led_toggle(uint16_t source)
+{
+	uint16_t peer_index;
+
+	if (!peer_leds_ready || source == CONFIG_HEIMDALL_NODE_ID) {
+		return;
+	}
+	peer_index = source < CONFIG_HEIMDALL_NODE_ID ? source : source - 1U;
+	if (peer_index < PEER_LED_COUNT) {
+		(void)gpio_pin_toggle_dt(&peer_leds[peer_index]);
+	}
 }
 
 static uint64_t read_system_timestamp40(void)
@@ -848,7 +903,10 @@ static void rx_ok_cb(const dwt_cb_data_t *cb_data)
 
 	if (k_mem_slab_alloc(&gateway_rx_event_slab,
 			     (void **)&gateway_event, K_NO_WAIT) == 0) {
+		gateway_event_depth_increment();
 		frame_data = gateway_event->frame;
+	} else {
+		atomic_inc(&heimdall_gateway_queue_diagnostics.allocation_failures);
 	}
 #endif
 
@@ -876,6 +934,9 @@ static void rx_ok_cb(const dwt_cb_data_t *cb_data)
 	runtime.last_valid_uptime_ms = k_uptime_get_32();
 	runtime.synchronized = true;
 	update_evidence(&header);
+	if (header.m == 0U) {
+		peer_led_toggle(header.src_addr);
+	}
 	heimdall_runtime_counters.last_rx_k = header.k;
 	heimdall_runtime_counters.last_rx_timestamp = rx_timestamp;
 	heimdall_runtime_counters.peer_adoptions++;
@@ -1198,6 +1259,10 @@ int heimdall_beacon_runtime_run(void)
 	uint32_t device_id_low;
 	uint32_t device_id_high;
 
+#if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
+	heimdall_crc32_init();
+#endif
+
 	if (hwinfo_get_device_id(device_id, sizeof(device_id)) !=
 	    sizeof(device_id)) {
 		printk("heimdall: device identity read failed\n");
@@ -1235,6 +1300,7 @@ int heimdall_beacon_runtime_run(void)
 		HEIMDALL_MASTER_NODE_ID ? 0U : UINT8_MAX;
 	runtime.evidence_min_received = UINT8_MAX;
 	update_counter_state();
+	peer_leds_init();
 	k_work_init_delayable(&bootstrap_work, bootstrap_handler);
 	k_work_init_delayable(&watchdog_work, watchdog_handler);
 	for (uint8_t m = 0U; m < HEIMDALL_M; ++m) {

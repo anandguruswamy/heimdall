@@ -4,12 +4,27 @@
 / {
 	aliases {
 		led0 = &phase1_led;
+		led1 = &heimdall_led1;
+		led2 = &heimdall_led2;
+		led3 = &heimdall_led3;
 	};
 
 	leds {
 		phase1_led: phase1_led {
 			gpios = <&gpio0 4 GPIO_ACTIVE_LOW>;
 			label = "DWM3001CDK D9";
+		};
+		heimdall_led1: heimdall_led1 {
+			gpios = <&gpio0 14 GPIO_ACTIVE_LOW>;
+			label = "DWM3001CDK D10";
+		};
+		heimdall_led2: heimdall_led2 {
+			gpios = <&gpio0 22 GPIO_ACTIVE_LOW>;
+			label = "DWM3001CDK D11";
+		};
+		heimdall_led3: heimdall_led3 {
+			gpios = <&gpio0 5 GPIO_ACTIVE_LOW>;
+			label = "DWM3001CDK D12";
 		};
 	};
 };

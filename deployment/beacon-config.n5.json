@@ -1,8 +1,8 @@
 {
   "schema": "heimdall-beacon-config/1",
   "protocol_version": 1,
-  "generated_by": "hand-written N=5 profile, verified by tools/config/heimdall_config.py and three-board hardware qualification",
-  "description": "Five-board M=2 profile with exactly five superslots. The 3500 us slot is the fastest reliable 64-tap profile qualified with nodes 0-2 active and nodes 3-4 intentionally absent.",
+  "generated_by": "hand-written N=5 profile, verified by tools/config/heimdall_config.py and five-board hardware qualification",
+  "description": "Five-board M=2 profile with exactly five superslots. The 3500 us slot retains 64 taps and targets the maximum qualified reporting rate.",
   "network": {
     "n_nodes": 5,
     "network_id": 43981,

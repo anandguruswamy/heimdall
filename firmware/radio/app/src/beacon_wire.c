@@ -6,6 +6,33 @@
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/crc.h>
 
+static uint32_t crc32_table[256];
+static bool crc32_table_ready;
+
+static void crc32_table_init(void)
+{
+	if (crc32_table_ready) {
+		return;
+	}
+	for (uint32_t i = 0U; i < 256U; ++i) {
+		uint32_t value = i;
+
+		for (uint8_t bit = 0U; bit < 8U; ++bit) {
+			value = (value >> 1) ^
+				((value & 1U) != 0U ? 0xedb88320U : 0U);
+		}
+		crc32_table[i] = value;
+	}
+	crc32_table_ready = true;
+}
+
+#if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
+void heimdall_crc32_init(void)
+{
+	crc32_table_init();
+}
+#endif
+
 static uint64_t get_le40(const uint8_t *data)
 {
 	uint64_t value = 0U;
@@ -26,7 +53,13 @@ static void put_le40(uint8_t *data, uint64_t value)
 
 uint32_t heimdall_crc32(const uint8_t *data, size_t length)
 {
-	return crc32_ieee(data, length);
+	uint32_t crc = UINT32_MAX;
+
+	crc32_table_init();
+	for (size_t i = 0U; i < length; ++i) {
+		crc = (crc >> 8) ^ crc32_table[(crc ^ data[i]) & 0xffU];
+	}
+	return ~crc;
 }
 
 int heimdall_frame_header_encode(const struct heimdall_frame_header *header,

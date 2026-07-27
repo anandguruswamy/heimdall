@@ -445,6 +445,44 @@ left explicitly pending rather than inferred from build success.
   five-second smoke capture covered 146 summaries with all TX confirmed, valid
   ownership, zero CRC/framing/validation failures, and exactly the expected
   node 3/4 misses in the last 100 summaries.
+- Board 5 (`760223924`) was identified as FICR `454D4801:5B214CD7`, built for
+  node 4 with the same N=5/M=2 profile, and flashed with verification `O.K.`.
+  Its image is 42,444 B flash / 18,112 B RAM, SHA-256
+  `50B84078564EC88A8FCD9C67647136E3874473AE48CB7F0A7C2EC68FFA29527F`.
+  A 15-second capture had zero node 4 misses in the last 100 summaries and no
+  CRC, framing, ownership, or validation errors. Node 2 missed 19/100 cycles
+  after it was moved to wall power, so the four-active-node topology is not yet
+  qualified.
+- Board 4's J-Link (`760200606`) entered USB product `1366:0101` after an
+  automatic onboard-firmware update timed out.
+- Reconnecting board 4 completed its J-Link update. Its FICR is
+  `86B7AC3A:20F3AB47`, and it is now roster-bound and flashed as node 3.
+- Full-roster 3,500 us export initially saturated both application slabs near
+  150 kB/s. A dedicated CDC workqueue and 8 KiB TX FIFO reduced contention; a
+  256-entry CRC32 table and `CONFIG_SPEED_OPTIMIZATIONS=y` raised sustained
+  gateway export to the required 187,200 B/s. The final gateway uses 97,820 B
+  flash / 79,160 B RAM and has SHA-256
+  `FC34D01ED2594084D0698D33C6E046442856A03808772F174D4F956A9A06E1B8`.
+- D9-D12 toggle for validated `m=0` reception from the four peer IDs in sorted
+  order with the local ID omitted. D13 is not MCU-controlled. Final node 1-4
+  image hashes are `53E83586EE4FDE2FF181526D5FA2383E65F28D9D0C0CD21FE83983ABD8B63C56`,
+  `9C109FC6DA7018A80AE1703938CEF43A0026C40E7ABC93696449DB8740E2275B`,
+  `C7D7A2ACBB9A19425B4CF8CD78F81203B251913498EA75E9CFF6D5E897F8D31E`,
+  and `AA61156678F80E9239F1F1E4552391B1513ED406B1D6AAE5E4727C89AD2C3A16`.
+- The final 60-second LED-enabled capture contained 11,221,153 bytes and 1,717
+  summaries. USB drops were zero after the first summary acknowledged backlog
+  accumulated before the reader attached. All TX was confirmed, callback
+  maximum was 2,105 us, and CRC/framing/ownership/validation checks passed.
+  Radio delivery was 13,690/13,736 frames (99.665%): 1,671 cycles were 8/8 and
+  46 were 7/8, with loss concentrated on node 2 in the current placement.
+  Capture SHA-256 is
+  `DD913D7F7CB6B773AA5FC65B12B2527ADADF0A1C64E5145CFD30599F809D34C4`.
+- The reviewed gateway explicitly initializes the generated CRC table before
+  enabling RX or queueing USB records. Its exact final image passed a 30-second
+  confirmation with 5,625,173 bytes, 859 summaries, zero tail USB drops, all TX
+  confirmed, and no CRC/framing/validation errors. Radio delivery was
+  6,853/6,872 frames (99.724%). Capture SHA-256 is
+  `D97BCC529BFC629680D6690D086D5097634A0CF334857F0DA574B2A6A2C5A652`.
 - A 3,000 us / 33.333 Hz candidate was rejected despite zero delayed-start
   errors: 11 of 1,003 summaries missed one `m>0` frame and four summaries had
   an active-node `m=0` miss. The approximately 173 us measured margin is not a

@@ -4,6 +4,20 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include <zephyr/sys/atomic.h>
+
+struct heimdall_usb_queue_diagnostics {
+	atomic_t allocation_failures;
+	atomic_t depth;
+	atomic_t depth_high_water;
+	atomic_t callback_count;
+	atomic_t fill_calls;
+	atomic_t fill_zero_returns;
+	atomic_t bytes_accepted;
+};
+
+extern struct heimdall_usb_queue_diagnostics heimdall_usb_queue_diagnostics;
+
 void live_cir_stream_enqueue(const char *line, size_t length);
 bool live_cir_stream_enqueue_binary(uint32_t seq, uint64_t rx_ts, int32_t cfo,
                                     uint32_t fp, uint8_t agc_state,

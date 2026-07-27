@@ -2,6 +2,14 @@
 
 #include <stdint.h>
 
+#include <zephyr/sys/atomic.h>
+
+struct heimdall_gateway_queue_diagnostics {
+	atomic_t allocation_failures;
+	atomic_t depth;
+	atomic_t depth_high_water;
+};
+
 struct heimdall_runtime_counters {
 	uint32_t rx_frames;
 	uint32_t rx_validated;
@@ -45,5 +53,7 @@ struct heimdall_runtime_counters {
 };
 
 extern volatile struct heimdall_runtime_counters heimdall_runtime_counters;
+extern struct heimdall_gateway_queue_diagnostics
+	heimdall_gateway_queue_diagnostics;
 
 int heimdall_beacon_runtime_run(void);

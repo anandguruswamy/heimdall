@@ -50,6 +50,7 @@ struct heimdall_subreport {
 };
 
 uint32_t heimdall_crc32(const uint8_t *data, size_t length);
+void heimdall_crc32_init(void);
 
 int heimdall_frame_header_encode(const struct heimdall_frame_header *header,
 					 uint8_t *out, size_t out_length);
