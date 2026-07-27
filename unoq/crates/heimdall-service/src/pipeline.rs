@@ -570,7 +570,8 @@ impl Pipeline {
                     "correlation": correlation, "quality": quality.0,
                     "evidence": evidence_id,
                     "marker_raw": marker_raw, "marker_aligned": marker_aligned,
-                    "magnitude": aligned.iter().map(|value| value.norm() as f32).collect::<Vec<_>>()
+                    "magnitude": aligned.iter().map(|value| value.norm() as f32).collect::<Vec<_>>(),
+                    "resampled": &frame.magnitude_16x,
                 }),
             ));
         }
