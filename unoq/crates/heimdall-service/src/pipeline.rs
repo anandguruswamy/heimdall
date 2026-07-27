@@ -162,6 +162,16 @@ pub struct DspSettings {
     pub slow_fft_max_gap: usize,
     pub slow_fft_history_s: f64,
     pub fast_time_sample_rate_hz: f64,
+    pub waterfall_clutter: bool,
+    pub waterfall_magnitude_clutter: bool,
+    pub waterfall_nuisance_fit: bool,
+    pub waterfall_reject_spikes: bool,
+    pub waterfall_path_loss: bool,
+    pub waterfall_noise_clip_db: f64,
+    pub waterfall_fixed_scale_min: f64,
+    pub waterfall_fixed_scale_max: f64,
+    pub waterfall_tap_min: i8,
+    pub waterfall_tap_max: i8,
 }
 
 impl Default for DspSettings {
@@ -180,6 +190,16 @@ impl Default for DspSettings {
             slow_fft_max_gap: 2,
             slow_fft_history_s: 2.0,
             fast_time_sample_rate_hz: 998_400_000.0,
+            waterfall_clutter: false,
+            waterfall_magnitude_clutter: true,
+            waterfall_nuisance_fit: true,
+            waterfall_reject_spikes: true,
+            waterfall_path_loss: false,
+            waterfall_noise_clip_db: 12.0,
+            waterfall_fixed_scale_min: -60.0,
+            waterfall_fixed_scale_max: -10.0,
+            waterfall_tap_min: -40,
+            waterfall_tap_max: 63,
         }
     }
 }
@@ -576,7 +596,7 @@ impl Pipeline {
             ));
         }
         if want_waterfall {
-            let row = downsample_row(&frame.magnitude_16x, 256);
+            let row = waterfall_processed_row(link, &frame, &self.settings);
             let width = row.len();
             payloads.push((
                 Topic::Waterfall,
@@ -1616,6 +1636,181 @@ fn calibration_pairs(collection: &CalibrationCollection) -> Vec<CalibrationPair>
             }
         })
         .collect()
+}
+
+fn waterfall_processed_row(link: &LinkState, frame: &CirFrame, settings: &DspSettings) -> Vec<f32> {
+    let tap_min = settings.waterfall_tap_min.max(-64).min(63);
+    let tap_max = settings.waterfall_tap_max.max(tap_min).min(63);
+    let mut rows: Vec<Vec<Complex64>> = if settings.waterfall_reject_spikes {
+        link.cir
+            .iter()
+            .filter(|f| f.correlation >= 0.90)
+            .map(|f| f.aligned.clone())
+            .collect()
+    } else {
+        link.cir.iter().map(|f| f.aligned.clone()).collect()
+    };
+    if rows.len() < 2 {
+        return downsample_row(&frame.magnitude_16x, 256);
+    }
+    if settings.waterfall_clutter {
+        if settings.waterfall_magnitude_clutter {
+            subtract_magnitude_mean(&mut rows);
+        } else {
+            subtract_complex_mean(&mut rows);
+        }
+    }
+    if settings.waterfall_clutter
+        && settings.waterfall_nuisance_fit
+        && !settings.waterfall_magnitude_clutter
+    {
+        project_static_nuisance(&mut rows);
+    }
+    if settings.waterfall_path_loss {
+        apply_noise_clip(&mut rows, settings.waterfall_noise_clip_db);
+        apply_path_loss(&mut rows, 0.25);
+    }
+    let aligned = &frame.aligned;
+    let count = (tap_max - tap_min + 1) as usize;
+    let mut mag = Vec::with_capacity(count);
+    for i in tap_min..=tap_max {
+        let idx = (i.max(0) as usize).min(aligned.len() - 1);
+        mag.push(aligned[idx].norm() as f32);
+    }
+    let ratio = mag.len() as f64 / aligned.len() as f64;
+    let target = (256.0 * ratio) as usize;
+    downsample_row(&mag, target.max(1))
+}
+
+fn subtract_magnitude_mean(rows: &mut [Vec<Complex64>]) {
+    if rows.len() < 2 {
+        return;
+    }
+    let taps = rows.first().map_or(0, |r| r.len());
+    for x in 0..taps {
+        let mean: f64 = rows.iter().map(|r| r[x].norm()).sum::<f64>() / rows.len() as f64;
+        for row in rows.iter_mut() {
+            let residual = (row[x].norm() - mean).abs();
+            row[x] = Complex64::new(residual, 0.0);
+        }
+    }
+}
+
+fn subtract_complex_mean(rows: &mut [Vec<Complex64>]) {
+    if rows.len() < 2 {
+        return;
+    }
+    let taps = rows.first().map_or(0, |r| r.len());
+    for x in 0..taps {
+        let mut mr = 0.0;
+        let mut mi = 0.0;
+        for row in rows.iter() {
+            mr += row[x].re;
+            mi += row[x].im;
+        }
+        mr /= rows.len() as f64;
+        mi /= rows.len() as f64;
+        for row in rows.iter_mut() {
+            row[x].re -= mr;
+            row[x].im -= mi;
+        }
+    }
+}
+
+fn project_static_nuisance(rows: &mut [Vec<Complex64>]) {
+    if rows.len() < 3 {
+        return subtract_complex_mean(rows);
+    }
+    let n = rows.first().map_or(0, |r| r.len());
+    let h: Vec<_> = (0..n)
+        .map(|x| {
+            let (mut re, mut im) = (0.0, 0.0);
+            for row in rows.iter() {
+                re += row[x].re;
+                im += row[x].im;
+            }
+            (re / rows.len() as f64, im / rows.len() as f64)
+        })
+        .collect();
+    let d: Vec<_> = (0..n)
+        .map(|x| {
+            let l = &h[x.max(1) - 1];
+            let r = &h[(x + 1).min(n - 1)];
+            let s = if x == 0 || x == n - 1 { 1.0 } else { 2.0 };
+            ((r.0 - l.0) / s, (r.1 - l.1) / s)
+        })
+        .collect();
+    let (mut a, mut c, mut br, mut bi) = (0.0, 0.0, 0.0, 0.0);
+    for x in 0..n {
+        let (hr, hi) = h[x];
+        let (dr, di) = d[x];
+        a += hr * hr + hi * hi;
+        c += dr * dr + di * di;
+        br += hr * dr + hi * di;
+        bi += hr * di - hi * dr;
+    }
+    let det = a * c - br * br - bi * bi;
+    if !(det > 1e-18 * a * c) {
+        return subtract_complex_mean(rows);
+    }
+    for row in rows.iter_mut() {
+        let (mut pr, mut pi, mut qr, mut qi) = (0.0, 0.0, 0.0, 0.0);
+        for x in 0..n {
+            let (hr, hi) = h[x];
+            let (dr, di) = d[x];
+            pr += hr * row[x].re + hi * row[x].im;
+            pi += hr * row[x].im - hi * row[x].re;
+            qr += dr * row[x].re + di * row[x].im;
+            qi += dr * row[x].im - di * row[x].re;
+        }
+        let ar = (c * pr - (br * qr - bi * qi)) / det;
+        let ai = (c * pi - (br * qi + bi * qr)) / det;
+        let br2 = (-(br * pr + bi * pi) + a * qr) / det;
+        let bi2 = (-(br * pi - bi * pr) + a * qi) / det;
+        for x in 0..n {
+            let (hr, hi) = h[x];
+            let (dr, di) = d[x];
+            row[x].re -= ar * hr - ai * hi + br2 * dr - bi2 * di;
+            row[x].im -= ar * hi + ai * hr + br2 * di + bi2 * dr;
+        }
+    }
+}
+
+fn apply_noise_clip(rows: &mut [Vec<Complex64>], clip_db: f64) {
+    if rows.is_empty() {
+        return;
+    }
+    let taps = rows.first().map_or(0, |r| r.len());
+    let noise_taps = (taps as i32).min(32) as usize;
+    let mut noise_vals: Vec<f64> = rows
+        .iter()
+        .flat_map(|row| row.iter().take(noise_taps))
+        .map(|v| v.norm())
+        .collect();
+    noise_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let threshold = if noise_vals.is_empty() {
+        0.0
+    } else {
+        noise_vals[noise_vals.len() / 2] * 10.0_f64.powf(clip_db / 20.0)
+    };
+    for row in rows.iter_mut() {
+        for v in row.iter_mut() {
+            if v.norm() < threshold {
+                *v = Complex64::new(0.0, 0.0);
+            }
+        }
+    }
+}
+
+fn apply_path_loss(rows: &mut [Vec<Complex64>], los_distance_m: f64) {
+    let tap_path_m = 0.299792458 * 1.0016; // metres per CIR tap (light speed * air index)
+    let max_gain = 10.0_f64.powf(18.0 / 20.0); // cap at +18 dB
+    for row in rows.iter_mut() {
+        for (x, v) in row.iter_mut().enumerate() {
+            let gain = (los_distance_m + (x as f64) * tap_path_m) / los_distance_m;
+            *v = *v * gain.min(max_gain);
+        }
+    }
 }
 
 fn parser_health(stats: &ParserStats, buffered_bytes: usize) -> ParserHealth {

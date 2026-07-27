@@ -15,6 +15,17 @@
   let phaseMode = $state(false);
   let periodogramMode = $state(false);
   let dbMode = $state(false);
+  let waterfallFixedScale = $state(true);
+  let waterfallScaleMin = $state(-60);
+  let waterfallScaleMax = $state(-10);
+  let waterfallTapMin = $state(-20);
+  let waterfallTapMax = $state(50);
+  let waterfallClutter = $state(false);
+  let waterfallMagnitudeClutter = $state(true);
+  let waterfallNuisanceFit = $state(true);
+  let waterfallRejectSpikes = $state(true);
+  let waterfallPathLoss = $state(false);
+  let waterfallNoiseClipDb = $state(12);
   let halfLife = $state(2);
   let smoothing = $state(1);
   let range = $state(4);
@@ -61,13 +72,18 @@
       if (topic === 'fast-fft' && phaseMode) {
         return data?.fastFftPhase ?? EMPTY_FRAME;
       }
-      const frame = data?.[topic];
+      let frame = data?.[topic];
       if (topic === 'fast-fft' && periodogramMode && frame?.series?.[0]) {
         const original = frame.series[0].data;
         const squared = new Float32Array(original.length);
         for (let i = 0; i < original.length; i++) squared[i] = original[i] * original[i];
         const [min, max] = [0, Math.max(...squared)];
         return { series: [{ data: squared, color: frame.series[0].color }], min, max, xLabel: frame.xLabel, yLabel: 'power' };
+      }
+      if (topic === 'waterfall' && waterfallFixedScale && frame) {
+        const scaleMin = dbMode ? waterfallScaleMin : Math.pow(10, waterfallScaleMin / 20);
+        const scaleMax = dbMode ? waterfallScaleMax : Math.pow(10, waterfallScaleMax / 20);
+        frame = { ...frame, min: scaleMin, max: scaleMax };
       }
       if (dbMode && frame) return toDbFrame(frame);
       return frame ?? EMPTY_FRAME;
@@ -326,7 +342,7 @@
       if (data.health) live.health = data.health as Record<string,unknown>;
       if (data.topology) { live.loadTopology(data.topology); const config=(data.topology as Record<string,unknown>).config as Record<string,unknown>|undefined; const count = Number(config?.n_nodes); if (count >= 2 && count <= 8) chooseNodeCount(count); }
       if (data.distanceHistory) live.loadDistanceHistory(data.distanceHistory);
-      if (data.settings) { live.settings = data.settings as Record<string,unknown>; const value=(live.settings.value ?? {}) as Record<string,unknown>; halfLife=Number(value.cfo_half_life_s ?? 2); smoothing=Number(value.distance_smoothing_s ?? 1); range=Number(value.reference_half_life_s ?? 4); slowFftSeconds=Number(value.slow_fft_history_s ?? 2); }
+      if (data.settings) { live.settings = data.settings as Record<string,unknown>; const value=(live.settings.value ?? {}) as Record<string,unknown>; halfLife=Number(value.cfo_half_life_s ?? 2); smoothing=Number(value.distance_smoothing_s ?? 1); range=Number(value.reference_half_life_s ?? 4); slowFftSeconds=Number(value.slow_fft_history_s ?? 2); waterfallClutter=Boolean(value.waterfall_clutter); waterfallMagnitudeClutter=value.waterfall_magnitude_clutter !== false; waterfallNuisanceFit=value.waterfall_nuisance_fit !== false; waterfallRejectSpikes=value.waterfall_reject_spikes !== false; waterfallPathLoss=Boolean(value.waterfall_path_loss); waterfallNoiseClipDb=Number(value.waterfall_noise_clip_db ?? 12); waterfallTapMin=Number(value.waterfall_tap_min ?? -20); waterfallTapMax=Number(value.waterfall_tap_max ?? 50); }
       if (data.calibration) {
         live.calibration = data.calibration as Record<string,unknown>;
         const calibration=data.calibration as Record<string,unknown>, liveState=calibration.live as Record<string,unknown>|undefined, applied=calibration.applied as Record<string,unknown>|undefined, stored=applied?.value as Record<string,unknown>|undefined;
@@ -383,6 +399,16 @@
           <label>HALF-LIFE <output>{halfLife.toFixed(1)} s</output><input type="range" min="0.1" max="30" step="0.1" value={halfLife} oninput={(e) => { halfLife=+e.currentTarget.value; settingChanged('cfo_half_life_s',halfLife); }} /></label>
         {:else if active === 'CIR Waterfall'}
           <label>HISTORY <output>{waterfallSeconds.toFixed(0)} s</output><input type="range" min="1" max="30" step="1" value={waterfallSeconds} oninput={(e) => { waterfallSeconds=+e.currentTarget.value; live.setWaterfallSeconds(waterfallSeconds); }} /></label>
+          <label>TAPS<output>{waterfallTapMin}..{waterfallTapMax}</output><input type="range" min="-64" max="63" step="1" value={waterfallTapMin} oninput={(e) => { waterfallTapMin=+e.currentTarget.value; settingChanged('waterfall_tap_min', waterfallTapMin); }} /><input type="range" min="-64" max="63" step="1" value={waterfallTapMax} oninput={(e) => { waterfallTapMax=+e.currentTarget.value; settingChanged('waterfall_tap_max', waterfallTapMax); }} /></label>
+          <label>FIXED dB <output>{waterfallScaleMin}..{waterfallScaleMax}</output><input type="checkbox" bind:checked={waterfallFixedScale} onchange={(e) => settingChanged('waterfall_fixed_scale_min', waterfallFixedScale ? waterfallScaleMin : 0)} /></label>
+          <label><input type="checkbox" bind:checked={waterfallClutter} onchange={() => settingChanged('waterfall_clutter', waterfallClutter)} />CLUTTER</label>
+          <label><input type="checkbox" bind:checked={waterfallMagnitudeClutter} disabled={!waterfallClutter} onchange={() => settingChanged('waterfall_magnitude_clutter', waterfallMagnitudeClutter)} />MAG ONLY</label>
+          <label><input type="checkbox" bind:checked={waterfallNuisanceFit} disabled={!waterfallClutter || waterfallMagnitudeClutter} onchange={() => settingChanged('waterfall_nuisance_fit', waterfallNuisanceFit)} />NUIS FIT</label>
+          <label><input type="checkbox" bind:checked={waterfallRejectSpikes} onchange={() => settingChanged('waterfall_reject_spikes', waterfallRejectSpikes)} />REJECT SPIKE</label>
+          <label><input type="checkbox" bind:checked={waterfallPathLoss} onchange={() => settingChanged('waterfall_path_loss', waterfallPathLoss)} />PATH LOSS</label>
+          {#if waterfallPathLoss}
+            <label>CLIP dB<output>{waterfallNoiseClipDb}</output><input type="range" min="0" max="40" step="0.5" value={waterfallNoiseClipDb} oninput={(e) => { waterfallNoiseClipDb=+e.currentTarget.value; settingChanged('waterfall_noise_clip_db', waterfallNoiseClipDb); }} /></label>
+          {/if}
         {:else if active === 'Slow-Time FFT'}
           <label>HISTORY <output>{slowFftSeconds.toFixed(0)} s</output><input type="range" min="1" max="30" step="1" value={slowFftSeconds} oninput={(e) => { slowFftSeconds=+e.currentTarget.value; settingChanged('slow_fft_history_s',slowFftSeconds); }} /></label>
         {/if}
