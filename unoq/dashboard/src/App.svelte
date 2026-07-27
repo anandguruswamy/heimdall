@@ -13,6 +13,7 @@
   let settingsOpen = $state(false);
   let status: StreamStatus = $state('connecting');
   let phaseMode = $state(false);
+  let periodogramMode = $state(false);
   let halfLife = $state(2);
   let smoothing = $state(1);
   let range = $state(4);
@@ -59,7 +60,15 @@
       if (topic === 'fast-fft' && phaseMode) {
         return data?.fastFftPhase ?? EMPTY_FRAME;
       }
-      return data?.[topic] ?? EMPTY_FRAME;
+      const frame = data?.[topic];
+      if (topic === 'fast-fft' && periodogramMode && frame?.series?.[0]) {
+        const original = frame.series[0].data;
+        const squared = new Float32Array(original.length);
+        for (let i = 0; i < original.length; i++) squared[i] = original[i] * original[i];
+        const [min, max] = [0, Math.max(...squared)];
+        return { series: [{ data: squared, color: frame.series[0].color }], min, max, xLabel: frame.xLabel, yLabel: 'power' };
+      }
+      return frame ?? EMPTY_FRAME;
     };
   }
 
@@ -357,7 +366,7 @@
       <div><p>ANALYSIS / {active.toUpperCase()}</p><h1>{active}</h1></div>
       <div class="mode-controls">
         {#if active === 'Fast-Time FFT'}
-          <div class="segmented" aria-label="FFT display"><button class:active={!phaseMode} onclick={() => phaseMode = false}>Magnitude</button><button class:active={phaseMode} onclick={() => phaseMode = true}>Phase</button></div>
+          <div class="segmented" aria-label="FFT display"><button class:active={!phaseMode && !periodogramMode} onclick={() => { phaseMode = false; periodogramMode = false; }}>Magnitude</button><button class:active={!periodogramMode && phaseMode} onclick={() => { phaseMode = true; periodogramMode = false; }}>Phase</button><button class:active={periodogramMode} onclick={() => { phaseMode = false; periodogramMode = true; }}>Periodogram</button></div>
         {:else if active === 'CFO'}
           <label>HALF-LIFE <output>{halfLife.toFixed(1)} s</output><input type="range" min="0.1" max="30" step="0.1" value={halfLife} oninput={(e) => { halfLife=+e.currentTarget.value; settingChanged('cfo_half_life_s',halfLife); }} /></label>
         {:else if active === 'CIR Waterfall'}

@@ -594,11 +594,27 @@ impl Pipeline {
                 fft_window(&self.settings.fft_window),
                 quality,
             );
+            let n = fast.bins.len();
+            let mut shifted_freq = vec![0.0_f32; n];
+            let mut shifted_mag = vec![0.0_f32; n];
+            let mut shifted_phase = vec![0.0_f32; n];
+            let half = n / 2;
+            let last_freq = fast.frequencies_hz.last().copied().unwrap_or(0.0) as f32;
+            for i in 0..n {
+                let src = (i + half) % n;
+                shifted_freq[i] = if i < half {
+                    fast.frequencies_hz[src] as f32 - last_freq
+                } else {
+                    fast.frequencies_hz[src] as f32
+                };
+                shifted_mag[i] = fast.bins[src].norm() as f32;
+                shifted_phase[i] = fast.bins[src].arg() as f32;
+            }
             let payload = json!({
                 "from": key.0, "to": key.1, "round": observation.observed_k,
-                "event_s": event_s, "frequencies_hz": fast.frequencies_hz,
-                "magnitude": fast.bins.iter().map(|value| value.norm() as f32).collect::<Vec<_>>(),
-                "phase": fast.bins.iter().map(|value| value.arg() as f32).collect::<Vec<_>>(),
+                "event_s": event_s, "frequencies_hz": shifted_freq,
+                "magnitude": shifted_mag,
+                "phase": shifted_phase,
                 "quality": fast.quality.0, "evidence": evidence_id
             });
             link.latest_fast_fft = Some(payload.clone());
