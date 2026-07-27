@@ -63,8 +63,14 @@
         temp.getContext('2d')!.putImageData(image, 0, 0); ctx.imageSmoothingEnabled = true; ctx.drawImage(temp, 0, 0, w, h);
       }
       for (const s of f.series ?? []) {
-        ctx.strokeStyle = s.color; ctx.fillStyle = s.color; ctx.lineWidth = (s.width ?? 1) * devicePixelRatio; ctx.beginPath();
-        s.data.forEach((v, i) => { const x = i / Math.max(1,s.data.length - 1) * w; const y = h - (v - (f.min ?? 0)) / Math.max(Number.EPSILON,(f.max ?? 1) - (f.min ?? 0)) * h; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); if (s.points) { ctx.fillRect(x - 2, y - 2, 4, 4); } }); ctx.stroke();
+        ctx.strokeStyle = s.color; ctx.fillStyle = s.color; ctx.lineWidth = (s.width ?? 1) * devicePixelRatio;
+        if (s.points) {
+          for (let i = 0; i < s.data.length; i++) { const v = s.data[i]; const x = (s.data.length < 2 ? 0.5 : i / (s.data.length - 1)) * w; const y = h - (v - (f.min ?? 0)) / Math.max(Number.EPSILON,(f.max ?? 1) - (f.min ?? 0)) * h; ctx.fillRect(x - 2, y - 2, 4, 4); }
+        } else {
+          ctx.beginPath();
+          s.data.forEach((v, i) => { const x = i / Math.max(1,s.data.length - 1) * w; const y = h - (v - (f.min ?? 0)) / Math.max(Number.EPSILON,(f.max ?? 1) - (f.min ?? 0)) * h; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+          ctx.stroke();
+        }
       }
       for (const marker of f.markers ?? []) { ctx.strokeStyle=marker.color; ctx.setLineDash([4*devicePixelRatio,3*devicePixelRatio]); ctx.beginPath(); ctx.moveTo(marker.at*w,0); ctx.lineTo(marker.at*w,h); ctx.stroke(); ctx.setLineDash([]); }
     };
