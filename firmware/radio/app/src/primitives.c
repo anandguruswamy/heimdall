@@ -41,6 +41,16 @@ static uint64_t timestamp40(const uint8_t timestamp[5])
 	return value;
 }
 
+static uint64_t system_timestamp40(const uint8_t timestamp[4])
+{
+	uint64_t value = 0U;
+
+	for (int i = 3; i >= 0; i--) {
+		value = (value << 8) | timestamp[i];
+	}
+	return (value << 8) & DWT_TIMESTAMP_MASK;
+}
+
 #if defined(CONFIG_PHASE1_ROLE_SCHEDULED_TX)
 static int64_t timestamp40_diff(uint64_t actual, uint64_t expected)
 {
@@ -74,7 +84,7 @@ int phase1_run_scheduled_tx(void)
 {
 #if defined(CONFIG_PHASE1_ROLE_SCHEDULED_TX)
 	static uint8_t frame[FRAME_DATA_LEN];
-	uint8_t system_timestamp[5];
+	uint8_t system_timestamp[4];
 	uint8_t tx_timestamp[5];
 	uint64_t target;
 	int64_t error_sum = 0;
@@ -114,7 +124,8 @@ int phase1_run_scheduled_tx(void)
 	printk("phase1: SCHED_START frames=%d period_ms=%d tx_ant_dly=%u mode=IRQ\n",
 	       CONFIG_PHASE1_FRAME_COUNT, CONFIG_PHASE1_TX_PERIOD_MS, TX_ANT_DLY);
 	dwt_readsystime(system_timestamp);
-	target = (timestamp40(system_timestamp) + (20ULL * DWT_DTU_PER_MS)) &
+	target = (system_timestamp40(system_timestamp) +
+		  (20ULL * DWT_DTU_PER_MS)) &
 		 DWT_TIMESTAMP_MASK;
 
 	for (uint32_t sequence = 0;

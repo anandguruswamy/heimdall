@@ -26,6 +26,10 @@ if(CONFIG_PHASE1_ROLE_SCHEDULED_TX OR CONFIG_PHASE1_ROLE_SENSING_RX)
   target_sources(app PRIVATE src/primitives.c)
 endif()
 
+if(CONFIG_PHASE1_ROLE_BEACON_RUNTIME)
+  target_sources(app PRIVATE src/beacon_runtime.c)
+endif()
+
 if(CONFIG_PHASE1_ROLE_TWR_INITIATOR OR CONFIG_PHASE1_ROLE_TWR_RESPONDER)
   target_sources(app PRIVATE src/twr.c)
 endif()

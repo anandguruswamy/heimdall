@@ -256,3 +256,42 @@ left explicitly pending rather than inferred from build success.
 - Result: PASS for the protocol budget. The UNO Q reader must configure the ACM
   port for raw input; plain `cat` in canonical mode transformed and buffered the
   binary stream, producing repeatable but invalid 8,547-byte captures.
+
+## N=2 Heimdall runtime beacon
+
+- Date/profile: 2026-07-26, `nrf52833dk/nrf52833`, 32 MHz SPIM3, channel 9,
+  PRF 64 MHz, PLEN 128, PAC 8, SFD type 1, 6.8 Mb/s, EXT PHR, STS off,
+  hardware data/extended filtering, N=2, M=1, 10,000 us slots, 329-byte frames,
+  64 CIR taps, and configuration hash `0x3c50`.
+- Physical binding: node 0/gateway is J-Link `760223921`, FICR
+  `75561606:12A31510`; node 1 is J-Link `760197419`, FICR
+  `71414197:EAD43288`. Both images used TX/RX antenna delay 16385 DTU. This is
+  an uncalibrated bring-up value and the run does not validate ranging accuracy.
+- Final node 0 image: SHA-256
+  `40F3094092F75D878A49D1D809FD5733BF37BC972DF6ABE22BC663132795B680`,
+  41,644 B flash, 15,552 B RAM. Final node 1 image: SHA-256
+  `B6189735B2D5A28A728A5DA00C6EC1A08D52AB09ED480D8017E369D267694E4B`,
+  41,420 B flash, 15,552 B RAM. Both J-Link downloads completed with program
+  verification `O.K.`.
+- The first node 0 bootstrap exposed that this driver's `dwt_readsystime()`
+  returns four bytes representing system-time bits 8-39. Treating it like the
+  five-byte RX/TX timestamp APIs incorporated an uninitialized high byte and
+  scheduled the first TX about 1.96 seconds ahead. The runtime and scheduled-TX
+  primitive now shift this four-byte value left by eight explicitly.
+- Corrected first programmed-TX lead after frame preparation was 9.546 ms for
+  node 0 and 7.251 ms for node 1. Both exceed the measured processing path and
+  completed without a late-start or timeout recovery.
+- First interval: both nodes reached 931 validated peer frames with zero
+  validation rejects, late starts, timestamp errors, report failures, or TX
+  timeout recoveries. Their last completed ownership was adjacent: node 1
+  transmitted odd `k=1861`, followed by node 0 transmitting even `k=1862`.
+- Final snapshots: node 0 had 3283 validated RX, 3283 CIR reads, 3285/3285 TX
+  completions, `last_rx_k=6567`, and `last_tx_k=6568`. Node 1 had 3286 validated
+  RX, 3286 CIR reads, 3286 TX attempts, 3285 completions with one TX normally
+  pending at the snapshot, `last_rx_k=6570`, and `last_tx_k=6571`. All reject,
+  identity, delayed-start, timestamp-error, assembly-failure, and TX-timeout
+  counters remained zero. Node 0 accumulated one RX error and one watchdog TX;
+  node 1 accumulated no RX errors. Callback maxima were 2441 us and 2471 us.
+- Result: PASS. Bootstrap, continuous RX, validated CIR/report assembly,
+  alternating delayed TX, monotonic round ownership, subreport CRC relay, and
+  master watchdog recovery operated continuously on the two physical boards.

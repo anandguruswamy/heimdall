@@ -33,6 +33,10 @@ config PHASE1_ROLE_TWR_INITIATOR
 config PHASE1_ROLE_TWR_RESPONDER
 	bool "SS-TWR responder"
 
+config PHASE1_ROLE_BEACON_RUNTIME
+	bool "Heimdall N=2 runtime beacon"
+	select HEIMDALL_BEACON
+
 endchoice
 
 config PHASE1_FRAME_COUNT
@@ -180,3 +184,32 @@ config HEIMDALL_NODE_ID
 		Schedule position for this firmware image. The deployment roster must
 		bind this position to the board hardware ID before transmission is
 		enabled.
+
+config HEIMDALL_EXPECTED_DEVICE_ID_LOW
+	hex "Expected FICR DEVICEID[0]"
+	default 0
+	depends on PHASE1_ROLE_BEACON_RUNTIME
+	help
+		Low 32-bit word of the physical board identity assigned to
+		HEIMDALL_NODE_ID. A zero/zero identity is invalid and prevents the
+		runtime from starting.
+
+config HEIMDALL_EXPECTED_DEVICE_ID_HIGH
+	hex "Expected FICR DEVICEID[1]"
+	default 0
+	depends on PHASE1_ROLE_BEACON_RUNTIME
+	help
+		High 32-bit word of the physical board identity assigned to
+		HEIMDALL_NODE_ID.
+
+config HEIMDALL_TX_ANTENNA_DELAY_DTU
+	int "Per-board TX antenna delay"
+	default 0
+	range 0 65535
+	depends on PHASE1_ROLE_BEACON_RUNTIME
+
+config HEIMDALL_RX_ANTENNA_DELAY_DTU
+	int "Per-board RX antenna delay"
+	default 0
+	range 0 65535
+	depends on PHASE1_ROLE_BEACON_RUNTIME

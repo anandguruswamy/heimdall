@@ -169,6 +169,39 @@ flashed yet.
   than a measured absolute ceiling. Linux captures must put the ACM TTY in raw
   mode; earlier 8,547-byte `cat` results were canonical-line-discipline
   artifacts and are invalid throughput measurements.
+- Added the first radio-only Heimdall runtime gate for the verified N=2, M=1,
+  10 ms-slot profile. It listens before master bootstrap, validates schedule and
+  configuration in layers, adopts phase independently of CIR/relay quality,
+  captures bounded 64-tap observations, assembles the next report, and uses
+  delayed TX for alternating ownership. It also implements three-frame
+  configuration mismatch inhibition/recovery, stale-epoch recovery, liveness,
+  identity-collision shutdown, and TX-completion timeout recovery.
+- Runtime images are bound at build time to a node ID, the board's two FICR
+  `DEVICEID` words, and per-board TX/RX antenna delays. Zero or mismatched values
+  prevent startup. The global `heimdall_runtime_counters` symbol is retained for
+  J-Link RAM inspection because J-Link VCOM is currently unreliable.
+- The physical N=2 roster is recorded in `deployment/node-roster.lab.yaml`.
+  Node 0/gateway is J-Link `760223921`, FICR `75561606:12A31510`; node 1 is
+  J-Link `760197419`, FICR `71414197:EAD43288`. Both currently use the explicit
+  uncalibrated bring-up value 16385 DTU for TX and RX antenna delay, so this run
+  does not validate range accuracy.
+- N=2 radio runtime: PASS. Both board-bound images were flashed and verified
+  through the UNO Q. Over the final interval, node 0 reached 3283 validated RX,
+  3285/3285 completed TX, and `last_tx_k=6568`; node 1 reached 3286 validated
+  RX, 3285 completed TX with one normal pending TX, and `last_tx_k=6571` in a
+  slightly later snapshot. All frame, configuration, schedule, stale-frame,
+  subreport, identity, delayed-start, timestamp-error, assembly-failure, and TX
+  timeout counters remained zero. Node 0 recorded one RX error and one watchdog
+  transmission without losing schedule; node 1 recorded zero RX errors.
+  Callback maxima were 2441 us and 2471 us. The runtime occupies 41,644 B flash
+  / 15,552 B RAM for node 0 and 41,420 B flash / 15,552 B RAM for node 1. All
+  52 host tests pass.
+- The first bootstrap attempt exposed a driver API trap: this DW3000 port's
+  `dwt_readsystime()` returns four bytes containing timestamp bits 8-39, not a
+  normal five-byte timestamp. Treating it as five bytes scheduled bootstrap
+  about 1.96 seconds ahead. Runtime and scheduled-TX system-time conversion now
+  restore the omitted low byte explicitly. Corrected first-TX preparation left
+  9.546 ms on node 0 and 7.251 ms on node 1 before their programmed TX times.
 
 ## Next executable checkpoint
 
@@ -187,6 +220,6 @@ implementation is trusted:
    the current 1023-byte test profile; the 38 observed RX errors remain a
    separate link-budget characterization item.
 
-The next task is to implement the runtime beacon frame/state machine over the
-verified scheduled-TX and USB CDC paths, then add gateway heartbeat, validation,
-and capture/replay coverage.
+The next task is gateway heartbeat plus normative USB runtime records, followed
+by capture/replay coverage. Per-board antenna-delay calibration remains required
+before treating runtime timestamps as calibrated ranging measurements.

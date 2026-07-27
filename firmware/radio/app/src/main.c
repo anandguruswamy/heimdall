@@ -32,6 +32,7 @@ int phase1_run_scheduled_tx(void);
 int phase1_run_sensing_rx(void);
 int phase1_run_twr_initiator(void);
 int phase1_run_twr_responder(void);
+int heimdall_beacon_runtime_run(void);
 
 #if defined(CONFIG_USB_DEVICE_STACK_NEXT)
 static const struct device *const usb_uart = DEVICE_DT_GET_ONE(zephyr_cdc_acm_uart);
@@ -465,6 +466,12 @@ int main(void)
 	(void)phase1_run_twr_initiator();
 #elif defined(CONFIG_PHASE1_ROLE_TWR_RESPONDER)
 	(void)phase1_run_twr_responder();
+#elif defined(CONFIG_PHASE1_ROLE_BEACON_RUNTIME)
+	ret = heimdall_beacon_runtime_run();
+	if (ret != 0) {
+		printk("heimdall: runtime stopped: %d\n", ret);
+		return 0;
+	}
 #endif
 
 	while (true) {

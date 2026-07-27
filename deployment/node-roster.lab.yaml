@@ -1,0 +1,22 @@
+schema: heimdall-node-roster/1
+beacon_config: beacon-config.example.json
+notes: Antenna delays are uncalibrated bring-up values and must not be used for calibrated ranging.
+nodes:
+  - node_id: 0
+    role: gateway
+    jlink_serial: "760223921"
+    device_id: "7556160612a31510"
+    ficr_deviceid_low: "0x12a31510"
+    ficr_deviceid_high: "0x75561606"
+    tx_antenna_delay_dtu: 16385
+    rx_antenna_delay_dtu: 16385
+    calibration_status: uncalibrated-bring-up
+  - node_id: 1
+    role: fixed
+    jlink_serial: "760197419"
+    device_id: "71414197ead43288"
+    ficr_deviceid_low: "0xead43288"
+    ficr_deviceid_high: "0x71414197"
+    tx_antenna_delay_dtu: 16385
+    rx_antenna_delay_dtu: 16385
+    calibration_status: uncalibrated-bring-up

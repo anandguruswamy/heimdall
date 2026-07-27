@@ -15,3 +15,24 @@ west build -p always --no-sysbuild -b nrf52833dk/nrf52833 radio/app -d build-rad
 The older `nrf52833dk_nrf52833` spelling is the board's devicetree and overlay
 filename convention, not the current Zephyr board target. Do not rename files
 such as `boards/nrf52833dk_nrf52833.overlay`.
+
+## N=2 runtime gate
+
+Build each runtime image with `runtime.conf`, the SPIM3 overlay, and all four
+per-board bindings below:
+
+```powershell
+west build -p always --no-sysbuild -b nrf52833dk/nrf52833 radio/app -d build-beacon-runtime-node0 -- `
+  "-DOVERLAY_CONFIG=C:/path/to/Heimdall/firmware/radio/app/runtime.conf" `
+  "-DEXTRA_DTC_OVERLAY_FILE=C:/path/to/Heimdall/firmware/radio/app/boards/nrf52833dk_nrf52833_spim3.overlay" `
+  "-DCONFIG_HEIMDALL_NODE_ID=0" `
+  "-DCONFIG_HEIMDALL_EXPECTED_DEVICE_ID_LOW=0x..." `
+  "-DCONFIG_HEIMDALL_EXPECTED_DEVICE_ID_HIGH=0x..." `
+  "-DCONFIG_HEIMDALL_TX_ANTENNA_DELAY_DTU=..." `
+  "-DCONFIG_HEIMDALL_RX_ANTENNA_DELAY_DTU=..."
+```
+
+Use node ID 1 and that board's identity and calibration for the second image.
+The runtime refuses to start if the identity does not match or either antenna
+delay is zero. Runtime state is available to a debugger in the global
+`heimdall_runtime_counters` structure.

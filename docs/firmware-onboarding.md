@@ -117,6 +117,17 @@ generated build directory. Include the USB overlay in any build that enables
 
 ## Flashing and serial output
 
+Connect to the UNO Q over Wi-Fi from the workspace root with:
+
+```powershell
+ssh -t -i .secrets/ssh/unoq_wifi_ed25519 arduino@192.168.8.215
+```
+
+For non-interactive commands, omit `-t` and use `-T -o BatchMode=yes`. The
+verified host name is `chinny`, but do not rely on an `ssh chinny` client alias:
+the explicit user, address, and identity file above are required. The private
+key is under the ignored `.secrets/` directory and must never be committed.
+
 Flashing uses the J-Link connection on J9. On ARM64 Windows, the UNO Q can be
 used as a remote Linux ARM64 flashing host: connect J9 to the UNO Q, copy the
 `.hex` image there, and invoke its native `JLinkExe` with the board's J-Link
