@@ -43,7 +43,11 @@ def inspect(data: bytes) -> dict[str, object]:
         item for item in decoded if isinstance(item, LocalObservationRecord)
     ]
     tx_records = [item for item in decoded if isinstance(item, TxRecord)]
-    radio_k = [struct.unpack_from("<I", item.frame, 12)[0] for item in radio_frames]
+    radio_owners = [
+        (struct.unpack_from("<I", item.frame, 12)[0],
+         struct.unpack_from("<H", item.frame, 7)[0])
+        for item in radio_frames
+    ]
     tail_summaries = summaries[-100:]
     return {
         "bytes": len(data),
@@ -86,11 +90,16 @@ def inspect(data: bytes) -> dict[str, object]:
             item.frames_received == item.frames_expected for item in tail_summaries
         ),
         "radio_frames_decoded": len(radio_frames),
-        "radio_k_all_odd": all(k & 1 for k in radio_k),
+        "radio_ownership_valid": state.hello is not None and all(
+            k % state.hello.n_nodes == source for k, source in radio_owners
+        ),
         "local_observations_decoded": len(local_observations),
         "tx_records_decoded": len(tx_records),
         "tx_all_confirmed": all(item.confirmed for item in tx_records),
-        "tx_k_all_even": all(item.k % 2 == 0 for item in tx_records),
+        "tx_ownership_valid": state.hello is not None and all(
+            item.k % state.hello.n_nodes == state.hello.node_id
+            for item in tx_records
+        ),
     }
 
 

@@ -1,0 +1,71 @@
+{
+  "schema": "heimdall-beacon-config/1",
+  "protocol_version": 1,
+  "generated_by": "hand-written Gate H4 profile, verified by tools/config/heimdall_config.py",
+  "description": "Three-board Gate H4 profile with exactly three occupied superslots. The conservative 10000 us slot is hardware-qualified for N=3.",
+  "network": {
+    "n_nodes": 3,
+    "network_id": 43981,
+    "master_node_id": 0,
+    "evidence_age_threshold": 3
+  },
+  "phy": {
+    "channel": 9,
+    "tx_preamble_code": 9,
+    "rx_preamble_code": 9,
+    "prf_mhz": 64,
+    "preamble_length": 128,
+    "pac": 8,
+    "sfd_type": 1,
+    "sfd_timeout": 129,
+    "data_rate_kbps": 6800,
+    "phr_mode": "ext",
+    "phr_rate": "std",
+    "pdoa_mode": 0,
+    "tx_pg_delay": 52,
+    "tx_power": 4278124286
+  },
+  "cir": {
+    "taps": 64,
+    "left_taps": 16
+  },
+  "framing": {
+    "max_frame_bytes": 1023,
+    "enable_frame_filter": true
+  },
+  "timing": {
+    "slot_duration_us": 10000
+  },
+  "budget": {
+    "usb_budget_bytes_per_s": 250000,
+    "processing_margin_factor": 1.5,
+    "spi_hz": 32000000,
+    "spi_transaction_overhead_us": 5.0,
+    "diagnostics_bytes": 48,
+    "rx_fixed_overhead_us": 80.0,
+    "crc32_bytes_per_us": 1.92,
+    "report_assembly_us": 122.0
+  },
+  "derived": {
+    "subreport_bytes": 296,
+    "pooled_report_max_bytes": 592,
+    "frame_capacity_max_bytes": 990,
+    "m_slots_per_superslot": 1,
+    "frame_payload_bytes": 592,
+    "frame_bytes": 625,
+    "frame_airtime_us": 935.35,
+    "rx_processing_us": 530.33,
+    "tx_write_us": 161.25,
+    "slot_floor_rx_us": 1800,
+    "slot_floor_assembly_us": 2200,
+    "slot_floor_us": 2200,
+    "slot_floor_binding_constraint": "assembly",
+    "superslot_us": 10000,
+    "cycle_us": 30000,
+    "per_link_rate_hz": 33.333,
+    "gateway_usb_bytes_per_s": 66900,
+    "gateway_usb_bytes_per_cycle": 2007,
+    "straddling_subreport_index": -1,
+    "config_hash": 51407
+  }
+}

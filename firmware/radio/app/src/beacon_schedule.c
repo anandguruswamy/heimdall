@@ -5,6 +5,20 @@ uint8_t heimdall_schedule_transmitter(uint32_t k, uint8_t n_nodes)
 	return n_nodes == 0U ? 0U : (uint8_t)(k % n_nodes);
 }
 
+uint8_t heimdall_schedule_slots_until_owner(uint32_t k, uint8_t node_id,
+					    uint8_t n_nodes)
+{
+	if (n_nodes == 0U || node_id >= n_nodes) {
+		return 0U;
+	}
+	for (uint8_t slots = 1U; slots <= n_nodes; ++slots) {
+		if (heimdall_schedule_transmitter(k + slots, n_nodes) == node_id) {
+			return slots;
+		}
+	}
+	return 0U;
+}
+
 uint32_t heimdall_schedule_slot_index(uint32_t k, uint8_t m,
 					      uint8_t slots_per_superslot)
 {

@@ -336,3 +336,72 @@ left explicitly pending rather than inferred from build success.
   1023-byte chunks produced the same 2,065 byte-identical records. Result: PASS
   for simultaneous radio timing, USB CDC v1 framing, bounded backpressure,
   capture, decode, and deterministic replay.
+
+## Gate H4: N=3 Heimdall runtime
+
+- Date/profile: 2026-07-26, `nrf52833dk/nrf52833`, 32 MHz SPIM3, channel 9,
+  PRF 64 MHz, PLEN 128, PAC 8, SFD type 1, 6.8 Mb/s, EXT PHR, hardware
+  filtering, N=3, M=1, exactly three occupied 10,000 us superslots, 625-byte
+  frames, 64 CIR taps, and configuration hash `0xC8CF`.
+- Physical binding: node 0/gateway is J-Link `760223921`, FICR
+  `75561606:12A31510`; node 1 is `760197419`, FICR `71414197:EAD43288`; node 2
+  is physical label 3 / `760197416`, FICR `6402F3A7:947F4A25`. All images use
+  uncalibrated TX/RX antenna delay 16385 DTU, so this gate does not validate
+  range accuracy.
+- Final images: node 0 SHA-256
+  `B815BA2836FEB50173663731B172B6195A56C0336EDF300A0EC6895389EA9879`,
+  79,208 B flash / 51,640 B RAM; node 1
+  `5CB0339934D299EF060827530A6549D239CFBE0613BCFA4C643C918F58178E87`,
+  42,332 B flash / 18,304 B RAM; node 2
+  `5D19DE9658433D11A293A0011B7068B75B0C534D005F61C1667F6F75F06953B7`,
+  42,316 B flash / 18,304 B RAM. All three J-Link downloads verified `O.K.`.
+- A steady ten-second capture contained 677 `RADIO_FRAME`, 676 `LOCAL_OBS`,
+  340 `CYCLE_SUMMARY`, and 338 confirmed `TX_RECORD` records. The final 100
+  summaries were all 2/2 with zero peer misses and USB drops. Ownership passed
+  `k % 3 == source_node_id` for RX and `k % 3 == 0` for gateway TX. Outer CRC,
+  framing, FCS, filter, validation, and relayed-subreport CRC failures were zero.
+  The summary callback maximum was 2777 us; the later gateway RAM maximum was
+  3540 us, still below the conservative 10 ms slot.
+- Canonical processing of the capture produced all six directed pairs. The H4
+  ingest interval produced pair counts `(0,1)=986`, `(0,2)=984`, `(1,0)=984`,
+  `(1,2)=983`, `(2,0)=986`, `(2,1)=986`, consistent with the modeled 33.333 Hz
+  per-link rate. Boundary-truncated CIR reports remain variable-length and
+  self-describing as required by beacon v1; host reassembly accepts up to the
+  configured 64-tap maximum.
+- Reader detachment filled the non-blocking gateway queue without disturbing
+  radio timing. On attachment, one 15,447-record sequence gap exactly matched
+  the first summary's 15,447 producer drops; all 991 captured summaries were
+  2/2 and subsequent drops were zero.
+- Node 2 was held halted for a ten-second capture while node 1 remained active.
+  The gateway continued with 339 confirmed TX records and 338 summaries; node 2
+  was independently marked missing. After release, the next capture returned
+  to 2/2 and zero misses for the final 100 summaries, proving recovery from the
+  N=3 missing-intermediate stall case.
+- Node 1 was then held halted to exercise node 2's immediate-predecessor loss.
+  Node 2 remained active with 327 local gateway observations and 327 relayed
+  reports during the capture; gateway TX continued and summaries independently
+  marked one peer missing. Releasing node 1 again restored 2/2 and zero misses
+  for the final 100 summaries.
+- Final RAM snapshots: gateway 31,255/31,255 validated RX/CIR reads, 15,982 TX
+  attempts and 15,981 completions with one normal pending TX, zero late starts,
+  timestamp errors, validation rejects, identity/configuration inhibitions, or
+  timeout recoveries, and 680 watchdog TX. Node 1 had 58,287 validated RX/CIR
+  reads, 29,515 attempts / 29,514 completions, zero late starts, timestamp
+  errors, validation rejects, inhibitions, or timeout recoveries, and 71
+  watchdog TX. Node 2 had 54,431 validated RX/CIR reads, 27,241 attempts / 27,239
+  completions with one late start and one normal pending TX, zero timestamp
+  errors, validation rejects, inhibitions, or timeout recoveries, and 17
+  watchdog TX. Node callback maxima were 2990 us and 3021 us.
+- H4 ingest/replay acceptance: PASS. Eight 256 KiB rotating segments held 6,032
+  records and 5,909 observations. Live and replay SQLite integrity checks were
+  `ok`; all segment sizes and hashes matched. Raw digests both equal
+  `e584d418fac65d683529a5aa5891e6afb3c79752d17a8e14d1e5f7094e5018db`;
+  observation digests both equal
+  `08cc36484497d88bd605ef652ccab30777edd07074d0ebc4a47f72e9b874aa20`.
+  The 19 rejected records were all expected pre-HELLO data.
+- Result: PASS for Gate H4 schedule, two-peer report retention, six directed
+  observations, bounded processing, source-specific misses, watchdog recovery,
+  USB backpressure, and replay-equivalent ingestion. At the once-per-u32-wrap
+  boundary, N=3 necessarily repeats owner 0 because `2^32` is not divisible by
+  3; wrap-safe next-owner selection is tested, while cycle-summary semantics at
+  that approximately 545-year boundary remain a protocol clarification item.

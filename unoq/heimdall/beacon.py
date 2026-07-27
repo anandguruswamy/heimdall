@@ -87,8 +87,8 @@ def decode_beacon_header(frame: bytes, hello: HelloRecord) -> BeaconHeader:
         raise ProtocolError("pooled report exceeds configured maximum")
     if header.subreport_count > hello.n_nodes - 1:
         raise ProtocolError("beacon subreport count exceeds configured maximum")
-    if header.pooled_total_bytes != header.subreport_count * hello.subreport_bytes:
-        raise ProtocolError("pooled report length does not match subreport count")
+    if header.pooled_total_bytes > header.subreport_count * hello.subreport_bytes:
+        raise ProtocolError("pooled report exceeds subreport count capacity")
     if header.peer_observed_bitmap.bit_count() != header.subreport_count:
         raise ProtocolError("peer observation bitmap does not match subreport count")
     if header.peer_observed_bitmap & (1 << source):
@@ -188,8 +188,8 @@ class ReportReassembler:
                 raise ProtocolError("pooled report ends inside subreport metadata")
             taps = pooled[offset + 35]
             length = 40 + 4 * taps
-            if taps != hello.cir_taps or length != hello.subreport_bytes:
-                raise ProtocolError("subreport dimensions do not match HELLO")
+            if taps == 0 or taps > hello.cir_taps or length > hello.subreport_bytes:
+                raise ProtocolError("subreport dimensions exceed HELLO")
             if offset + length > len(pooled):
                 raise ProtocolError("pooled report ends inside a subreport")
             raw = pooled[offset : offset + length]

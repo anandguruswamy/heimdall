@@ -289,8 +289,13 @@ def decode_record(record: Record, state: DecoderState) -> object:
         if len(payload) < 45:
             raise ProtocolError("LOCAL_OBS payload is too short")
         subreport_bytes = payload[5:]
+        subreport = decode_subreport(subreport_bytes)
+        assert state.hello is not None
+        if (len(subreport.cir_iq) > state.hello.cir_taps
+                or len(subreport_bytes) > state.hello.subreport_bytes):
+            raise ProtocolError("local subreport dimensions exceed HELLO")
         return LocalObservationRecord(payload[0], struct.unpack_from("<I", payload, 1)[0],
-                                      decode_subreport(subreport_bytes), subreport_bytes)
+                                      subreport, subreport_bytes)
     if record.type == TX_RECORD:
         if len(payload) != 13:
             raise ProtocolError("TX_RECORD payload must be 13 bytes")

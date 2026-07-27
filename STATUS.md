@@ -2,8 +2,9 @@
 
 ## Project state
 
-The N=2 Heimdall radio runtime, gateway USB export, and Gate H3 replayable UNO Q
-ingest are hardware-validated. The next runtime milestone is N=3.
+The N=3 Heimdall radio runtime, gateway USB export, and replayable UNO Q ingest
+are hardware-validated. Gate H4 is complete; antenna calibration remains before
+timestamps can be treated as accurate ranges.
 
 ## Starting point
 
@@ -266,21 +267,48 @@ ingest are hardware-validated. The next runtime milestone is N=3.
   CRC failures, one boundary peer miss, and a maximum callback of 2,868 us.
   The 46 rejected host records were all data arriving before the first periodic
   `HELLO`, as required by the decoder gate. All 69 host tests pass.
+- Gate H4 N=3 runtime: PASS. Physical node 2 is label 3 / J-Link `760197416`,
+  FICR `6402F3A7:947F4A25`. The common profile is nRF52833, 32 MHz SPIM3,
+  channel 9, PRF 64 MHz, PLEN 128, PAC 8, SFD type 1, 6.8 Mb/s, EXT PHR,
+  N=3, M=1, three occupied 10,000 us superslots, 625-byte frames, 64 taps, and
+  config hash `0xC8CF`. Node 0 image SHA-256 is
+  `B815BA2836FEB50173663731B172B6195A56C0336EDF300A0EC6895389EA9879`
+  (79,208 B flash / 51,640 B RAM); node 1 is
+  `5CB0339934D299EF060827530A6549D239CFBE0613BCFA4C643C918F58178E87`
+  (42,332 B / 18,304 B); node 2 is
+  `5D19DE9658433D11A293A0011B7068B75B0C534D005F61C1667F6F75F06953B7`
+  (42,316 B / 18,304 B). All J-Link flashes verified `O.K.`. Antenna delays are
+  the explicitly uncalibrated 16385 DTU bring-up values.
+- H4 steady-state captures passed modulo-3 ownership, 2/2 summaries, six
+  directed observations per complete cycle, and zero FCS, filter, validation,
+  subreport CRC, delayed-start, timestamp, assembly, or timeout failures on the
+  gateway. The final 100 summaries had zero peer misses and drops. Gateway,
+  node 1, and node 2 callback maxima were 3,540 us, 2,990 us, and 3,021 us.
+  Holding node 2 halted left node 1 active and the gateway transmitting; node 2
+  misses were independent. Holding node 1 halted left node 2 active through its
+  predecessor-loss fallback with 327 observations in each direction. Both
+  releases restored 2/2 summaries. Reader
+  detachment produced a 15,447-record sequence gap exactly matched by 15,447
+  producer drops without perturbing subsequent radio timing.
+- H4 UNO Q ingest/replay: PASS. Eight segments contained 6,032 records and
+  5,909 canonical observations; all 991 summaries were 2/2. Segment hashes and
+  sizes matched, both SQLite integrity checks were `ok`, raw digests matched at
+  `e584d418fac65d683529a5aa5891e6afb3c79752d17a8e14d1e5f7094e5018db`,
+  and observation digests matched at
+  `08cc36484497d88bd605ef652ccab30777edd07074d0ebc4a47f72e9b874aa20`.
+  All six directed pair counts were 983-986, consistent with 33.333 Hz. The
+  host baseline is now 80 passing tests.
 
 ## Next executable checkpoint
 
-Gate H4 handoff is in `docs/gate-h4-handoff.md`. Candidate node 2 is already
-inventoried as physical board label 3 / J-Link `760197416`; its FICR identity
-and radio acceptance remain unknown. Read and bind that identity before build.
+Gate H4 N=3 is hardware-validated. The final profile uses M=1, exactly three
+occupied 10,000 us superslots, 30,000 us cycles, 592-byte report payloads,
+625-byte frames, approximately 66,900 B/s gateway USB, and config hash `0xC8CF`.
+The full evidence and image hashes are in `firmware/radio/BRINGUP-NOTES.md`.
 
-The N=3 audit found confirmed runtime blockers: a compile-time N=2 assertion,
-single-peer observation retention, one-subreport relay validation, N=2-only
-peer-miss indexing, and a master-watchdog stall when node 2 is absent after node
-1 has been received. Host capture inspection also uses N=2 parity checks. Fix
-these and add N=3 fixtures before flashing.
-
-The conservative derived first profile is N=3, M=1, 10,000 us slots, 30,000 us
-cycles, 592-byte report payloads, 625-byte frames, approximately 66,900 B/s
-gateway USB, and config hash `0xC8CF`. Build all three board-bound images from
-one explicit N=3 configuration. Per-board antenna-delay calibration remains
-required before treating timestamps as calibrated ranges.
+The next checkpoint is per-board antenna-delay calibration and ranging
+validation. All current boards still use the explicit uncalibrated 16385 DTU
+bring-up value. Do not present their timestamps as accurate ranges. Beacon-v1
+cycle-summary behavior at the approximately 545-year u32 wrap boundary for
+non-power-of-two N also remains a protocol clarification item; ordinary wrapped
+ownership selection is already tested and does not stall.

@@ -3,6 +3,7 @@ import unittest
 import zlib
 
 from unoq.heimdall.protocol import (
+    CYCLE_SUMMARY,
     DecoderState,
     HEARTBEAT,
     HELLO,
@@ -10,6 +11,7 @@ from unoq.heimdall.protocol import (
     ProtocolError,
     RADIO_FRAME,
     StreamParser,
+    TX_RECORD,
     decode_record,
     encode_record,
 )
@@ -42,6 +44,21 @@ def subreport() -> bytes:
     for index in range(64):
         struct.pack_into("<hh", data, 36 + 4 * index, index, -index)
     return bytes(data) + struct.pack("<I", zlib.crc32(data))
+
+
+def n3_hello_payload() -> bytes:
+    return struct.pack(
+        "<8B4H2IQI", 1, 1, 3, 1, 0, 0, 64, 16,
+        0xC8CF, 296, 592, 1023, 10000, 30000,
+        0x7556160612A31510, 0,
+    )
+
+
+def n3_radio_payload(source: int, k: int) -> bytes:
+    frame = bytearray(623)
+    struct.pack_into("<H", frame, 7, source)
+    struct.pack_into("<I", frame, 12, k)
+    return (777).to_bytes(5, "little") + bytes((1,)) + struct.pack("<H", len(frame)) + frame
 
 
 class UsbCdcV1Tests(unittest.TestCase):
@@ -146,6 +163,29 @@ class UsbCdcV1Tests(unittest.TestCase):
         result = inspect(radio + hello)
         self.assertEqual(result["prehello_data_skipped"], 1)
         self.assertEqual(result["hello"]["config_hash"], 0x3C50)
+
+    def test_n3_hello_frame_size_and_modulo_ownership(self):
+        stream = encode_record(HELLO, 0, 0, n3_hello_payload())
+        stream += encode_record(RADIO_FRAME, 0, 1, n3_radio_payload(1, 1))
+        stream += encode_record(RADIO_FRAME, 0, 2, n3_radio_payload(2, 2))
+        tx_payload = struct.pack("<IB", 3, 0) + (999).to_bytes(5, "little")
+        tx_payload += struct.pack("<HB", 625, 1)
+        stream += encode_record(TX_RECORD, 0, 3, tx_payload)
+
+        result = inspect(stream)
+        self.assertEqual(result["hello"]["n_nodes"], 3)
+        self.assertEqual(result["hello"]["m_slots"], 1)
+        self.assertEqual(result["hello"]["frame_payload_bytes"], 592)
+        self.assertTrue(result["radio_ownership_valid"])
+        self.assertTrue(result["tx_ownership_valid"])
+
+    def test_n3_cycle_summary_has_independent_peer_misses(self):
+        payload = struct.pack("<II8H", 30, 10, 1, 2, 0, 0, 0, 0, 0, 2500)
+        payload += bytes((0, 0, 1, 0, 0, 0, 0, 0, 0, 0))
+        record = StreamParser().feed(encode_record(CYCLE_SUMMARY, 0, 0, payload))[0]
+        summary = decode_record(record, DecoderState())
+        self.assertEqual(summary.frames_expected, 2)
+        self.assertEqual(summary.peer_m0_miss, (0, 0, 1, 0, 0, 0, 0, 0))
 
 
 if __name__ == "__main__":
