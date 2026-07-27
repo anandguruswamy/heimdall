@@ -36,3 +36,8 @@ Use node ID 1 and that board's identity and calibration for the second image.
 The runtime refuses to start if the identity does not match or either antenna
 delay is zero. Runtime state is available to a debugger in the global
 `heimdall_runtime_counters` structure.
+
+For the gateway image, use `runtime-gateway.conf` and include both the SPIM3
+and `nrf52833dk_nrf52833_usb.overlay` devicetree overlays. The gateway emits
+binary USB CDC v1 records and therefore MUST NOT use the USB-console overlay or
+share that CDC endpoint with logs.

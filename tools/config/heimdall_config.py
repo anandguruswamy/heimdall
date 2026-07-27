@@ -334,7 +334,9 @@ def derive(cfg: dict[str, Any]) -> dict[str, Any]:
     #   - one TX_RECORD per frame it transmitted
     #   - one CYCLE_SUMMARY
     usb_per_cycle = (
-        (n - 1) * m * (USB_OUTER_BYTES + USB_RADIO_FRAME_WRAPPER_BYTES + frame_bytes)
+        (n - 1) * m * (
+            USB_OUTER_BYTES + USB_RADIO_FRAME_WRAPPER_BYTES + frame_bytes - FCS_BYTES
+        )
         + (n - 1) * (USB_OUTER_BYTES + USB_LOCAL_OBS_WRAPPER_BYTES + subreport_bytes)
         + m * (USB_OUTER_BYTES + USB_TX_RECORD_PAYLOAD_BYTES)
         + (USB_OUTER_BYTES + USB_CYCLE_SUMMARY_PAYLOAD_BYTES)

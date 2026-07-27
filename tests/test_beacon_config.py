@@ -444,7 +444,12 @@ class UsbRecordOverheads(unittest.TestCase):
             der = hc.derive(cfg)["derived"]
             m = der["m_slots_per_superslot"]
             expected = (
-                (n - 1) * m * (hc.USB_OUTER_BYTES + hc.USB_RADIO_FRAME_WRAPPER_BYTES + der["frame_bytes"])
+                (n - 1) * m * (
+                    hc.USB_OUTER_BYTES
+                    + hc.USB_RADIO_FRAME_WRAPPER_BYTES
+                    + der["frame_bytes"]
+                    - hc.FCS_BYTES
+                )
                 + (n - 1) * (hc.USB_OUTER_BYTES + hc.USB_LOCAL_OBS_WRAPPER_BYTES + der["subreport_bytes"])
                 + m * (hc.USB_OUTER_BYTES + hc.USB_TX_RECORD_PAYLOAD_BYTES)
                 + (hc.USB_OUTER_BYTES + hc.USB_CYCLE_SUMMARY_PAYLOAD_BYTES)

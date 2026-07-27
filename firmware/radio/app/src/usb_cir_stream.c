@@ -5,16 +5,26 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
+#if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
+#include "heimdall_beacon_config.h"
+#include "beacon_wire.h"
+#endif
 
-#define CIR_LINE_MAX 300
-#define CIR_QUEUE_LEN 32
+#define STREAM_QUEUE_LEN 32
+#if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
+#define STREAM_DATA_MAX (HEIMDALL_FRAME_BYTES + 22U)
+#else
+#define STREAM_DATA_MAX 300U
+#endif
 
-struct cir_message {
+struct stream_message {
+	void *fifo_reserved;
 	uint16_t length;
-	uint8_t data[CIR_LINE_MAX];
+	uint8_t data[STREAM_DATA_MAX];
 };
 
-K_MSGQ_DEFINE(cir_queue, sizeof(struct cir_message), CIR_QUEUE_LEN, 4);
+K_MEM_SLAB_DEFINE(stream_slab, sizeof(struct stream_message), STREAM_QUEUE_LEN, 4);
+K_FIFO_DEFINE(stream_fifo);
 
 static const struct device *const cdc_uart = DEVICE_DT_GET_ONE(zephyr_cdc_acm_uart);
 #if defined(CONFIG_PHASE1_ROLE_USB_THROUGHPUT)
@@ -22,32 +32,56 @@ K_SEM_DEFINE(cdc_ready, 0, 1);
 #endif
 #if defined(CONFIG_PHASE1_USB_BULK_TX)
 static atomic_t cdc_irq_ready;
-static struct cir_message tx_message;
+static struct stream_message *tx_message;
 static uint16_t tx_offset;
-static bool tx_message_active;
 #endif
+static atomic_t stream_drop_count;
+#if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
+static atomic_t heimdall_record_sequence;
+static atomic_t heimdall_drop_pending;
+#endif
+
+static struct stream_message *stream_message_alloc(void)
+{
+	struct stream_message *message;
+
+	if (k_mem_slab_alloc(&stream_slab, (void **)&message, K_NO_WAIT) != 0) {
+		atomic_inc(&stream_drop_count);
+#if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
+		atomic_set(&heimdall_drop_pending, 1);
+#endif
+		return NULL;
+	}
+	return message;
+}
+
+static void stream_message_submit(struct stream_message *message)
+{
+	k_fifo_put(&stream_fifo, message);
+#if defined(CONFIG_PHASE1_USB_BULK_TX)
+	if (atomic_get(&cdc_irq_ready) != 0) {
+		uart_irq_tx_enable(cdc_uart);
+	}
+#endif
+}
 
 void live_cir_stream_enqueue(const char *line, size_t length)
 {
-	struct cir_message message;
+	struct stream_message *message;
 
-	if (length >= CIR_LINE_MAX - 2U) {
+	if (length >= STREAM_DATA_MAX - 2U) {
+		atomic_inc(&stream_drop_count);
 		return;
 	}
-	message.length = (uint16_t)length;
-	memcpy(message.data, line, length);
-	message.data[length++] = '\r';
-	message.data[length++] = '\n';
-	message.length = (uint16_t)length;
-	if (k_msgq_put(&cir_queue, &message, K_NO_WAIT) == 0
-#if defined(CONFIG_PHASE1_USB_BULK_TX)
-	    && atomic_get(&cdc_irq_ready) != 0
-#endif
-	) {
-#if defined(CONFIG_PHASE1_USB_BULK_TX)
-		uart_irq_tx_enable(cdc_uart);
-#endif
+	message = stream_message_alloc();
+	if (message == NULL) {
+		return;
 	}
+	memcpy(message->data, line, length);
+	message->data[length++] = '\r';
+	message->data[length++] = '\n';
+	message->length = (uint16_t)length;
+	stream_message_submit(message);
 }
 
 static int32_t sign_extend_18(const uint8_t *p)
@@ -63,8 +97,13 @@ bool live_cir_stream_enqueue_binary(uint32_t seq, uint64_t rx_ts, int32_t cfo,
                                     int16_t rssi_q8_8, int16_t fp_power_q8_8,
                                     const uint8_t *cir_raw)
 {
-	struct cir_message message;
-	uint8_t *p = message.data;
+	struct stream_message *message = stream_message_alloc();
+	uint8_t *p;
+
+	if (message == NULL) {
+		return false;
+	}
+	p = message->data;
 
 	/* CIR2 adds DGC, RSSI, and first-path power after the PHY metadata. */
 	memcpy(p, "CIR2", 4); p += 4;
@@ -79,19 +118,75 @@ bool live_cir_stream_enqueue_binary(uint32_t seq, uint64_t rx_ts, int32_t cfo,
 		sys_put_le16((uint16_t)(sign_extend_18(&cir_raw[i * 6]) >> 2), p); p += 2;
 		sys_put_le16((uint16_t)(sign_extend_18(&cir_raw[i * 6 + 3]) >> 2), p); p += 2;
 	}
-	message.length = (uint16_t)(p - message.data);
-	bool queued = k_msgq_put(&cir_queue, &message, K_NO_WAIT) == 0;
+	message->length = (uint16_t)(p - message->data);
+	stream_message_submit(message);
+	return true;
+}
 
-	if (queued
-#if defined(CONFIG_PHASE1_USB_BULK_TX)
-	    && atomic_get(&cdc_irq_ready) != 0
-#endif
-	) {
-#if defined(CONFIG_PHASE1_USB_BULK_TX)
-		uart_irq_tx_enable(cdc_uart);
-#endif
+bool heimdall_usb_enqueue_record(uint8_t type, uint8_t flags,
+				 const void *prefix, uint16_t prefix_length,
+				 const void *body, uint16_t body_length)
+{
+#if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
+	struct stream_message *message;
+	uint16_t payload_length = prefix_length + body_length;
+	uint16_t record_length = 16U + payload_length;
+	uint32_t sequence = (uint32_t)atomic_inc(&heimdall_record_sequence);
+	uint8_t *payload;
+
+	if (record_length > STREAM_DATA_MAX ||
+	    (prefix_length != 0U && prefix == NULL) ||
+	    (body_length != 0U && body == NULL)) {
+		atomic_inc(&stream_drop_count);
+		atomic_set(&heimdall_drop_pending, 1);
+		return false;
 	}
-	return queued;
+	message = stream_message_alloc();
+	if (message == NULL) {
+		return false;
+	}
+	if (atomic_cas(&heimdall_drop_pending, 1, 0)) {
+		flags |= BIT(0);
+	}
+
+	sys_put_le16(0xA5C3U, &message->data[0]);
+	message->data[2] = 1U;
+	message->data[3] = type;
+	message->data[4] = flags;
+	message->data[5] = 0U;
+	sys_put_le16(payload_length, &message->data[6]);
+	sys_put_le32(sequence, &message->data[8]);
+	payload = &message->data[12];
+	if (prefix_length != 0U) {
+		memcpy(payload, prefix, prefix_length);
+	}
+	if (body_length != 0U) {
+		memcpy(payload + prefix_length, body, body_length);
+	}
+	sys_put_le32(heimdall_crc32(&message->data[2], 10U + payload_length),
+		     &message->data[12U + payload_length]);
+	message->length = record_length;
+	stream_message_submit(message);
+	return true;
+#else
+	ARG_UNUSED(type);
+	ARG_UNUSED(flags);
+	ARG_UNUSED(prefix);
+	ARG_UNUSED(prefix_length);
+	ARG_UNUSED(body);
+	ARG_UNUSED(body_length);
+	return false;
+#endif
+}
+
+uint32_t heimdall_usb_drop_count_get(void)
+{
+	return (uint32_t)atomic_get(&stream_drop_count);
+}
+
+void heimdall_usb_drop_count_ack(uint32_t count)
+{
+	atomic_sub(&stream_drop_count, (atomic_val_t)count);
 }
 
 #if defined(CONFIG_PHASE1_USB_BULK_TX)
@@ -104,23 +199,27 @@ static void cir_stream_uart_irq(const struct device *dev, void *user_data)
 	}
 
 	while (true) {
-		if (!tx_message_active) {
-			if (k_msgq_get(&cir_queue, &tx_message, K_NO_WAIT) != 0) {
+		if (tx_message == NULL) {
+			tx_message = k_fifo_get(&stream_fifo, K_NO_WAIT);
+			if (tx_message == NULL) {
 				uart_irq_tx_disable(dev);
+				if (!k_fifo_is_empty(&stream_fifo)) {
+					uart_irq_tx_enable(dev);
+				}
 				return;
 			}
 			tx_offset = 0U;
-			tx_message_active = true;
 		}
 
-		int sent = uart_fifo_fill(dev, &tx_message.data[tx_offset],
-					  tx_message.length - tx_offset);
+		int sent = uart_fifo_fill(dev, &tx_message->data[tx_offset],
+					  tx_message->length - tx_offset);
 		if (sent <= 0) {
 			return;
 		}
 		tx_offset += (uint16_t)sent;
-		if (tx_offset == tx_message.length) {
-			tx_message_active = false;
+		if (tx_offset == tx_message->length) {
+			k_mem_slab_free(&stream_slab, tx_message);
+			tx_message = NULL;
 		}
 	}
 }
@@ -184,7 +283,7 @@ static void cir_stream_thread(void *a, void *b, void *c)
 	k_sem_give(&cdc_ready);
 #endif
 #if defined(CONFIG_PHASE1_USB_BULK_TX)
-	if (k_msgq_num_used_get(&cir_queue) != 0U) {
+	if (!k_fifo_is_empty(&stream_fifo)) {
 		uart_irq_tx_enable(cdc_uart);
 	}
 #endif
@@ -195,14 +294,15 @@ static void cir_stream_thread(void *a, void *b, void *c)
 	}
 #else
 	while (true) {
-		struct cir_message message;
-		k_msgq_get(&cir_queue, &message, K_FOREVER);
+		struct stream_message *message = k_fifo_get(&stream_fifo, K_FOREVER);
 		if (!device_is_ready(cdc_uart)) {
+			k_mem_slab_free(&stream_slab, message);
 			continue;
 		}
-		for (uint16_t i = 0; i < message.length; ++i) {
-			uart_poll_out(cdc_uart, message.data[i]);
+		for (uint16_t i = 0; i < message->length; ++i) {
+			uart_poll_out(cdc_uart, message->data[i]);
 		}
+		k_mem_slab_free(&stream_slab, message);
 	}
 #endif
 }

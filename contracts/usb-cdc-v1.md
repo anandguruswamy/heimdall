@@ -1,6 +1,6 @@
 # USB CDC Contract v1
 
-Status: **normative, not yet implemented.** Supersedes `usb-cdc-v0.md`.
+Status: **normative and implemented.** Supersedes `usb-cdc-v0.md`.
 
 `usb_contract_version = 1`.
 
@@ -43,15 +43,20 @@ offset  size  field       notes
    5    u8    reserved    MUST be 0
    6    u16   length      payload length in bytes, excluding this header
                           and the trailing CRC
-   8    u32   sequence    monotonic, increments once per emitted record
+   8    u32   sequence    monotonic, allocated once per attempted record;
+                          dropped attempts therefore create observable gaps
   12    ...   payload     length bytes
-12+len  u32   crc32       over offsets 2 .. 11+len inclusive
+12+len  u32   crc32       IEEE CRC-32 over offsets 2 .. 11+len inclusive
 ```
 
 Framing overhead is **16 bytes** per record: 12 header, 4 CRC.
 
 The CRC deliberately excludes `sync`, so that a resynchronising receiver can
 scan for the sync word without it participating in the checksum.
+
+`crc32` uses the reflected IEEE polynomial `0xEDB88320`, initial value
+`0xFFFFFFFF`, and final XOR `0xFFFFFFFF`, matching `crc32_ieee()` in firmware
+and `zlib.crc32()` on the host.
 
 ### 2.1 Receiver behaviour
 
@@ -318,7 +323,7 @@ interior holes. The cost is that a real-time dashboard lags during a transient.
 Per cycle the gateway emits:
 
 ```
-(N-1) * M  RADIO_FRAME   at 16 + 8 + frame_bytes each
+(N-1) * M  RADIO_FRAME   at 16 + 8 + (frame_bytes - 2) each
 (N-1)      LOCAL_OBS     at 16 + 5 + subreport_bytes each
 M          TX_RECORD     at 16 + 13 each
 1          CYCLE_SUMMARY at 16 + 34

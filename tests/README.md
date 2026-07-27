@@ -1,5 +1,6 @@
 # Heimdall Tests
 
-Test the contracts before hardware integration. The first useful suite should
-cover USB framing, CRC rejection, sequence gaps, duplicate records, CIR decode,
-and deterministic replay into fusion.
+The contract suite covers USB framing across arbitrary read boundaries, CRC
+rejection and resynchronisation, sequence gaps, duplicates, reserved record
+types, CIR subreport decoding, and deterministic byte-exact replay. Configuration
+model tests independently verify the radio and USB sizing constraints.

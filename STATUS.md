@@ -202,6 +202,35 @@ flashed yet.
   about 1.96 seconds ahead. Runtime and scheduled-TX system-time conversion now
   restore the omitted low byte explicitly. Corrected first-TX preparation left
   9.546 ms on node 0 and 7.251 ms on node 1 before their programmed TX times.
+- Gateway USB CDC v1 is implemented and hardware-validated on node 0. The
+  gateway profile combines the 32 MHz SPIM3 radio and native J20 USB overlays,
+  uses a 32-block non-blocking slab/FIFO with whole-record drop-newest behavior,
+  allocates sequence numbers per attempted record, and exports `HELLO`,
+  `HEARTBEAT`, `RADIO_FRAME`, `LOCAL_OBS`, `CYCLE_SUMMARY`, `ERROR`, and
+  `TX_RECORD`. USB work occurs only after delayed TX is armed or RX is rearmed.
+- The USB contract now explicitly binds outer framing to IEEE CRC-32 and makes
+  producer drops sequence-visible. Its throughput model excludes the hardware
+  FCS that `RADIO_FRAME` does not carry; the N=2 modeled stream is 747 B/cycle,
+  37,350 B/s.
+- Combined radio/USB runtime: PASS. Gateway image SHA-256 is
+  `A6A21FACBC14B5E9B09D5E747EECEE004CA4CBA5F681C00CEE61C889E2C92357`,
+  occupying 78,488 B flash and 39,480 B RAM. Native USB enumerated as
+  `usb-Open_UWB_Heimdall_Gateway_7556160612A31510-if00`. A 10 s raw capture was
+  381,165 B and contained 2,065 outer-CRC-valid records: 10 HELLO, 20 HEARTBEAT,
+  508 RADIO_FRAME, 509 LOCAL_OBS, 509 CYCLE_SUMMARY, and 509 confirmed TX_RECORD.
+  There were zero CRC/framing failures, unknown types, validation rejects,
+  subreport CRC failures, FCS errors, or filter rejects. All peer frame `k`
+  values were odd and all gateway TX `k` values were even. Replay produced the
+  same 2,065 records under whole-buffer and fragmented input. All summaries
+  satisfy `k_cycle_start = N * cycle_index`.
+- The gateway intentionally ran without a host before capture, filling its
+  queue. The stream sequence gap was 3,598 records and the first post-attach
+  summary independently reported exactly 3,598 producer drops. The final 100
+  cycles each reported 1/1 received frames, zero peer misses, zero queue drops,
+  and a callback maximum of 2868 us. Gateway RAM counters later showed 13,287
+  validated RX/CIR reads, 13,291 completed TX, zero delayed-start, timestamp, or
+  timeout failures, and `last_rx_k=26579`, `last_tx_k=26580`. All 63 host tests
+  pass.
 
 ## Next executable checkpoint
 
@@ -220,6 +249,6 @@ implementation is trusted:
    the current 1023-byte test profile; the 38 observed RX errors remain a
    separate link-budget characterization item.
 
-The next task is gateway heartbeat plus normative USB runtime records, followed
-by capture/replay coverage. Per-board antenna-delay calibration remains required
-before treating runtime timestamps as calibrated ranging measurements.
+The next task is persistent raw/canonical archival and the first fusion-facing
+adapter, followed by N=3 runtime generalisation. Per-board antenna-delay
+calibration remains required before treating timestamps as calibrated ranges.

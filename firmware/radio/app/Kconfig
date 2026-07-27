@@ -213,3 +213,11 @@ config HEIMDALL_RX_ANTENNA_DELAY_DTU
 	default 0
 	range 0 65535
 	depends on PHASE1_ROLE_BEACON_RUNTIME
+
+config HEIMDALL_RUNTIME_GATEWAY
+	bool "Export Heimdall runtime records over USB CDC"
+	default n
+	depends on PHASE1_ROLE_BEACON_RUNTIME && USB_DEVICE_STACK_NEXT
+	help
+		Enable the gateway-only USB CDC v1 record stream. Fixed radio nodes
+		must leave this disabled.

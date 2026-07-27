@@ -15,3 +15,21 @@ records through a testable fusion interface.
 
 Radio-specific details stay in the decoder and contracts; fusion receives
 normalized observations.
+
+The implemented first adapter provides:
+
+- `protocol.py`: incremental framing, CRC and sequence validation, plus record
+  and CIR subreport decoding.
+- `cdc_gateway.py`: raw Linux CDC capture with optional `--seconds` duration.
+- `replay.py`: byte-exact capture replay through the same stream parser.
+- `inspect_capture.py`: validate and summarize a raw capture after waiting for
+  the first periodic `HELLO`.
+
+Run a finite capture on the UNO Q with:
+
+```bash
+python3 -m heimdall.cdc_gateway /dev/ttyACM2 capture.husb --seconds 10
+```
+
+Use the stable `/dev/serial/by-id/` link when available instead of assuming the
+example ACM number.

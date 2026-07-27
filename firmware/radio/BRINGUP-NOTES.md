@@ -295,3 +295,44 @@ left explicitly pending rather than inferred from build success.
 - Result: PASS. Bootstrap, continuous RX, validated CIR/report assembly,
   alternating delayed TX, monotonic round ownership, subreport CRC relay, and
   master watchdog recovery operated continuously on the two physical boards.
+
+## Combined runtime and USB CDC v1
+
+- Date/profile: 2026-07-27, node 0/gateway J-Link `760223921`, FICR
+  `75561606:12A31510`, `nrf52833dk/nrf52833`, 32 MHz SPIM3 plus native J20 USB,
+  channel 9, PRF 64 MHz, PLEN 128, PAC 8, SFD type 1, 6.8 Mb/s, EXT PHR,
+  hardware filtering, N=2, M=1, 10,000 us slots, 329-byte frames, and 64 CIR
+  taps. Node 1 remained on the compatible fixed-node runtime.
+- Gateway image SHA-256:
+  `A6A21FACBC14B5E9B09D5E747EECEE004CA4CBA5F681C00CEE61C889E2C92357`.
+  J-Link program and verification completed `O.K.`. Image use was 78,488 B
+  flash and 39,480 B RAM. Antenna delays remained the uncalibrated 16385 DTU
+  bring-up values.
+- Native USB enumerated at the stable link
+  `/dev/serial/by-id/usb-Open_UWB_Heimdall_Gateway_7556160612A31510-if00`.
+  A ten-second raw capture contained 381,165 bytes and 2,065 complete records:
+  10 `HELLO`, 20 `HEARTBEAT`, 508 `RADIO_FRAME`, 509 `LOCAL_OBS`, 509
+  `CYCLE_SUMMARY`, and 509 confirmed `TX_RECORD`. Capture termination left 128
+  bytes of one trailing record buffered, as expected for arbitrary stream stop.
+- Host validation found zero outer CRC failures, framing errors, duplicates,
+  unknown types, configuration/validation rejects, subreport CRC failures, FCS
+  errors, or filter rejects. All 508 peer frames carried odd `k`; all 509 gateway
+  TX records carried even `k`. The decoder correctly skipped 19 data records
+  received before the first periodic `HELLO`; all 499 post-`HELLO` local
+  observations decoded a valid CIR and independent subreport CRC.
+- The gateway ran detached before capture, deliberately exercising backpressure.
+  The parser measured a 3,598-record sequence gap and the first summary after
+  attachment reported exactly 3,598 producer drops. Every summary satisfied
+  `k_cycle_start = N * cycle_index`; the final 100 summaries each reported 1/1
+  frames, no peer misses, no USB drops, and an RX callback maximum of 2868 us.
+  The connected stream therefore drained faster than
+  its 37,350 B/s modeled production rate without affecting the 10 ms slots.
+- Gateway RAM counters after capture showed 13,287 validated RX and CIR reads,
+  13,291 TX attempts and completions, zero late
+  starts, timestamp errors, identity/configuration inhibitions, or TX timeout
+  recoveries, and adjacent `last_rx_k=26579`, `last_tx_k=26580`. Three successful
+  watchdog transmissions accumulated without loss of schedule.
+- Replaying the real capture as 4096-byte chunks and as repeating 1, 7, 64, and
+  1023-byte chunks produced the same 2,065 byte-identical records. Result: PASS
+  for simultaneous radio timing, USB CDC v1 framing, bounded backpressure,
+  capture, decode, and deterministic replay.

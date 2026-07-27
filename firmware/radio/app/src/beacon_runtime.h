@@ -6,12 +6,15 @@ struct heimdall_runtime_counters {
 	uint32_t rx_frames;
 	uint32_t rx_validated;
 	uint32_t rx_errors;
+	uint32_t rx_fcs_errors;
+	uint32_t rx_filter_rejects;
 	uint32_t reject_length;
 	uint32_t reject_header;
 	uint32_t reject_config;
 	uint32_t reject_schedule;
 	uint32_t reject_stale;
 	uint32_t reject_subreport;
+	uint32_t subreport_crc_failures;
 	uint32_t diagnostic_failures;
 	uint32_t cir_reads;
 	uint32_t subreport_encode_failures;

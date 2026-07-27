@@ -30,6 +30,10 @@ if(CONFIG_PHASE1_ROLE_BEACON_RUNTIME)
   target_sources(app PRIVATE src/beacon_runtime.c)
 endif()
 
+if(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
+  target_sources(app PRIVATE src/usb_runtime_records.c)
+endif()
+
 if(CONFIG_PHASE1_ROLE_TWR_INITIATOR OR CONFIG_PHASE1_ROLE_TWR_RESPONDER)
   target_sources(app PRIVATE src/twr.c)
 endif()

@@ -18,6 +18,9 @@
 #include "heimdall_beacon_config.h"
 #include "beacon_wire.h"
 #endif
+#if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
+#include "usb_runtime_records.h"
+#endif
 
 #define HEARTBEAT_PERIOD_MS 500
 #define FRAME_COUNT 1000U
@@ -449,6 +452,10 @@ int main(void)
 	);
 #endif
 	if (ret != 0 && !IS_ENABLED(CONFIG_PHASE1_ROLE_USB_THROUGHPUT)) {
+#if defined(CONFIG_HEIMDALL_RUNTIME_GATEWAY)
+		(void)heimdall_usb_emit_error(0x0003U, (uint16_t)-ret, 0U, true);
+		k_msleep(20);
+#endif
 		return 0;
 	}
 

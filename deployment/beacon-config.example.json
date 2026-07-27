@@ -63,8 +63,8 @@
     "superslot_us": 10000,
     "cycle_us": 20000,
     "per_link_rate_hz": 50.0,
-    "gateway_usb_bytes_per_s": 37450,
-    "gateway_usb_bytes_per_cycle": 749,
+    "gateway_usb_bytes_per_s": 37350,
+    "gateway_usb_bytes_per_cycle": 747,
     "straddling_subreport_index": -1,
     "config_hash": 15440
   }
