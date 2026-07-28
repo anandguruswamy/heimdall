@@ -515,6 +515,42 @@ calibration remains before timestamps can be treated as accurate ranges.
   light travel over 70 ms before ADS-TWR cancellation. Raw and processed local
   artifacts are under ignored `captures/raw/` and `captures/processed/`; the
   reusable analyzer is `host-tools/clock-drift/analyze_timestamp_drift.py`.
+- Live Distance now retains finite negative SS-TWR and DS-TWR estimates instead
+  of rejecting them as nonphysical. Such samples carry quality bit
+  `NEGATIVE_RANGE`; the dashboard displays them by default and provides a
+  `CENSOR NEGATIVE` toggle that masks them as plot gaps without deleting
+  history. Canvas2D and WebGL line rendering both preserve those gaps. The
+  ARM64 release was deployed on 2026-07-27 with SHA-256
+  `A06BB64C09A6E11000A24BEA1C01A50E9C25E4A0D494B9FA3D1D3E6EC1156E69`.
+  Post-restart health showed all 20 links, zero rejected records, and zero
+  processing-queue drops. The N=5/M=2 radio firmware, PHY, 3,500 us slot,
+  35 ms cycle, board identities, and config hash `0x8885` were unchanged.
+- CIR Waterfall dB conversion now caches each converted telemetry frame, returns
+  stable frame identities to the render loop, skips all bound computation when
+  fixed scale is active, and uses a linear-time 256-bin percentile estimate for
+  dynamic scale instead of sorting every heatmap on every animation-frame read.
+  The optimized embedded dashboard was deployed with ARM64 service SHA-256
+  `948DF1597D59E3291DA0E47D8E8CD22B8BF559FCBC1ED771E8AAC38CCF2F91A0`.
+- Board Positions now locks its camera center and scene span after framing, so
+  live solver updates move boards within a stationary view instead of repeatedly
+  recentering and rescaling the scene. Node-count changes and `RESET VIEW`
+  deliberately reframe. CIR Waterfall now also exposes editable MIN/MAX dB color
+  limits, persists them through the existing settings API, and enforces ordered
+  bounds. The combined dashboard was deployed in ARM64 service SHA-256
+  `A3E3EDC6F632633F16B3BF4704D54AD88090892DA44F2BC0BC050E520E29E925`.
+- The browser-side Board Positions computation now uses classical MDS for a
+  complete distance-matrix initialization and reduced-coordinate
+  Levenberg-Marquardt refinement with warm starts at a 10 Hz solve cadence.
+  Orientation is applied as whole-configuration reflections; Jacobian rank,
+  optimizer convergence, and iteration count are reported explicitly. Exact
+  geometry is scale-invariant in tests, a noisy complete graph and an observable
+  graph with one missing edge converge, and the previously failing live review
+  matrix fits below 1 cm RMS instead of approximately 1.06 m RMS. The corrected
+  embedded dashboard was deployed in ARM64 service SHA-256
+  `60CE121F611D78BF48D0ABE985A20CE6648F07F71C4256D0DA2693765C4BDA7B`.
+  Live desktop/phone audits reported full 9/9 rank, convergence in 5/4
+  iterations, and 0.28/0.11 cm fit RMSE respectively, with zero browser
+  exceptions or audit failures.
 
 ## Next executable checkpoint
 

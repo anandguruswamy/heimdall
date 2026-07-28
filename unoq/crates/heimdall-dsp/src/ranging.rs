@@ -17,6 +17,7 @@ impl QualityFlags {
     pub const INTERPOLATED_GAP: Self = Self(1 << 4);
     pub const LOW_CORRELATION: Self = Self(1 << 5);
     pub const LOW_ACCUMULATION: Self = Self(1 << 6);
+    pub const NEGATIVE_RANGE: Self = Self(1 << 7);
 
     pub fn contains(self, other: Self) -> bool {
         self.0 & other.0 != 0
@@ -115,7 +116,7 @@ pub fn asymmetric_ds_twr(
     let db = interval(input.response_rx, input.final_tx, &mut quality)? as i128;
     let numerator = ra * rb - da * db;
     let denominator = ra + rb + da + db;
-    if denominator <= 0 || numerator < 0 {
+    if denominator <= 0 {
         return Err(RangeError::NonPhysical);
     }
     // The timestamp solution does not account for antenna delay or NLOS bias.
@@ -127,12 +128,12 @@ pub fn asymmetric_ds_twr(
     )
 }
 
-fn finish(tof: f64, ids: Vec<u64>, quality: QualityFlags) -> Result<RangeEstimate, RangeError> {
+fn finish(tof: f64, ids: Vec<u64>, mut quality: QualityFlags) -> Result<RangeEstimate, RangeError> {
     if !tof.is_finite() {
         return Err(RangeError::NonFinite);
     }
     if tof < 0.0 {
-        return Err(RangeError::NonPhysical);
+        quality.insert(QualityFlags::NEGATIVE_RANGE);
     }
     Ok(RangeEstimate {
         tof_dtu: tof,
@@ -358,6 +359,37 @@ mod tests {
         )
         .unwrap();
         assert!((r.tof_dtu - 100.0).abs() < 1e-3);
+    }
+    #[test]
+    fn negative_ranges_are_retained_and_flagged() {
+        let ss = ss_twr(
+            SsTwrInput {
+                poll_tx: 0,
+                response_rx: 800,
+                poll_rx: 100,
+                response_tx: 1100,
+                remote_clock_offset: None,
+            },
+            vec![],
+        )
+        .unwrap();
+        assert!((ss.tof_dtu + 100.0).abs() < 1e-12);
+        assert!(ss.evidence.quality.contains(QualityFlags::NEGATIVE_RANGE));
+
+        let ds = asymmetric_ds_twr(
+            DsTwrInput {
+                poll_tx: 0,
+                poll_rx: 100,
+                response_tx: 1100,
+                response_rx: 800,
+                final_tx: 1800,
+                final_rx: 1900,
+            },
+            vec![],
+        )
+        .unwrap();
+        assert!((ds.tof_dtu + 100.0).abs() < 1e-12);
+        assert!(ds.evidence.quality.contains(QualityFlags::NEGATIVE_RANGE));
     }
     #[test]
     fn matcher_adjacency_bridge_and_bound() {

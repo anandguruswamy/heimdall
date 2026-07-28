@@ -18,6 +18,7 @@
   let dbMode = $state(false);
   let distanceMode: 'ss'|'ds'|'both' = $state('both');
   let distanceSmoothed = $state(true);
+  let distanceCensorNegative = $state(false);
   let waterfallFixedScale = $state(true);
   let waterfallScaleMin = $state(-60);
   let waterfallScaleMax = $state(-10);
@@ -60,6 +61,7 @@
   const calibrationPairs = $derived(links.filter((link) => link.from < link.to));
   const calibrationLive = $derived.by(() => { void liveRevision; return live.calibration?.live && typeof live.calibration.live === 'object' ? live.calibration.live as Record<string, unknown> : null; });
   const EMPTY_FRAME: PlotFrame = { series: [], min: 0, max: 1 };
+  const dbFrameCache = new WeakMap<PlotFrame, Map<string, PlotFrame>>();
   let calibrationFrameSource: unknown;
   let cachedCalibrationFrame: PlotFrame = EMPTY_FRAME;
 
@@ -80,6 +82,7 @@
       let frame = data?.[topic];
       if (topic === 'distance' && frame?.series) {
         frame = { ...frame, series: frame.series.filter((series) => (distanceMode === 'both' || series.ranging === distanceMode) && (distanceSmoothed || !series.smoothed)) };
+        if (distanceCensorNegative) frame = censorNegativeDistance(frame);
       }
       if (topic === 'fast-fft' && periodogramMode && frame?.series?.[0]) {
         const original = frame.series[0].data;
@@ -90,11 +93,8 @@
       }
       const cirOffset = topic === 'cir' || topic === 'waterfall' ? CIR_DB_OFFSET : 0;
       if (dbMode && frame) {
-        frame = toDbFrame(frame, cirOffset);
-        if (topic === 'waterfall' && waterfallFixedScale) {
-          frame = { ...frame, min: waterfallScaleMin, max: waterfallScaleMax };
-        }
-        return frame;
+        const fixedBounds: [number,number] | undefined = topic === 'waterfall' && waterfallFixedScale ? [waterfallScaleMin, waterfallScaleMax] : undefined;
+        return toDbFrame(frame, cirOffset, fixedBounds);
       }
       if (topic === 'waterfall' && waterfallFixedScale && frame) {
         frame = {
@@ -107,17 +107,46 @@
     };
   }
 
-  function toDbFrame(frame: PlotFrame, offset = 0): PlotFrame {
+  function censorNegativeDistance(frame: PlotFrame): PlotFrame {
+    const series = frame.series?.map((item) => {
+      const data = new Float32Array(item.data.length);
+      for (let i = 0; i < item.data.length; i++) data[i] = item.data[i] < 0 ? Number.NaN : item.data[i];
+      return { ...item, data };
+    });
+    const ds = series?.find((item) => item.ranging === 'ds' && item.smoothed)?.data;
+    const values = (ds ? Array.from(ds) : series?.flatMap((item) => Array.from(item.data)) ?? []).filter(Number.isFinite).sort((a,b) => a-b);
+    if (!values.length) return { ...frame, series, min: 0, max: 10 };
+    const middle = Math.floor(values.length / 2);
+    const center = values.length % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2;
+    return { ...frame, series, min: center - 10, max: center + 10 };
+  }
+
+  function toDbFrame(frame: PlotFrame, offset = 0, fixedBounds?: [number,number]): PlotFrame {
+    const key = `${offset}:${fixedBounds?.[0] ?? 'auto'}:${fixedBounds?.[1] ?? 'auto'}`;
+    const cached = dbFrameCache.get(frame)?.get(key);
+    if (cached) return cached;
     const toDb = (value: number) => 20 * Math.log10(Math.max(value, 1e-12)) + offset;
     const convert = (src: Float32Array) => { const out = new Float32Array(src.length); for (let i = 0; i < src.length; i++) out[i] = toDb(src[i]); return out; };
     const series = frame.series?.map((s) => ({ ...s, data: convert(s.data) }));
     const heatmap = frame.heatmap ? convert(frame.heatmap) : undefined;
     const values = heatmap ?? series?.[0]?.data;
-    const sorted = values ? Array.from(values).filter(Number.isFinite).sort((a, b) => a - b) : [];
-    const percentile = (fraction: number) => sorted[Math.floor((sorted.length - 1) * fraction)];
-    const min = sorted.length ? percentile(heatmap ? 0.05 : 0) : undefined;
-    const max = sorted.length ? percentile(heatmap ? 0.95 : 1) : undefined;
-    return { ...frame, series, heatmap, min, max, yLabel: heatmap ? frame.yLabel : 'dB' };
+    const bounds = fixedBounds ?? finiteBounds(values, Boolean(heatmap));
+    const converted = { ...frame, series, heatmap, min: bounds?.[0], max: bounds?.[1], yLabel: heatmap ? frame.yLabel : 'dB' };
+    const variants = dbFrameCache.get(frame) ?? new Map<string, PlotFrame>();
+    variants.set(key, converted); dbFrameCache.set(frame, variants);
+    return converted;
+  }
+
+  function finiteBounds(values: Float32Array | undefined, robust: boolean): [number,number] | undefined {
+    if (!values?.length) return undefined;
+    let min=Infinity,max=-Infinity,count=0;
+    for (const value of values) if (Number.isFinite(value)) { min=Math.min(min,value);max=Math.max(max,value);count++; }
+    if (!count) return undefined;
+    if (!robust || max <= min) return [min,max];
+    const bins=new Uint32Array(256),span=max-min;
+    for (const value of values) if (Number.isFinite(value)) bins[Math.min(255,Math.floor((value-min)/span*256))]++;
+    const quantile=(fraction:number)=>{const target=(count-1)*fraction;let total=0;for(let i=0;i<bins.length;i++){total+=bins[i];if(total>target)return min+(i+.5)/bins.length*span;}return max;};
+    return [quantile(.05),quantile(.95)];
   }
 
   function topicFor(tab: Tab): TopicKey {
@@ -289,6 +318,17 @@
     settingsTimer = setTimeout(async () => { try { live.settings = await api.putSettings((live.settings as Record<string,unknown>).value) as Record<string,unknown>; backendMessage = 'Settings applied'; } catch { backendMessage = 'Backend unavailable · setting not applied'; } liveRevision++; }, 250);
   }
 
+  function waterfallScaleChanged(bound: 'min'|'max', value: number) {
+    if (!Number.isFinite(value)) return;
+    if (bound === 'min') {
+      waterfallScaleMin=Math.min(value,waterfallScaleMax-1);
+      settingChanged('waterfall_fixed_scale_min',waterfallScaleMin);
+    } else {
+      waterfallScaleMax=Math.max(value,waterfallScaleMin+1);
+      settingChanged('waterfall_fixed_scale_max',waterfallScaleMax);
+    }
+  }
+
   async function takeSnapshot() {
     snapshotState = 'capturing'; snapshotProgress = 0; backendMessage = 'Capturing calibration samples…';
     const timer = setInterval(() => snapshotProgress = Math.min(99, snapshotProgress + 1), 100);
@@ -416,6 +456,7 @@
         {#if active === 'Live Distance'}
           <div class="segmented" aria-label="Ranging series"><button class:active={distanceMode === 'ss'} onclick={() => distanceMode = 'ss'}>SS-TWR</button><button class:active={distanceMode === 'ds'} onclick={() => distanceMode = 'ds'}>DS-TWR</button><button class:active={distanceMode === 'both'} onclick={() => distanceMode = 'both'}>Both</button></div>
           <label class="display-toggle"><input type="checkbox" bind:checked={distanceSmoothed} />SMOOTHED LINES</label>
+          <label class="display-toggle"><input type="checkbox" bind:checked={distanceCensorNegative} />CENSOR NEGATIVE</label>
         {:else if active === 'Fast-Time FFT'}
           <div class="segmented" aria-label="FFT display"><button class:active={!phaseMode && !periodogramMode} onclick={() => { phaseMode = false; periodogramMode = false; }}>Magnitude</button><button class:active={!periodogramMode && phaseMode} onclick={() => { phaseMode = true; periodogramMode = false; }}>Phase</button><button class:active={periodogramMode} onclick={() => { phaseMode = false; periodogramMode = true; }}>Periodogram</button></div>
         {:else if active === 'CFO'}
@@ -424,7 +465,7 @@
           <div class="waterfall-controls">
             <div class="control-group history-control"><span>HISTORY</span><output>{waterfallSeconds.toFixed(0)} s</output><input aria-label="Waterfall history seconds" type="range" min="1" max="30" step="1" value={waterfallSeconds} oninput={(e) => { waterfallSeconds=+e.currentTarget.value; live.setWaterfallSeconds(waterfallSeconds); }} /></div>
             <div class="control-group tap-control"><span>TAP WINDOW</span><label>FROM<input aria-label="First aligned tap" type="number" min="-64" max={waterfallTapMax - 1} step="1" value={waterfallTapMin} onchange={(e) => { waterfallTapMin=+e.currentTarget.value; settingChanged('waterfall_tap_min', waterfallTapMin); }} /></label><label>TO<input aria-label="Last aligned tap" type="number" min={waterfallTapMin + 1} max="63" step="1" value={waterfallTapMax} onchange={(e) => { waterfallTapMax=+e.currentTarget.value; settingChanged('waterfall_tap_max', waterfallTapMax); }} /></label></div>
-            <div class="control-group scale-control"><span>COLOR SCALE</span><label class="toggle"><input type="checkbox" bind:checked={waterfallFixedScale} />FIXED</label><output>{waterfallScaleMin}..{waterfallScaleMax} dB</output></div>
+            <div class="control-group scale-control"><span>COLOR SCALE</span><label class="toggle"><input type="checkbox" bind:checked={waterfallFixedScale} />FIXED</label><label>MIN<input aria-label="Waterfall color scale minimum dB" type="number" min="-180" max={waterfallScaleMax-1} step="1" value={waterfallScaleMin} onchange={(e)=>waterfallScaleChanged('min',+e.currentTarget.value)} /></label><label>MAX<input aria-label="Waterfall color scale maximum dB" type="number" min={waterfallScaleMin+1} max="60" step="1" value={waterfallScaleMax} onchange={(e)=>waterfallScaleChanged('max',+e.currentTarget.value)} /></label><b>dB</b></div>
             <div class="control-group"><span>STATIC REMOVAL</span><label class="toggle"><input type="checkbox" bind:checked={waterfallClutter} onchange={() => settingChanged('waterfall_clutter', waterfallClutter)} />REMOVE CLUTTER</label><label class="toggle" title="Subtract temporal mean magnitude instead of complex I/Q"><input type="checkbox" bind:checked={waterfallMagnitudeClutter} disabled={!waterfallClutter} onchange={() => settingChanged('waterfall_magnitude_clutter', waterfallMagnitudeClutter)} />MAGNITUDE ONLY</label><label class="toggle" title="Fit residual gain, phase, and fractional delay"><input type="checkbox" bind:checked={waterfallNuisanceFit} disabled={!waterfallClutter || waterfallMagnitudeClutter} onchange={() => settingChanged('waterfall_nuisance_fit', waterfallNuisanceFit)} />FIT GAIN/PHASE/DELAY</label></div>
             <div class="control-group"><span>COMPENSATION</span><label class="toggle"><input type="checkbox" bind:checked={waterfallRejectSpikes} onchange={() => settingChanged('waterfall_reject_spikes', waterfallRejectSpikes)} />REJECT ISOLATED SPIKES</label><label class="toggle"><input type="checkbox" bind:checked={waterfallPathLoss} onchange={() => settingChanged('waterfall_path_loss', waterfallPathLoss)} />PATH-LOSS GAIN</label>{#if waterfallPathLoss}<label class="clip-control">NOISE CLIP <output>{waterfallNoiseClipDb} dB</output><input aria-label="Noise clipping threshold in decibels" type="range" min="0" max="40" step="0.5" value={waterfallNoiseClipDb} onchange={(e) => { waterfallNoiseClipDb=+e.currentTarget.value; settingChanged('waterfall_noise_clip_db', waterfallNoiseClipDb); }} /></label>{/if}</div>
           </div>

@@ -86,6 +86,10 @@ async function run() {
       console.error(`Auditing ${viewport.name}: ${tab}`);
       const clicked = await cdp.evaluate(`(() => { const button=[...document.querySelectorAll('.tabs button')].find((item)=>item.textContent.trim().endsWith(${JSON.stringify(tab)})); button?.click(); return Boolean(button); })()`);
       if (!clicked) throw new Error(`Tab not found: ${tab}`);
+      if (tab === 'CIR Waterfall') {
+        const dbClicked = await cdp.evaluate(`(() => { const button=[...document.querySelectorAll('.segmented[aria-label="Scale"] button')].find((item)=>item.textContent.trim()==='dB'); button?.click(); return Boolean(button); })()`);
+        if (!dbClicked) throw new Error('Waterfall dB control not found');
+      }
       await sleep(tab === 'Slow-Time FFT' ? 2_500 : 1_200);
       const state = await cdp.evaluate(`(() => ({
         active: document.querySelector('.mode-head h1')?.textContent,
@@ -97,6 +101,9 @@ async function run() {
         uncalibrated: document.body.textContent.includes('UNCALIBRATED'),
         bodyWidth: document.body.getBoundingClientRect().width,
         viewportWidth: innerWidth,
+        scale: document.querySelector('.segmented[aria-label="Scale"] button.active')?.textContent?.trim() ?? null,
+        waterfallScaleLimits: [...document.querySelectorAll('.scale-control input[type="number"]')].map((item)=>Number(item.value)),
+        boardFit: [...document.querySelectorAll('.diagnostics dl dt')].map((item)=>[item.textContent?.trim(),item.nextElementSibling?.textContent?.trim()]),
         linkLayout: [...document.querySelectorAll('.link-cell')].slice(0,5).map((item)=>{const box=item.getBoundingClientRect();return {label:item.querySelector('header b')?.textContent?.trim(),x:Math.round(box.x),y:Math.round(box.y)};})
       }))()`);
       const slug = tab.toLowerCase().replaceAll(/[^a-z0-9]+/g, '-');
@@ -125,6 +132,7 @@ async function run() {
         await cdp.evaluate(`document.querySelector('.focus-panel header button')?.click()`);
       }
       audits.push({ viewport: viewport.name, tab, screenshotCaptured, focusAxes, ...state });
+      if (tab === 'CIR Waterfall') await cdp.evaluate(`[...document.querySelectorAll('.segmented[aria-label="Scale"] button')].find((item)=>item.textContent.trim()==='Linear')?.click()`);
     }
   }
   const exceptions = cdp.events.filter((event) => event.method === 'Runtime.exceptionThrown');
@@ -132,7 +140,11 @@ async function run() {
     const layout=item.viewport==='desktop'&&item.tab==='Live Distance'?item.linkLayout:[];
     const columnMajor=!layout.length||(layout.slice(0,4).every((cell)=>cell.x===layout[0].x)&&layout.slice(1,4).every((cell,index)=>cell.y>layout[index].y)&&layout[4]?.x>layout[0].x&&layout[4]?.y===layout[0].y);
     const axesOk=item.tab!=='Live Distance'||item.viewport!=='desktop'||(item.focusAxes?.xTicks.length===5&&item.focusAxes?.yTicks.length===5&&item.focusAxes.xLabel==='history sample'&&item.focusAxes.yLabel==='cm');
-    return item.active !== item.tab || item.status !== 'LIVE' || item.synthetic || !columnMajor || !axesOk || item.canvases.some((canvas) => canvas.width < 1 || canvas.height < 1) || (!['Network Health', 'Distance Calibration'].includes(item.tab) && item.noData > 0);
+    const scaleOk=item.tab!=='CIR Waterfall'||item.scale==='dB';
+    const scaleLimitsOk=item.tab!=='CIR Waterfall'||(item.waterfallScaleLimits.length===2&&item.waterfallScaleLimits[0]<item.waterfallScaleLimits[1]);
+    const boardFit=Object.fromEntries(item.boardFit);
+    const boardOk=item.tab!=='Board Positions'||(boardFit['JACOBIAN RANK']==='9/9'&&boardFit.OPTIMIZER?.startsWith('CONVERGED'));
+    return item.active !== item.tab || item.status !== 'LIVE' || item.synthetic || !columnMajor || !axesOk || !scaleOk || !scaleLimitsOk || !boardOk || item.canvases.some((canvas) => canvas.width < 1 || canvas.height < 1) || (!['Network Health', 'Distance Calibration'].includes(item.tab) && item.noData > 0);
   });
   const report = { url, output, audits, exceptions: exceptions.length, failures: failures.length, screenshotFailures: audits.filter((item)=>item.screenshotCaptured===false).length };
   console.log(JSON.stringify(report, null, 2));
