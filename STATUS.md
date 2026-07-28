@@ -551,6 +551,25 @@ calibration remains before timestamps can be treated as accurate ranges.
   Live desktop/phone audits reported full 9/9 rank, convergence in 5/4
   iterations, and 0.28/0.11 cm fit RMSE respectively, with zero browser
   exceptions or audit failures.
+- The first downstream Windows radar-map milestone is implemented under
+  `host-tools/radar-map/`. It replays canonical observations from `.husb`,
+  loads explicit metre-based board geometry, identifies the known CIA
+  `false_first_path` condition using absolute-index discontinuities plus
+  correlation/energy gates, aligns and clutter-subtracts CIRs, and performs
+  multistatic magnitude backprojection into a configurable `(z,y,x)` voxel
+  volume. It exports NumPy arrays and JSON metadata, offers optional Zarr
+  output, and serves XY/XZ/YZ slices through a minimal local HTTP API.
+- Synthetic tests localize a surveyed 3D reflector and cover anomaly rejection,
+  storage round trips, and slice axis order. The full Python suite now passes
+  93 tests. A replay smoke test on protected clip 2 decoded 25,787 records and
+  33,367 unique canonical observations, admitted 32,994 observations across all
+  20 directed links, and wrote a `(5,7,7)` test volume with zero CRC/framing
+  failures or trailing bytes. The geometry used for that smoke test was the
+  explicit non-surveyed example and does not validate physical map accuracy.
+- NumPy 2.2.6 is the only required new runtime package. No native Windows ARM64
+  wheel exists for that release, so the validated laptop path currently uses
+  CPython x86-64 under Windows ARM64 emulation. Zarr remains optional and
+  unpinned until its storage contract is stabilized.
 
 ## Next executable checkpoint
 

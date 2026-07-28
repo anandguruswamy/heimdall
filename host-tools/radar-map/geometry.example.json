@@ -1,0 +1,17 @@
+{
+  "schema": "heimdall-geometry/1",
+  "units": "m",
+  "revision": "replace-with-survey-revision",
+  "frame": {
+    "name": "room-local",
+    "origin": "surveyed N0 antenna phase centre",
+    "axes": "+X toward N1, +Y left in horizontal plane, +Z up"
+  },
+  "nodes": [
+    {"node_id": 0, "position_m": [0.0, 0.0, 0.0]},
+    {"node_id": 1, "position_m": [3.0, 0.0, 0.0]},
+    {"node_id": 2, "position_m": [0.0, 3.0, 0.0]},
+    {"node_id": 3, "position_m": [3.0, 3.0, 0.0]},
+    {"node_id": 4, "position_m": [1.5, 1.5, 2.4]}
+  ]
+}

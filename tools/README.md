@@ -64,6 +64,19 @@ Exact application dependency checksums are locked by `unoq/Cargo.lock` and
 or standalone `flatc`, record its immutable digest or archive SHA-256 here and
 retain the redistributable artifact under `tools/installers/linux-arm64/`.
 
+## Radar-map host tooling
+
+The experimental replay mapper under `host-tools/radar-map/` runs downstream
+of the UNO Q. It deliberately uses the standard library for HTTP serving and
+keeps its required numerical dependency small.
+
+| Tool | Required version | Host asset | Purpose | Download |
+|---|---|---|---|---|
+| NumPy | 2.2.6 | CPython 3.10 Windows x86-64 wheel, validated under ARM64 emulation; no Windows ARM64 wheel is published for this release | Voxel arrays, CIR statistics, and `.npy` export | [official wheel](https://files.pythonhosted.org/packages/a3/dd/4b822569d6b96c39d1215dbae0582fd99954dcbcf0c1a13c61783feaca3f/numpy-2.2.6-cp310-cp310-win_amd64.whl) |
+
+The validated wheel is cached under `windows-x86_64/`. Zarr export is optional
+and is not yet a pinned deployment dependency.
+
 ## Zephyr SDK asset names
 
 For SDK 0.17.4 on Windows, the known assets are:
@@ -98,6 +111,7 @@ add the installer files themselves to Git.
 | `windows-arm64/wget-1.21.4-winarm64.exe` | 1.21.4 | Windows ARM64 | `356DF847B5BE2478B74ECBE9AE0B2150EF328B10073F93B0E1719E4C88BADA02` | SDK setup dependency |
 | `windows-arm64/zig-aarch64-windows-0.15.2.zip` | 0.15.2 | Windows ARM64 | `B926465F8872BF983422257CD9EC248BB2B270996FBE8D57872CCA13B56FC370` | Official UNO Q Linux ARM64 cross-linker |
 | `windows-x86_64/cmake-3.31.10-py3-none-win_amd64.whl` | 3.31.10 | Windows x86-64 | `F1EA1FE826355560E8976C3D5794D9357444209BC0E0D56676C71E6A571FD474` | Pinned CMake |
+| `windows-x86_64/numpy-2.2.6-cp310-cp310-win_amd64.whl` | 2.2.6 | CPython 3.10 Windows x86-64 | `F0FD6321B839904E15C46E0D257FDD101DD7F530FE03FD6359C1EA63738703F3` | Radar-map numerical runtime under Windows ARM64 emulation |
 | `windows-x86_64/dtc-1.6.1-msys2-x86_64.zip` | 1.6.1 | Windows x86-64 | `7AAC366F989FD2450D5E641E118734653EA29D0DDB7DBFA33521D57AFE852AE3` | DeviceTree compiler |
 | `windows-x86_64/zephyr-sdk-0.17.4_windows-x86_64_minimal.7z` | 0.17.4 | Windows x86-64 | `3A1B7DE85811296A7193D010882A61D8AF1DDA7B2319AF30EB04665F6BBF1F99` | SDK base archive |
 | `windows-x86_64/toolchain_windows-x86_64_arm-zephyr-eabi.7z` | 0.17.4 | Windows x86-64 | `22F8BE7A2762A5FE7C9C0F465F79F5E6ABAC204CC13405C9F243D8596C10B08D` | ARM compiler |
