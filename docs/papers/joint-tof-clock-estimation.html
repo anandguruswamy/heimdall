@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Offset-free joint estimation of UWB time of flight, clock rate, and clock drift from networked transmit and receive timestamps.">
+  <title>Offset-Free Joint ToF and Clock Estimation</title>
+  <style>
+    :root {
+      --ink: #111;
+      --muted: #4a4a4a;
+      --rule: #777;
+      --paper: #fff;
+      --screen: #d8dadd;
+      --accent: #123f67;
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--screen); color: var(--ink); font-family: "Times New Roman", Times, serif; }
+    body { margin: 0; }
+    article {
+      width: min(216mm, calc(100% - 24px));
+      min-height: 279mm;
+      margin: 18px auto;
+      padding: 18mm 16mm 20mm;
+      background: var(--paper);
+      box-shadow: 0 2px 14px #0003;
+    }
+    header { text-align: center; }
+    h1 { max-width: 175mm; margin: 0 auto 8px; font-size: 24pt; line-height: 1.08; font-weight: 400; }
+    .author { margin: 0; font-size: 12pt; }
+    .affiliation { margin: 2px 0 14px; color: var(--muted); font-size: 10pt; }
+    .abstract, .keywords { max-width: 175mm; margin: 0 auto 7px; text-align: justify; font-size: 9.2pt; line-height: 1.18; }
+    .label { font-weight: 700; font-style: italic; }
+    .rule { margin: 13px 0 15px; border: 0; border-top: 1px solid var(--ink); }
+    .columns { column-count: 2; column-gap: 7mm; column-rule: 0 solid transparent; font-size: 9.45pt; line-height: 1.16; text-align: justify; hyphens: auto; }
+    section { break-inside: auto; }
+    h2 { margin: 11px 0 5px; font-size: 10.8pt; line-height: 1.1; text-align: center; text-transform: uppercase; break-after: avoid; }
+    h3 { margin: 8px 0 3px; font-size: 9.8pt; font-style: italic; break-after: avoid; }
+    p { margin: 0 0 6px; }
+    ol, ul { margin: 4px 0 7px; padding-left: 18px; }
+    li { margin-bottom: 2px; }
+    .dropcap::first-letter { float: left; padding: 0 2px 0 0; font-size: 28pt; line-height: .72; }
+    .equation {
+      position: relative;
+      margin: 7px 18px 8px;
+      padding-right: 22px;
+      text-align: center;
+      font-size: 10.2pt;
+      line-height: 1.3;
+      break-inside: avoid;
+    }
+    .equation .number { position: absolute; right: 0; top: 50%; transform: translateY(-50%); }
+    .sub { vertical-align: sub; font-size: .75em; }
+    .sup { vertical-align: super; font-size: .75em; }
+    .matrix { font-family: "Cambria Math", "Times New Roman", serif; white-space: nowrap; }
+    figure { margin: 8px 0 9px; break-inside: avoid; }
+    figcaption { margin-top: 3px; font-size: 8.2pt; line-height: 1.12; text-align: justify; }
+    svg { display: block; width: 100%; height: auto; border: 1px solid #aaa; background: #fafafa; }
+    table { width: 100%; margin: 6px 0 9px; border-collapse: collapse; font-size: 8.1pt; line-height: 1.12; break-inside: avoid; }
+    caption { margin-bottom: 3px; font-size: 8.4pt; font-variant: small-caps; }
+    th, td { padding: 2px 3px; border-top: 1px solid #777; text-align: right; vertical-align: top; }
+    th { border-bottom: 1px solid #777; font-weight: 700; }
+    tr:last-child td { border-bottom: 1px solid #777; }
+    th:first-child, td:first-child { text-align: left; }
+    .wide { column-span: all; }
+    .note { padding: 5px 7px; border-left: 2px solid var(--accent); background: #f3f6f8; font-size: 8.6pt; break-inside: avoid; }
+    .algorithm { margin: 6px 0 8px; padding: 6px 8px; border-top: 1px solid #555; border-bottom: 1px solid #555; font-size: 8.5pt; break-inside: avoid; }
+    .algorithm strong { display: block; margin-bottom: 3px; text-align: center; }
+    .algorithm ol { margin-bottom: 0; }
+    code { font-family: "Courier New", monospace; font-size: .88em; }
+    .references { padding-left: 20px; font-size: 8.2pt; text-align: left; }
+    .references li { padding-left: 2px; margin-bottom: 4px; }
+    .footer-note { margin-top: 10px; padding-top: 5px; border-top: 1px solid #777; color: var(--muted); font-size: 7.8pt; text-align: center; }
+    a { color: var(--accent); text-decoration: none; }
+    @media (max-width: 760px) {
+      article { width: 100%; margin: 0; padding: 22px 18px; box-shadow: none; }
+      .columns { column-count: 1; }
+      .wide { column-span: none; }
+      h1 { font-size: 20pt; }
+    }
+    @media print {
+      @page { size: letter; margin: 14mm 13mm 16mm; }
+      html { background: #fff; }
+      article { width: auto; min-height: 0; margin: 0; padding: 0; box-shadow: none; }
+      a { color: inherit; }
+    }
+  </style>
+</head>
+<body>
+<article>
+  <header>
+    <h1>Offset-Free Joint Time-of-Flight, Clock-Rate, and Clock-Drift Estimation from Networked UWB Timestamps</h1>
+    <p class="author">Heimdall Project Technical Paper</p>
+    <p class="affiliation">Multi-Node Ultra-Wideband Sensing System, July 2026</p>
+    <p class="abstract"><span class="label">Abstract--</span>This paper develops a timestamp-domain method for jointly estimating reciprocal radio time of flight (ToF), relative clock frequency, and clock-frequency drift in an unsynchronized ultra-wideband (UWB) network. The central observation is that absolute clock offsets are unnecessary nuisance parameters when transmit and receive events are combined into two-way local intervals. An affine-clock two-way exchange yields an equation of the form <i>q</i><span class="sub">i</span><i>R</i><span class="sub">i</span> - <i>q</i><span class="sub">j</span><i>D</i><span class="sub">j</span> = 2<i>&tau;</i><span class="sub">ij</span>, where <i>q</i> is seconds per local tick and <i>&tau;</i> is reciprocal propagation time. Clock offsets cancel exactly. Stacking such equations across repeated exchanges and a connected network produces a sparse, robust estimation problem for all link ToFs and node clock rates; time-varying rate terms extend the same construction to drift. Measurements from a five-node DWM3001/DW3110 deployment support the model: 16,909 observations over 30 s covered all 20 directed links, with a maximum measured relative drift of 0.00013194 ppb/ms and reverse-link consistency of 0.00000086 ppb/ms RMS. The measured drift is negligible over a 70 ms ranging exchange but becomes relevant to long-horizon timestamp prediction. Practical fitting horizons and identifiability conditions are given.</p>
+    <p class="keywords"><span class="label">Index Terms--</span>Ultra-wideband, time of flight, two-way ranging, clock skew, clock drift, synchronization, distributed estimation, timestamp fusion.</p>
+  </header>
+  <hr class="rule">
+
+  <main class="columns">
+    <section>
+      <h2>I. Introduction</h2>
+      <p class="dropcap">UWB radios expose precise hardware timestamps, but timestamps generated by different radios do not share an origin or an exact rate. A conventional synchronization pipeline first estimates clock offset and skew, maps every timestamp into a selected clock domain, and only then estimates propagation delay. That decomposition is intuitive but introduces a state that ranging does not require: absolute inter-node clock offset.</p>
+      <p>Two-way ranging avoids this dependency. Transmit and receive timestamps are differenced within the clock that generated them, and suitable combinations of the resulting local intervals cancel clock offsets. Standard single-sided and double-sided two-way ranging (SS-TWR and DS-TWR) use this principle for one pair and one exchange [2], [3]. The same principle can be lifted from an isolated ranging transaction into a network estimator. Rather than compute each range independently with a fixed nominal tick period, the estimator can fit reciprocal ToFs, per-node tick periods, and their slow variation jointly from many timestamp equations.</p>
+      <p>This view is useful for scheduled sensing networks. Every transmitted beacon can serve simultaneously as data transport, a ranging event, and clock-rate evidence. No node needs to be a timing authority. No explicit clock-offset state is required for ranging. The host uses event identities and local intervals, while a single scale convention supplies SI units.</p>
+      <p>The contributions of this paper are:</p>
+      <ol>
+        <li>an offset-free system model for networked transmit and receive timestamps;</li>
+        <li>a joint linear formulation for reciprocal ToF and affine clock-rate estimation;</li>
+        <li>a locally linear extension for clock drift and long-running state estimation;</li>
+        <li>identifiability and practical implementation conditions; and</li>
+        <li>an empirical characterization from a five-node UWB deployment.</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>II. System Model</h2>
+      <h3>A. Network and Propagation</h3>
+      <p>Consider <i>N</i> UWB nodes indexed by <i>i</i> in a connected observation graph. Event <i>e</i> is a transmission by node <i>i</i> at true time <i>t</i><span class="sub">e</span>. Node <i>j</i> receives the event after propagation time <i>&tau;</i><span class="sub">ij,e</span>. For fixed nodes and reciprocal propagation,</p>
+      <div class="equation"><span class="matrix">&tau;<span class="sub">ij,e</span> = &tau;<span class="sub">ji,e</span> = &tau;<span class="sub">ij</span>.</span><span class="number">(1)</span></div>
+      <p>The geometric range is <i>d</i><span class="sub">ij</span> = <i>c&tau;</i><span class="sub">ij</span>, where <i>c</i> is the propagation speed. Antenna delays, leading-edge bias, and NLOS delay are additive hardware/channel terms unless separately calibrated.</p>
+
+      <h3>B. Local Clock Model</h3>
+      <p>Each radio reports a local hardware-clock value. Over a short interval, node <i>i</i>'s clock is modeled as</p>
+      <div class="equation"><span class="matrix">C<span class="sub">i</span>(t) = &phi;<span class="sub">i</span> + &omega;<span class="sub">i</span>(t - t<span class="sub">0</span>) + (1/2)&gamma;<span class="sub">i</span>(t - t<span class="sub">0</span>)<span class="sup">2</span>.</span><span class="number">(2)</span></div>
+      <p>Here <i>&phi;</i><span class="sub">i</span> is an arbitrary offset, <i>&omega;</i><span class="sub">i</span> is ticks per second, and <i>&gamma;</i><span class="sub">i</span> is rate change. Define the inverse rate <i>q</i><span class="sub">i</span> = 1/<i>&omega;</i><span class="sub">i</span>, measured in seconds per tick. Around time coordinate <i>u</i>, use</p>
+      <div class="equation"><span class="matrix">q<span class="sub">i</span>(u) = q<span class="sub">i,0</span> + q<span class="sub">i,1</span>u.</span><span class="number">(3)</span></div>
+      <p>This inverse-rate parameterization makes the interval equations linear. Relative frequency in ppm is recovered as 10<span class="sup">6</span>(<i>q</i><span class="sub">0</span>/<i>q</i><span class="sub">i</span> - 1), after one node or the nominal device rate defines the scale.</p>
+
+      <h3>C. Timestamp Observations</h3>
+      <p>A frame transmitted by <i>i</i> carries a local transmit timestamp <i>s</i><span class="sub">i,e</span> = <i>C</i><span class="sub">i</span>(<i>t</i><span class="sub">e</span>). Receiver <i>j</i> records <i>r</i><span class="sub">j,e</span> = <i>C</i><span class="sub">j</span>(<i>t</i><span class="sub">e</span> + <i>&tau;</i><span class="sub">ij,e</span>) plus timestamp noise and channel bias. A single directed observation therefore contains clock offset and ToF in the same additive term; neither is identifiable from that observation alone.</p>
+      <p>In the target implementation, the DW3110 timestamp counter is 40 bits at 63.8976 GHz, approximately 15.65 ps per device time unit (DTU). The counter wraps every 17.2 s. Event labels and schedule rounds support unwrapping over longer captures, while any individual modular interval must remain below the half-range ambiguity bound.</p>
+
+      <figure>
+        <svg viewBox="0 0 620 210" role="img" aria-label="Three-message alternating exchange between nodes A and B">
+          <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#123f67"/></marker></defs>
+          <style>.s{font:18px 'Times New Roman';fill:#111}.m{font:15px 'Times New Roman';fill:#333}.l{stroke:#222;stroke-width:2}.a{stroke:#123f67;stroke-width:2;marker-end:url(#arrow)}</style>
+          <text class="s" x="85" y="25">Node A clock</text><text class="s" x="430" y="25">Node B clock</text>
+          <line class="l" x1="150" y1="38" x2="150" y2="195"/><line class="l" x1="475" y1="38" x2="475" y2="195"/>
+          <line class="a" x1="150" y1="62" x2="475" y2="88"/><text class="m" x="165" y="57">poll: a1</text><text class="m" x="405" y="105">b1</text>
+          <line class="a" x1="475" y1="115" x2="150" y2="141"/><text class="m" x="405" y="111">response: b2</text><text class="m" x="113" y="158">a2</text>
+          <line class="a" x1="150" y1="168" x2="475" y2="190"/><text class="m" x="165" y="183">final: a3</text><text class="m" x="480" y="194">b3</text>
+          <text class="m" x="260" y="82">&tau;AB</text><text class="m" x="300" y="127">&tau;AB</text><text class="m" x="260" y="175">&tau;AB</text>
+        </svg>
+        <figcaption>Fig. 1. Alternating three-message exchange. Only within-clock differences are formed. The arbitrary vertical origins of the two clock lines never enter the estimator.</figcaption>
+      </figure>
+    </section>
+
+    <section>
+      <h2>III. Problem Statement</h2>
+      <p>Given timestamped directed receptions over an observation horizon, estimate:</p>
+      <ol>
+        <li>the reciprocal link ToFs <i>&tau;</i><span class="sub">ij</span> or a slowly varying ToF trajectory;</li>
+        <li>the relative inverse clock rates <i>q</i><span class="sub">i,0</span>, equivalently clock ppm;</li>
+        <li>the local rate derivatives <i>q</i><span class="sub">i,1</span>, equivalently clock drift; and</li>
+        <li>uncertainty and residual diagnostics robust to missing frames and outliers.</li>
+      </ol>
+      <p>The estimator should not solve for <i>&phi;</i><span class="sub">i</span>, because clock origins are neither needed for reciprocal ToF nor observable without a gauge. It should accept asynchronous forwarding and packet loss, use timestamps in the clock domain that produced them, and exploit all links rather than treating every pair independently.</p>
+      <p>Formally, construct local-interval measurements <b>z</b> and find parameters <b>x</b> containing link ToFs and node rate terms such that</p>
+      <div class="equation"><span class="matrix"><b>x</b><span class="sup">*</span> = arg min<span class="sub"><b>x</b></span> &Sigma;<span class="sub">m</span> &rho;((<b>A</b><span class="sub">m</span><b>x</b> - b<span class="sub">m</span>)/&sigma;<span class="sub">m</span>),</span><span class="number">(4)</span></div>
+      <p>where <i>&rho;</i> is a robust loss and the clock-offset columns are absent by construction. A reference-rate constraint fixes physical scale. Absolute UTC synchronization is explicitly outside the problem.</p>
+    </section>
+
+    <section>
+      <h2>IV. Proposed Offset-Free Solution</h2>
+      <h3>A. Two-Message Interval Equation</h3>
+      <p>Let A transmit a poll at local timestamp <i>a</i><span class="sub">1</span>, received by B at <i>b</i><span class="sub">1</span>. B later transmits at <i>b</i><span class="sub">2</span>, received by A at <i>a</i><span class="sub">2</span>. Define the local round and reply intervals</p>
+      <div class="equation"><span class="matrix">R<span class="sub">A</span> = a<span class="sub">2</span> - a<span class="sub">1</span>, &nbsp; D<span class="sub">B</span> = b<span class="sub">2</span> - b<span class="sub">1</span>.</span><span class="number">(5)</span></div>
+      <p>Under constant rates during the exchange, both represent the same true turnaround interval, except that the round interval contains propagation in both directions. Consequently,</p>
+      <div class="equation"><span class="matrix">q<span class="sub">A</span>R<span class="sub">A</span> - q<span class="sub">B</span>D<span class="sub">B</span> = 2&tau;<span class="sub">AB</span> + &nu;<span class="sub">1</span>.</span><span class="number">(6)</span></div>
+      <p>The offset terms <i>&phi;</i><span class="sub">A</span> and <i>&phi;</i><span class="sub">B</span> cancel inside (5), before estimation. Equation (6) is linear in inverse rates and ToF. If rates are known, it reduces to corrected SS-TWR. If rates are unknown, repeated and network-coupled instances estimate them jointly with ToF.</p>
+
+      <h3>B. Three-Message DS-Like Equation</h3>
+      <p>Add a final transmission by A at <i>a</i><span class="sub">3</span>, received by B at <i>b</i><span class="sub">3</span>. The complementary intervals are</p>
+      <div class="equation"><span class="matrix">R<span class="sub">B</span> = b<span class="sub">3</span> - b<span class="sub">2</span>, &nbsp; D<span class="sub">A</span> = a<span class="sub">3</span> - a<span class="sub">2</span>,</span><span class="number">(7)</span></div>
+      <p>which give a second offset-free constraint:</p>
+      <div class="equation"><span class="matrix">q<span class="sub">B</span>R<span class="sub">B</span> - q<span class="sub">A</span>D<span class="sub">A</span> = 2&tau;<span class="sub">AB</span> + &nu;<span class="sub">2</span>.</span><span class="number">(8)</span></div>
+      <p>Equations (6) and (8) retain the DS-TWR cancellation mechanism but do not force a closed-form range calculation per triple. They become rows in one network optimization. This permits shared rate estimates, weighting by timestamp quality, missing-equation tolerance, and direct uncertainty propagation. The familiar asymmetric DS-TWR expression</p>
+      <div class="equation"><span class="matrix">&tau;&#770; = (R<span class="sub">A</span>R<span class="sub">B</span> - D<span class="sub">A</span>D<span class="sub">B</span>) / (R<span class="sub">A</span> + R<span class="sub">B</span> + D<span class="sub">A</span> + D<span class="sub">B</span>)</span><span class="number">(9)</span></div>
+      <p>is recovered as a pairwise special case under the standard short-exchange clock assumptions [3]. The proposed method instead preserves <i>q</i><span class="sub">i</span> as a network state and allows that state to evolve.</p>
+
+      <h3>C. Joint Network System</h3>
+      <p>For an A-to-B-to-A exchange, a design row contains nonzero coefficients only for <i>q</i><span class="sub">A</span>, <i>q</i><span class="sub">B</span>, and <i>&tau;</i><span class="sub">AB</span>:</p>
+      <div class="equation"><span class="matrix">[... R<span class="sub">A</span> ... -D<span class="sub">B</span> ... -2 ...]<b>x</b> = 0.</span><span class="number">(10)</span></div>
+      <p>Fixing <i>q</i><span class="sub">0</span> to the nominal DTU period moves its contribution to the right-hand side and removes the all-zero scale ambiguity. Every node rate is shared by all incident links, while each reciprocal link contributes one ToF state. The sparse matrix can be solved by weighted least squares, iteratively reweighted least squares, or a factor-graph optimizer.</p>
+
+      <h3>D. Drift Extension</h3>
+      <p>For an interval centered near schedule coordinate <i>u</i>, replace <i>q</i><span class="sub">i</span> by <i>q</i><span class="sub">i,0</span> + <i>q</i><span class="sub">i,1</span><i>u</i>. Equation (6) becomes</p>
+      <div class="equation"><span class="matrix">(q<span class="sub">A,0</span> + q<span class="sub">A,1</span>u)R<span class="sub">A</span> - (q<span class="sub">B,0</span> + q<span class="sub">B,1</span>u)D<span class="sub">B</span> - 2&tau;<span class="sub">AB</span> = &nu;.</span><span class="number">(11)</span></div>
+      <p>This remains linear when <i>u</i> is supplied by a round counter or a previous timing iterate. For long deployments, a state-space implementation should model <i>q</i><span class="sub">i</span> as a random walk or integrated random walk rather than assuming one global quadratic clock. Offsets still do not enter.</p>
+
+      <div class="note"><b>Interpretation:</b> the method estimates enough clock behavior to compare durations, not clock origins. This is sufficient for reciprocal ToF. It does not produce absolute transmit time, UTC, or passive one-way ToF from a single reception.</div>
+    </section>
+
+    <section>
+      <h2>V. Identifiability and Observability</h2>
+      <p>Offset elimination does not remove all gauge freedoms. The following conditions are required:</p>
+      <ol>
+        <li><b>Rate scale:</b> fix one inverse rate to a nominal or calibrated value. Without this constraint, rates and ToFs can scale together.</li>
+        <li><b>Connected graph:</b> every estimated node must participate in a path to the rate reference.</li>
+        <li><b>Reciprocal evidence:</b> a link needs alternating directions or an equivalent cycle of timestamp constraints. A lone directed timestamp cannot separate offset and ToF.</li>
+        <li><b>Timing diversity:</b> repeated equations must have sufficient variation or complementary DS geometry. Identical turnaround intervals can make rate and ToF columns poorly conditioned.</li>
+        <li><b>Drift excitation:</b> the observation window must be long enough that rate change exceeds local skew noise, but short enough for the selected drift model to remain valid.</li>
+      </ol>
+      <p>Reciprocity is a physical constraint, not merely a convenience. Direction-dependent antenna or NLOS biases violate (1) and should be represented by calibrated directional terms or robust residuals. Motion creates a second confounder: a changing path delay can resemble clock-rate error. Multiple links, geometry constraints, CIR diagnostics, and sufficiently rapid alternating exchanges help separate these effects.</p>
+      <p>Fixing the reference tick period to its data-sheet value yields ToF in SI seconds, but any common reference-frequency error scales all ranges. A calibrated frequency reference is required when that ppm-level scale error matters.</p>
+    </section>
+
+    <section>
+      <h2>VI. Estimation Procedure</h2>
+      <div class="algorithm">
+        <strong>Algorithm 1: Offset-Free Joint Estimator</strong>
+        <ol>
+          <li>Validate records, deduplicate relayed observations, and unwrap each 40-bit clock using event order.</li>
+          <li>For each unordered pair, identify alternating two- or three-message exchanges from node, round, and schedule labels.</li>
+          <li>Form only within-clock modular intervals <i>R</i> and <i>D</i>; reject intervals at or above half the timestamp modulus.</li>
+          <li>Build sparse rows from (6), (8), or (11), sharing node-rate states across links and one reciprocal ToF state per pair.</li>
+          <li>Fix the reference inverse rate, apply antenna-delay calibration, and solve with robust, quality-weighted least squares.</li>
+          <li>Reject or down-weight high-residual/NLOS factors, then re-solve and compute covariance or bootstrap intervals.</li>
+          <li>For continuous operation, marginalize old factors while carrying rate and drift states forward.</li>
+        </ol>
+      </div>
+      <p>Quality weights can include accumulator count, first-path validity, received power, CIR/NLOS indicators, timestamp route, and exchange span. Packet loss removes rows but does not invalidate intact exchanges. A global solver also exposes consistency tests unavailable to isolated DS-TWR: reverse-direction residuals, cycle closure, per-node drift decomposition, and graph rank.</p>
+      <p>A practical implementation may alternate two subproblems. First hold link ToFs fixed and update clock rate/drift states from all directed links. Then hold clock states fixed and update ToFs or geometry. Since (10) is already linear for static ToFs and local drift, this alternation is primarily useful when adding motion, robust NLOS models, or geometric position constraints.</p>
+    </section>
+
+    <section>
+      <h2>VII. Heimdall Timestamp Realization</h2>
+      <p>Heimdall uses DWM3001CDK nodes with DW3110 radios and nRF52833 MCUs. Nodes broadcast scheduled beacons; each frame carries its programmed delayed-transmit timestamp. On validated hardware, programmed-versus-actual transmit error was 0 DTU over 1,000 test frames. Each receiver records its local RX timestamp and reports the observed TX timestamp verbatim. Thus every canonical observation contains a timestamp from the transmitter's clock and one from the receiver's clock.</p>
+      <p>The current configuration uses 7 ms superslots. Each receiver observes every other transmitter, producing a complete directed link matrix when frames are received. The host identifies A-to-B-to-A triples spanning no more than two network cycles and 100 ms, then computes conventional asymmetric DS-TWR. The proposed estimator can consume the same canonical records while replacing independent pairwise formulas with the sparse network system above.</p>
+      <p>Transmit timestamps include configured TX antenna delay; RX timestamps use the radio's receive timestamp primitive. Therefore raw timestamp solutions still require antenna-delay calibration and NLOS treatment. Clock cancellation cannot remove deterministic radio-front-end bias.</p>
+    </section>
+
+    <section>
+      <h2>VIII. Practical Clock Measurements</h2>
+      <h3>A. Data Set and Method</h3>
+      <p>A protected static capture retained 30 s of post-trigger traffic from five nodes. It contained 16,909 unique canonical observations over rounds 445320 through 449606, covering all 20 directed links. Parser CRC and framing failures were zero. Twelve USB sequence gaps occurred but did not prevent per-link fitting.</p>
+      <p>For each directed link, TX and RX counters were unwrapped independently. Robust one-second affine fits, advanced every 250 ms, estimated local relative skew. A robust trend through these local estimates produced drift. A full quadratic timestamp fit supplied an independent comparison. Finally, all directed drifts were decomposed into per-node values relative to N0.</p>
+
+      <table>
+        <caption>Table I. Thirty-Second Clock Measurement</caption>
+        <thead><tr><th>Metric</th><th>Measured value</th></tr></thead>
+        <tbody>
+          <tr><td>Mid-capture relative skew magnitude</td><td>up to 1.858 ppm</td></tr>
+          <tr><td>Local skew residual standard deviation</td><td>0.38-0.99 ppb</td></tr>
+          <tr><td>Median absolute directed drift</td><td>0.00006089 ppb/ms</td></tr>
+          <tr><td>Maximum absolute directed drift</td><td>0.00013194 ppb/ms</td></tr>
+          <tr><td>Maximum frequency change over 30 s</td><td>3.958 ppb</td></tr>
+          <tr><td>Reverse-link drift-sum RMS</td><td>0.00000086 ppb/ms</td></tr>
+          <tr><td>Node-decomposition residual RMS</td><td>0.00000094 ppb/ms</td></tr>
+        </tbody>
+      </table>
+
+      <table>
+        <caption>Table II. Per-Node Drift Relative to N0</caption>
+        <thead><tr><th>Node</th><th>Drift (ppb/ms)</th><th>Change over 30 s</th></tr></thead>
+        <tbody>
+          <tr><td>N0</td><td>0</td><td>0 ppb</td></tr>
+          <tr><td>N1</td><td>+0.00009188</td><td>+2.756 ppb</td></tr>
+          <tr><td>N2</td><td>-0.00003893</td><td>-1.168 ppb</td></tr>
+          <tr><td>N3</td><td>-0.00004028</td><td>-1.208 ppb</td></tr>
+          <tr><td>N4</td><td>+0.00002149</td><td>+0.645 ppb</td></tr>
+        </tbody>
+      </table>
+
+      <h3>B. Interpretation</h3>
+      <p>Opposite directions exhibit nearly equal and opposite drift, and a node-level model explains the link slopes with a residual two orders of magnitude below the slopes themselves. This supports a clock-origin interpretation rather than a parser or propagation artifact. It also supports sharing a node clock state across all incident links, as required by (10).</p>
+      <p>The experiment validates relative drift only over 30 s and under the observed thermal conditions. Overlapping one-second windows make regression confidence intervals optimistic for long-term prediction. A longer holdover experiment is required before one quadratic clock model is extrapolated over minutes.</p>
+    </section>
+
+    <section>
+      <h2>IX. Feasible Estimation Horizons</h2>
+      <h3>A. ToF Exchange Horizon</h3>
+      <p>If rate drift <i>d</i> is left unmodeled after correcting constant skew, clock curvature grows approximately as (1/2)<i>dT</i><span class="sup">2</span>. At the maximum measured relative drift of 0.132 ppb/s, the one-way light-distance scale is:</p>
+      <table>
+        <caption>Table III. Drift-Only ToF Curvature Scale</caption>
+        <thead><tr><th>Exchange span</th><th>Time curvature</th><th>Distance scale</th></tr></thead>
+        <tbody>
+          <tr><td>70 ms</td><td>0.323 ps</td><td>0.097 mm</td></tr>
+          <tr><td>225 ms</td><td>3.34 ps</td><td>1.00 mm</td></tr>
+          <tr><td>711 ms</td><td>33.4 ps</td><td>1.00 cm</td></tr>
+          <tr><td>2.25 s</td><td>334 ps</td><td>10.0 cm</td></tr>
+        </tbody>
+      </table>
+      <p>These are conservative scale values before DS-like cancellation, not predicted range errors. The practical recommendation is to keep each exchange at or below the existing 70 ms span. Independent short-exchange ToFs may be averaged for seconds or minutes if geometry remains static; the clock model does not require one long ranging transaction.</p>
+
+      <h3>B. Clock-Rate Horizon</h3>
+      <p>One-second local fits exhibited approximately 0.4-1 ppb residual noise. A 1-10 s window is therefore suitable for an instantaneous ppm estimate. At the maximum observed drift, true relative frequency changes by 0.132 ppb/s: 1 ppb in 7.6 s, 5 ppb in 38 s, and 10 ppb in 76 s. A single constant-ppm estimate should not represent a long record when ppb precision is required. Sliding estimates can operate indefinitely.</p>
+
+      <h3>C. Drift Horizon</h3>
+      <p>Clock drift requires enough time for skew change to exceed local skew noise. About 10 s is the shortest useful window for the fastest measured pair; 30 s produced coherent estimates across the full graph. A 30-60 s sliding window is a reasonable initial operational choice. The longest experimentally justified single-slope horizon is presently 30 s. Longer campaigns should use repeated local drift states rather than one global polynomial.</p>
+
+      <table>
+        <caption>Table IV. Recommended Operational Horizons</caption>
+        <thead><tr><th>Quantity</th><th>Local horizon</th><th>Long-running treatment</th></tr></thead>
+        <tbody>
+          <tr><td>Reciprocal ToF</td><td>&le;70 ms exchange</td><td>Average short exchanges while static</td></tr>
+          <tr><td>Instantaneous ppm</td><td>1-10 s</td><td>Overlapping sliding fit</td></tr>
+          <tr><td>Clock drift</td><td>30-60 s</td><td>State-space or piecewise fit</td></tr>
+          <tr><td>Absolute offset/UTC</td><td>Not estimated</td><td>Requires external reference</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>X. Discussion and Limitations</h2>
+      <p><b>Offset-free is not synchronization-free.</b> The estimator avoids explicit offset states because reciprocal ToF depends on durations. Scheduling still needs coarse phase coordination, and passive one-way localization still needs clock-offset information or additional geometric constraints.</p>
+      <p><b>Hardware bias remains.</b> Antenna delays and timestamp leading-edge bias are indistinguishable from propagation delay in the basic model. Pairwise calibration, known geometry, or additional bias states are required for accurate metric ranging.</p>
+      <p><b>Motion and clock drift can couple.</b> A moving endpoint changes ToF. Over a single link, that trend can resemble rate error. A complete multi-node graph, reciprocal directions, short exchange spans, and independent CIR motion indicators improve separation.</p>
+      <p><b>Global polynomials are fragile.</b> Crystal behavior responds to temperature, voltage, and aging. A quadratic clock fit may describe 30 s while failing as a minute-scale predictor. The appropriate long-horizon object is a sequence of local rate/drift states with process noise.</p>
+      <p><b>Rank must be monitored.</b> A fixed deterministic schedule can repeat nearly identical intervals. The solver should report condition number and state covariance. Deliberate low-amplitude turnaround diversity may improve clock-rate observability without changing average traffic load.</p>
+      <p><b>Common mode is unobservable.</b> Network timestamps determine relative rate and drift. Absolute SI accuracy inherits the selected reference oscillator unless calibrated against PPS, GNSS, a disciplined oscillator, or another external standard.</p>
+    </section>
+
+    <section>
+      <h2>XI. Validation Plan</h2>
+      <p>The next experiment should test prediction, not merely in-sample fit:</p>
+      <ol>
+        <li>retain 10-30 min of complete raw timestamp traffic under static geometry;</li>
+        <li>fit rate and drift on an initial 30-60 s segment;</li>
+        <li>predict held-out timestamps over increasing horizons;</li>
+        <li>compare constant-rate, quadratic, sliding-window, and state-space models;</li>
+        <li>repeat with controlled thermal perturbation;</li>
+        <li>measure ToF against surveyed pair distances after antenna-delay calibration; and</li>
+        <li>compare the joint estimator against pairwise asymmetric DS-TWR using identical evidence.</li>
+      </ol>
+      <p>Primary outputs should include held-out timestamp error versus horizon, ToF bias and variance, graph condition number, node-rate covariance, reverse-link closure, and robustness under synthetic record loss. This determines a defensible update cadence for each state.</p>
+    </section>
+
+    <section>
+      <h2>XII. Conclusion</h2>
+      <p>Reciprocal UWB ToF does not require explicit estimation of clock offsets. By forming local intervals from alternating transmit and receive events, offsets cancel before optimization. The resulting equations are linear in inverse clock rate and ToF, and they naturally extend to a sparse network system that jointly estimates link delays, node ppm, and local clock drift.</p>
+      <p>Heimdall measurements indicate that static ppm differences are large enough to require rate correction, while short-term drift is small enough to be negligible within the current 70 ms DS-like exchange. Over longer horizons, the same drift accumulates quadratically and should be tracked using 30-60 s local states. The architecture therefore separates timescales: short reciprocal exchanges for ToF, short sliding windows for ppm, and longer local windows for drift, all without carrying absolute clock-offset states in the ranging estimator.</p>
+    </section>
+
+    <section>
+      <h2>References</h2>
+      <ol class="references">
+        <li>IEEE Standard for Low-Rate Wireless Networks, IEEE Std 802.15.4-2020, Jul. 2020.</li>
+        <li>Decawave Ltd., "APS013: Implementation of Two-Way Ranging with the DW1000," Application Note, 2015.</li>
+        <li>M. Neirynck, E. Luk, and M. McLaughlin, "An alternative double-sided two-way ranging method," in <i>Proc. 13th Workshop on Positioning, Navigation and Communications</i>, 2016, pp. 1-4.</li>
+        <li>J. Elson, L. Girod, and D. Estrin, "Fine-grained network time synchronization using reference broadcasts," in <i>Proc. 5th Symp. Operating Systems Design and Implementation</i>, 2002, pp. 147-163.</li>
+        <li>Heimdall Project, "Beacon Protocol v1," <code>contracts/beacon-v1.md</code>, Jul. 2026.</li>
+        <li>Heimdall Project, "Thirty-Second Timestamp Drift Report," generated by <code>host-tools/clock-drift/analyze_timestamp_drift.py</code>, Jul. 2026.</li>
+      </ol>
+    </section>
+  </main>
+  <p class="footer-note">This document is a project technical paper. Experimental ranging accuracy remains subject to antenna-delay calibration and controlled ground-truth validation.</p>
+</article>
+</body>
+</html>

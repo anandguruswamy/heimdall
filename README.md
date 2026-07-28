@@ -40,3 +40,7 @@ Heimdall data plane.
 - `tests/`: protocol, replay, and fusion tests.
 - `captures/`: local raw and processed data; ignored by default.
 - `deployment/`: node roster, slot plan, and UNO Q configuration.
+
+## Technical papers
+
+- [Offset-Free Joint Time-of-Flight, Clock-Rate, and Clock-Drift Estimation](docs/papers/joint-tof-clock-estimation.html)
