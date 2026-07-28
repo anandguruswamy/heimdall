@@ -425,8 +425,7 @@ calibration remains before timestamps can be treated as accurate ranges.
   framing failures; 437 expected pre-`HELLO` records were tracked separately.
 - Production cutover completed on 2026-07-27. The ARM64 binary at
   `/home/arduino/.local/bin/heimdall-service` has SHA-256
--  `E00C48350E406B73220E01F6FE5D1AAC21D18502361EF9EEC156C8CBA180F746`
-+  `94DBE81D5248858358DCA6800B91FDB5D01F1850D91DC76301CEAF618EC248E0`
+  `CB4D5602676C5BA23E87F0BA2F103C8581BB5828E2B077A6387219C6C69BF336`
   and serves the live dashboard/API on port 8080. The obsolete Python dashboard
   process is stopped and its `@reboot` entry is replaced by the tracked Rust
   launcher. Desktop and 390x844 phone renders passed after making node cards a
@@ -469,6 +468,53 @@ calibration remains before timestamps can be treated as accurate ranges.
   distance-history clone path, skipping unused serde fields (evidence, mm fields,
   bridge_duration_s), and increasing the processing channel buffer from 128 to
   1,024 records.
+- The CIR waterfall repair was built with the pinned Rust 1.93.1 Debian ARM64
+  release profile and deployed on 2026-07-27 without changing radio firmware.
+  The active board/profile remains DWM3001CDK N=5/M=2, channel 9, 6.8 Mbps,
+  64 taps, 3,500 us slots, 35 ms cycles, and config hash `0x8885`. Waterfall rows
+  now use one stable reference-peak-relative Kaiser grid from startup, publish
+  `x_min`/`x_max`/`x_step`, zero unavailable edge samples, and emit the processed
+  current row rather than the original aligned CIR. Invalid CIR records are no
+  longer admitted, dB limits are converted once, and display history is retained
+  by event time.
+- Live waterfall load qualification passed on all 20 directed links. The raw
+  path delivered 52,988,896 bytes in 20 seconds; magnitude clutter delivered
+  42,822,280 bytes; and complex nuisance fit plus noise clipping/path-loss
+  compensation delivered 14,116,704 bytes. Each final run had zero additional
+  processing-queue drops, CRC failures, or framing errors. The final health
+  snapshot was `ok` with 20/20 links, zero cumulative queue drops, CRC failures,
+  and framing errors after restart. The all-tab desktop/390x844 functional audit
+  also passed with zero failures or browser exceptions. Production settings were
+  restored to clutter/path loss off, spike rejection on, and taps `-20..50`.
+- Four deterministic service regressions cover invalid-CIR admission, aligned
+  grid edge behavior, processed-current-row output, and settings validation.
+  The ARM64 Linux release compiles successfully, while test-binary execution was
+  not repeated on Windows because the existing GNU/LLVM host linker wrapper
+  treats Rust's `-o` argument as a PowerShell common-parameter abbreviation.
+- Waterfall spike rejection now distinguishes one isolated low-correlation frame
+  from a persistent channel change. Live sampling found that 73/80 `1>4` frames
+  and 75/80 `4>1` frames fell below the old 0.90 all-or-nothing gate even though
+  both links remained healthy. With rejection enabled after the fix, a five-second
+  capture delivered 142 `1>4` rows and 143 `4>1` rows with nonzero maxima above
+  8.1, and all 20 directed links were represented. A controlled 20-second final
+  stream delivered 54,061,944 bytes with zero queue-drop, CRC, or framing deltas.
+- The dashboard tab is now named `Live CIR` while retaining the compatible
+  `instantaneous-cir` subscription. Waterfall controls are grouped by history,
+  tap window, color scale, static removal, and compensation; tap endpoints use
+  explicit numeric fields, checkboxes remain next to complete labels, desktop
+  controls wrap without widening the five-column plot grid, and mobile controls
+  scroll independently. Safe waterfall defaults were restored after validation.
+- A timestamp-only 30-second static-clock measurement used protected clip 2
+  (`a826bea0854483aebe9f219d83d8bcb7668774554ad0f017c35394ecc64b2b98`)
+  and 16,909 post-trigger observations across all 20 directed links. Robust
+  one-second sliding skew fits found median/max absolute relative drift of
+  0.00006089/0.00013194 ppb/ms. Reverse-link drift sums agreed within
+  0.00000086 ppb/ms RMS, and the per-node decomposition relative to N0 left
+  0.00000094 ppb/ms RMS residual. The maximum fitted drift changes relative
+  frequency by 3.958 ppb over 30 seconds and corresponds to only 0.097 mm of
+  light travel over 70 ms before ADS-TWR cancellation. Raw and processed local
+  artifacts are under ignored `captures/raw/` and `captures/processed/`; the
+  reusable analyzer is `host-tools/clock-drift/analyze_timestamp_drift.py`.
 
 ## Next executable checkpoint
 

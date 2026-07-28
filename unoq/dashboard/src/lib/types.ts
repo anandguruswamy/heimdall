@@ -1,7 +1,8 @@
 export const tabs = [
   'Network Health',
   'Live Distance',
-  'Instantaneous CIR',
+  'Board Positions',
+  'Live CIR',
   'CIR Waterfall',
   'Slow-Time FFT',
   'Fast-Time FFT',
@@ -11,7 +12,8 @@ export const tabs = [
 
 export type Tab = (typeof tabs)[number];
 export type Link = { from: number; to: number; id: string };
-export type Series = { data: Float32Array; color: string; width?: number; points?: boolean };
+export type PositionRange = { a: number; b: number; raw?: number; smoothed?: number; ultra?: number; outlier: boolean; eventS: number; round: number; evidence: string; window: number[] };
+export type Series = { data: Float32Array; color: string; width?: number; points?: boolean; ranging?: 'ss'|'ds'; smoothed?: boolean };
 export type Marker = { at: number; color: string };
 export type PlotFrame = {
   series?: Series[];

@@ -53,7 +53,7 @@ export function demoFrame(tab: Tab, link: Link, time: number, phaseMode = false)
   if (tab === 'CIR Waterfall' || tab === 'Slow-Time FFT') {
     return { heatmap: heat(96, 48, p), heatWidth: 96, heatHeight: 48, min: 0, max: 1 };
   }
-  if (tab === 'Instantaneous CIR') {
+  if (tab === 'Live CIR') {
     const raw = signal(64, p, 'cir');
     const curve = signal(1024, p, 'cir');
     return { series: [{ data: curve, color: '#45e0c1' }, { data: raw, color: '#f4bd62', points: true }], min: -0.1, max: 1.15 };

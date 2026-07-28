@@ -9,7 +9,7 @@ const output = process.argv[3] ?? join(tmpdir(), 'heimdall-tab-audit');
 const captureScreenshots = !process.argv.includes('--no-screenshots');
 const port = 9333;
 const profile = join(tmpdir(), `heimdall-edge-${process.pid}`);
-const tabs = ['Network Health', 'Live Distance', 'Instantaneous CIR', 'CIR Waterfall', 'Slow-Time FFT', 'Fast-Time FFT', 'CFO', 'Distance Calibration'];
+const tabs = ['Network Health', 'Live Distance', 'Board Positions', 'Live CIR', 'CIR Waterfall', 'Slow-Time FFT', 'Fast-Time FFT', 'CFO', 'Distance Calibration'];
 mkdirSync(output, { recursive: true });
 
 const browser = spawn(edge, [
@@ -108,14 +108,31 @@ async function run() {
         screenshotCaptured=false;
         console.error(`${viewport.name} ${tab} screenshot failed: ${error.message}`);
       }
-      audits.push({ viewport: viewport.name, tab, screenshotCaptured, ...state });
+      let focusAxes=null;
+      if (viewport.name === 'desktop' && tab === 'Live Distance') {
+        await cdp.evaluate(`document.querySelector('.link-cell')?.click()`);
+        await sleep(500);
+        focusAxes=await cdp.evaluate(`(() => ({
+          yTicks:[...document.querySelectorAll('.focus-panel .y-ticks span')].map((item)=>item.textContent),
+          xTicks:[...document.querySelectorAll('.focus-panel .x-ticks span')].map((item)=>item.textContent),
+          yLabel:document.querySelector('.focus-panel .y-axis')?.textContent,
+          xLabel:document.querySelector('.focus-panel .x-axis')?.textContent
+        }))()`);
+        if (captureScreenshots) {
+          const screenshot=await cdp.call('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+          writeFileSync(join(output,'desktop-live-distance-focus.png'),Buffer.from(screenshot.data,'base64'));
+        }
+        await cdp.evaluate(`document.querySelector('.focus-panel header button')?.click()`);
+      }
+      audits.push({ viewport: viewport.name, tab, screenshotCaptured, focusAxes, ...state });
     }
   }
   const exceptions = cdp.events.filter((event) => event.method === 'Runtime.exceptionThrown');
   const failures = audits.filter((item) => {
     const layout=item.viewport==='desktop'&&item.tab==='Live Distance'?item.linkLayout:[];
     const columnMajor=!layout.length||(layout.slice(0,4).every((cell)=>cell.x===layout[0].x)&&layout.slice(1,4).every((cell,index)=>cell.y>layout[index].y)&&layout[4]?.x>layout[0].x&&layout[4]?.y===layout[0].y);
-    return item.active !== item.tab || item.status !== 'LIVE' || item.synthetic || !columnMajor || item.canvases.some((canvas) => canvas.width < 1 || canvas.height < 1) || (!['Network Health', 'Distance Calibration'].includes(item.tab) && item.noData > 0);
+    const axesOk=item.tab!=='Live Distance'||item.viewport!=='desktop'||(item.focusAxes?.xTicks.length===5&&item.focusAxes?.yTicks.length===5&&item.focusAxes.xLabel==='history sample'&&item.focusAxes.yLabel==='cm');
+    return item.active !== item.tab || item.status !== 'LIVE' || item.synthetic || !columnMajor || !axesOk || item.canvases.some((canvas) => canvas.width < 1 || canvas.height < 1) || (!['Network Health', 'Distance Calibration'].includes(item.tab) && item.noData > 0);
   });
   const report = { url, output, audits, exceptions: exceptions.length, failures: failures.length, screenshotFailures: audits.filter((item)=>item.screenshotCaptured===false).length };
   console.log(JSON.stringify(report, null, 2));

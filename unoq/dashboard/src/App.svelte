@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import PlotCanvas from './lib/PlotCanvas.svelte';
+  import BoardPositions from './lib/BoardPositions.svelte';
   import { HeimdallApi } from './lib/api';
   import { linksFor } from './lib/demo';
   import { LiveStore } from './lib/live';
@@ -15,6 +16,8 @@
   let phaseMode = $state(false);
   let periodogramMode = $state(false);
   let dbMode = $state(false);
+  let distanceMode: 'ss'|'ds'|'both' = $state('both');
+  let distanceSmoothed = $state(true);
   let waterfallFixedScale = $state(true);
   let waterfallScaleMin = $state(-60);
   let waterfallScaleMax = $state(-10);
@@ -29,6 +32,7 @@
   let halfLife = $state(2);
   let smoothing = $state(1);
   let range = $state(4);
+  let alignmentMode = $state('correlation');
   let calibrationPair = $state('0>1');
   let referencesM = $state<Record<string, string>>({});
   let calibrationSolution = $state<Record<string, unknown> | null>(null);
@@ -49,6 +53,7 @@
   let swipeStartX: number | null = null;
   let api = $state.raw(null as unknown as HeimdallApi);
   const live = new LiveStore(() => liveRevision++);
+  const CIR_DB_OFFSET = -10 - 20 * Math.log10(11.2);
 
   const links = $derived(linksFor(nodeCount));
   const selected = $derived(links.find((link) => link.id === selectedId) ?? links[0]);
@@ -73,6 +78,9 @@
         return data?.fastFftPhase ?? EMPTY_FRAME;
       }
       let frame = data?.[topic];
+      if (topic === 'distance' && frame?.series) {
+        frame = { ...frame, series: frame.series.filter((series) => (distanceMode === 'both' || series.ranging === distanceMode) && (distanceSmoothed || !series.smoothed)) };
+      }
       if (topic === 'fast-fft' && periodogramMode && frame?.series?.[0]) {
         const original = frame.series[0].data;
         const squared = new Float32Array(original.length);
@@ -80,28 +88,40 @@
         const [min, max] = [0, Math.max(...squared)];
         return { series: [{ data: squared, color: frame.series[0].color }], min, max, xLabel: frame.xLabel, yLabel: 'power' };
       }
-      if (topic === 'waterfall' && waterfallFixedScale && frame) {
-        const scaleMin = dbMode ? waterfallScaleMin : Math.pow(10, waterfallScaleMin / 20);
-        const scaleMax = dbMode ? waterfallScaleMax : Math.pow(10, waterfallScaleMax / 20);
-        frame = { ...frame, min: scaleMin, max: scaleMax };
+      const cirOffset = topic === 'cir' || topic === 'waterfall' ? CIR_DB_OFFSET : 0;
+      if (dbMode && frame) {
+        frame = toDbFrame(frame, cirOffset);
+        if (topic === 'waterfall' && waterfallFixedScale) {
+          frame = { ...frame, min: waterfallScaleMin, max: waterfallScaleMax };
+        }
+        return frame;
       }
-      if (dbMode && frame) return toDbFrame(frame);
+      if (topic === 'waterfall' && waterfallFixedScale && frame) {
+        frame = {
+          ...frame,
+          min: Math.pow(10, (waterfallScaleMin - cirOffset) / 20),
+          max: Math.pow(10, (waterfallScaleMax - cirOffset) / 20),
+        };
+      }
       return frame ?? EMPTY_FRAME;
     };
   }
 
-  function toDbFrame(frame: PlotFrame): PlotFrame {
-    const toDb = (value: number) => 20 * Math.log10(Math.max(value, 1e-12));
+  function toDbFrame(frame: PlotFrame, offset = 0): PlotFrame {
+    const toDb = (value: number) => 20 * Math.log10(Math.max(value, 1e-12)) + offset;
     const convert = (src: Float32Array) => { const out = new Float32Array(src.length); for (let i = 0; i < src.length; i++) out[i] = toDb(src[i]); return out; };
     const series = frame.series?.map((s) => ({ ...s, data: convert(s.data) }));
     const heatmap = frame.heatmap ? convert(frame.heatmap) : undefined;
-    const min = frame.min !== undefined && frame.max !== undefined ? toDb(Math.max(frame.min, 1e-12)) : undefined;
-    const max = frame.min !== undefined && frame.max !== undefined ? toDb(frame.max) : undefined;
-    return { ...frame, series, heatmap, min, max, yLabel: 'dB' };
+    const values = heatmap ?? series?.[0]?.data;
+    const sorted = values ? Array.from(values).filter(Number.isFinite).sort((a, b) => a - b) : [];
+    const percentile = (fraction: number) => sorted[Math.floor((sorted.length - 1) * fraction)];
+    const min = sorted.length ? percentile(heatmap ? 0.05 : 0) : undefined;
+    const max = sorted.length ? percentile(heatmap ? 0.95 : 1) : undefined;
+    return { ...frame, series, heatmap, min, max, yLabel: heatmap ? frame.yLabel : 'dB' };
   }
 
   function topicFor(tab: Tab): TopicKey {
-    return ({ 'Network Health':'health','Live Distance':'distance','Instantaneous CIR':'cir','CIR Waterfall':'waterfall','Slow-Time FFT':'slow-fft','Fast-Time FFT':'fast-fft','CFO':'cfo','Distance Calibration':'calibration' } as const)[tab];
+    return ({ 'Network Health':'health','Live Distance':'distance','Board Positions':'distance','Live CIR':'cir','CIR Waterfall':'waterfall','Slow-Time FFT':'slow-fft','Fast-Time FFT':'fast-fft','CFO':'cfo','Distance Calibration':'calibration' } as const)[tab];
   }
 
   function linkMetric(link: Link) {
@@ -150,7 +170,7 @@
 
   function mobileLegend(): string[] {
     if (active === 'Live Distance') return ['SS RAW','SS SMOOTHED','DS RAW / SMOOTHED'];
-    if (active === 'Instantaneous CIR') return ['DISPLAY INTERPOLATION','ALIGNED TAPS','FIRST PATH'];
+    if (active === 'Live CIR') return ['DISPLAY INTERPOLATION','ALIGNED TAPS','FIRST PATH'];
     if (active === 'CIR Waterfall') return ['AMPLITUDE','SLOW TIME','FIRST PATH'];
     if (active === 'Slow-Time FFT') return ['CIR TAP','DOPPLER','MAGNITUDE'];
     if (active === 'Fast-Time FFT') return ['CHANNEL RESPONSE',phaseMode?'PHASE':'MAGNITUDE'];
@@ -342,7 +362,7 @@
       if (data.health) live.health = data.health as Record<string,unknown>;
       if (data.topology) { live.loadTopology(data.topology); const config=(data.topology as Record<string,unknown>).config as Record<string,unknown>|undefined; const count = Number(config?.n_nodes); if (count >= 2 && count <= 8) chooseNodeCount(count); }
       if (data.distanceHistory) live.loadDistanceHistory(data.distanceHistory);
-      if (data.settings) { live.settings = data.settings as Record<string,unknown>; const value=(live.settings.value ?? {}) as Record<string,unknown>; halfLife=Number(value.cfo_half_life_s ?? 2); smoothing=Number(value.distance_smoothing_s ?? 1); range=Number(value.reference_half_life_s ?? 4); slowFftSeconds=Number(value.slow_fft_history_s ?? 2); waterfallClutter=Boolean(value.waterfall_clutter); waterfallMagnitudeClutter=value.waterfall_magnitude_clutter !== false; waterfallNuisanceFit=value.waterfall_nuisance_fit !== false; waterfallRejectSpikes=value.waterfall_reject_spikes !== false; waterfallPathLoss=Boolean(value.waterfall_path_loss); waterfallNoiseClipDb=Number(value.waterfall_noise_clip_db ?? 12); waterfallTapMin=Number(value.waterfall_tap_min ?? -20); waterfallTapMax=Number(value.waterfall_tap_max ?? 50); }
+      if (data.settings) { live.settings = data.settings as Record<string,unknown>; const value=(live.settings.value ?? {}) as Record<string,unknown>; halfLife=Number(value.cfo_half_life_s ?? 2); smoothing=Number(value.distance_smoothing_s ?? 1); range=Number(value.reference_half_life_s ?? 4); alignmentMode=String(value.cir_alignment_mode ?? 'correlation'); slowFftSeconds=Number(value.slow_fft_history_s ?? 2); waterfallClutter=Boolean(value.waterfall_clutter); waterfallMagnitudeClutter=value.waterfall_magnitude_clutter !== false; waterfallNuisanceFit=value.waterfall_nuisance_fit !== false; waterfallRejectSpikes=value.waterfall_reject_spikes !== false; waterfallPathLoss=Boolean(value.waterfall_path_loss); waterfallNoiseClipDb=Number(value.waterfall_noise_clip_db ?? 12); waterfallTapMin=Number(value.waterfall_tap_min ?? -20); waterfallTapMax=Number(value.waterfall_tap_max ?? 50); waterfallScaleMin=Number(value.waterfall_fixed_scale_min ?? -60); waterfallScaleMax=Number(value.waterfall_fixed_scale_max ?? -10); }
       if (data.calibration) {
         live.calibration = data.calibration as Record<string,unknown>;
         const calibration=data.calibration as Record<string,unknown>, liveState=calibration.live as Record<string,unknown>|undefined, applied=calibration.applied as Record<string,unknown>|undefined, stored=applied?.value as Record<string,unknown>|undefined;
@@ -390,36 +410,37 @@
   </nav>
 
   <main>
-    <section class="mode-head">
+    <section class:waterfall-mode={active === 'CIR Waterfall'} class="mode-head">
       <div><p>ANALYSIS / {active.toUpperCase()}</p><h1>{active}</h1></div>
       <div class="mode-controls">
-        {#if active === 'Fast-Time FFT'}
+        {#if active === 'Live Distance'}
+          <div class="segmented" aria-label="Ranging series"><button class:active={distanceMode === 'ss'} onclick={() => distanceMode = 'ss'}>SS-TWR</button><button class:active={distanceMode === 'ds'} onclick={() => distanceMode = 'ds'}>DS-TWR</button><button class:active={distanceMode === 'both'} onclick={() => distanceMode = 'both'}>Both</button></div>
+          <label class="display-toggle"><input type="checkbox" bind:checked={distanceSmoothed} />SMOOTHED LINES</label>
+        {:else if active === 'Fast-Time FFT'}
           <div class="segmented" aria-label="FFT display"><button class:active={!phaseMode && !periodogramMode} onclick={() => { phaseMode = false; periodogramMode = false; }}>Magnitude</button><button class:active={!periodogramMode && phaseMode} onclick={() => { phaseMode = true; periodogramMode = false; }}>Phase</button><button class:active={periodogramMode} onclick={() => { phaseMode = false; periodogramMode = true; }}>Periodogram</button></div>
         {:else if active === 'CFO'}
           <label>HALF-LIFE <output>{halfLife.toFixed(1)} s</output><input type="range" min="0.1" max="30" step="0.1" value={halfLife} oninput={(e) => { halfLife=+e.currentTarget.value; settingChanged('cfo_half_life_s',halfLife); }} /></label>
         {:else if active === 'CIR Waterfall'}
-          <label>HISTORY <output>{waterfallSeconds.toFixed(0)} s</output><input type="range" min="1" max="30" step="1" value={waterfallSeconds} oninput={(e) => { waterfallSeconds=+e.currentTarget.value; live.setWaterfallSeconds(waterfallSeconds); }} /></label>
-          <label>TAPS<output>{waterfallTapMin}..{waterfallTapMax}</output><input type="range" min="-64" max="63" step="1" value={waterfallTapMin} oninput={(e) => { waterfallTapMin=+e.currentTarget.value; settingChanged('waterfall_tap_min', waterfallTapMin); }} /><input type="range" min="-64" max="63" step="1" value={waterfallTapMax} oninput={(e) => { waterfallTapMax=+e.currentTarget.value; settingChanged('waterfall_tap_max', waterfallTapMax); }} /></label>
-          <label>FIXED dB <output>{waterfallScaleMin}..{waterfallScaleMax}</output><input type="checkbox" bind:checked={waterfallFixedScale} onchange={(e) => settingChanged('waterfall_fixed_scale_min', waterfallFixedScale ? waterfallScaleMin : 0)} /></label>
-          <label><input type="checkbox" bind:checked={waterfallClutter} onchange={() => settingChanged('waterfall_clutter', waterfallClutter)} />CLUTTER</label>
-          <label><input type="checkbox" bind:checked={waterfallMagnitudeClutter} disabled={!waterfallClutter} onchange={() => settingChanged('waterfall_magnitude_clutter', waterfallMagnitudeClutter)} />MAG ONLY</label>
-          <label><input type="checkbox" bind:checked={waterfallNuisanceFit} disabled={!waterfallClutter || waterfallMagnitudeClutter} onchange={() => settingChanged('waterfall_nuisance_fit', waterfallNuisanceFit)} />NUIS FIT</label>
-          <label><input type="checkbox" bind:checked={waterfallRejectSpikes} onchange={() => settingChanged('waterfall_reject_spikes', waterfallRejectSpikes)} />REJECT SPIKE</label>
-          <label><input type="checkbox" bind:checked={waterfallPathLoss} onchange={() => settingChanged('waterfall_path_loss', waterfallPathLoss)} />PATH LOSS</label>
-          {#if waterfallPathLoss}
-            <label>CLIP dB<output>{waterfallNoiseClipDb}</output><input type="range" min="0" max="40" step="0.5" value={waterfallNoiseClipDb} oninput={(e) => { waterfallNoiseClipDb=+e.currentTarget.value; settingChanged('waterfall_noise_clip_db', waterfallNoiseClipDb); }} /></label>
-          {/if}
+          <div class="waterfall-controls">
+            <div class="control-group history-control"><span>HISTORY</span><output>{waterfallSeconds.toFixed(0)} s</output><input aria-label="Waterfall history seconds" type="range" min="1" max="30" step="1" value={waterfallSeconds} oninput={(e) => { waterfallSeconds=+e.currentTarget.value; live.setWaterfallSeconds(waterfallSeconds); }} /></div>
+            <div class="control-group tap-control"><span>TAP WINDOW</span><label>FROM<input aria-label="First aligned tap" type="number" min="-64" max={waterfallTapMax - 1} step="1" value={waterfallTapMin} onchange={(e) => { waterfallTapMin=+e.currentTarget.value; settingChanged('waterfall_tap_min', waterfallTapMin); }} /></label><label>TO<input aria-label="Last aligned tap" type="number" min={waterfallTapMin + 1} max="63" step="1" value={waterfallTapMax} onchange={(e) => { waterfallTapMax=+e.currentTarget.value; settingChanged('waterfall_tap_max', waterfallTapMax); }} /></label></div>
+            <div class="control-group scale-control"><span>COLOR SCALE</span><label class="toggle"><input type="checkbox" bind:checked={waterfallFixedScale} />FIXED</label><output>{waterfallScaleMin}..{waterfallScaleMax} dB</output></div>
+            <div class="control-group"><span>STATIC REMOVAL</span><label class="toggle"><input type="checkbox" bind:checked={waterfallClutter} onchange={() => settingChanged('waterfall_clutter', waterfallClutter)} />REMOVE CLUTTER</label><label class="toggle" title="Subtract temporal mean magnitude instead of complex I/Q"><input type="checkbox" bind:checked={waterfallMagnitudeClutter} disabled={!waterfallClutter} onchange={() => settingChanged('waterfall_magnitude_clutter', waterfallMagnitudeClutter)} />MAGNITUDE ONLY</label><label class="toggle" title="Fit residual gain, phase, and fractional delay"><input type="checkbox" bind:checked={waterfallNuisanceFit} disabled={!waterfallClutter || waterfallMagnitudeClutter} onchange={() => settingChanged('waterfall_nuisance_fit', waterfallNuisanceFit)} />FIT GAIN/PHASE/DELAY</label></div>
+            <div class="control-group"><span>COMPENSATION</span><label class="toggle"><input type="checkbox" bind:checked={waterfallRejectSpikes} onchange={() => settingChanged('waterfall_reject_spikes', waterfallRejectSpikes)} />REJECT ISOLATED SPIKES</label><label class="toggle"><input type="checkbox" bind:checked={waterfallPathLoss} onchange={() => settingChanged('waterfall_path_loss', waterfallPathLoss)} />PATH-LOSS GAIN</label>{#if waterfallPathLoss}<label class="clip-control">NOISE CLIP <output>{waterfallNoiseClipDb} dB</output><input aria-label="Noise clipping threshold in decibels" type="range" min="0" max="40" step="0.5" value={waterfallNoiseClipDb} onchange={(e) => { waterfallNoiseClipDb=+e.currentTarget.value; settingChanged('waterfall_noise_clip_db', waterfallNoiseClipDb); }} /></label>{/if}</div>
+          </div>
         {:else if active === 'Slow-Time FFT'}
           <label>HISTORY <output>{slowFftSeconds.toFixed(0)} s</output><input type="range" min="1" max="30" step="1" value={slowFftSeconds} oninput={(e) => { slowFftSeconds=+e.currentTarget.value; settingChanged('slow_fft_history_s',slowFftSeconds); }} /></label>
         {/if}
-        {#if ['Instantaneous CIR','CIR Waterfall','Slow-Time FFT','Fast-Time FFT'].includes(active)}
+        {#if ['Live CIR','CIR Waterfall','Slow-Time FFT','Fast-Time FFT'].includes(active)}
           <div class="segmented" aria-label="Scale"><button class:active={!dbMode} onclick={() => dbMode = false}>Linear</button><button class:active={dbMode} onclick={() => dbMode = true}>dB</button></div>
         {/if}
         <label class="node-picker">ACTIVE NODES<select value={nodeCount} onchange={(e) => chooseNodeCount(+e.currentTarget.value)}>{#each [2,3,4,5,6,7,8] as n}<option value={n}>{n}</option>{/each}</select></label>
       </div>
     </section>
 
-    {#if active === 'Network Health'}
+    {#if active === 'Board Positions'}
+      <BoardPositions {live} {nodeCount} revision={liveRevision} />
+    {:else if active === 'Network Health'}
       <section class="health-layout">
         <div class="node-strip">
           {#each Array(nodeCount) as _, i}
@@ -446,7 +467,7 @@
           </aside>
           <article class="mobile-detail panel" onpointerdown={(event)=>swipeStartX=event.clientX} onpointerup={(event)=>finishLinkSwipe(event.clientX)} onpointercancel={()=>swipeStartX=null}>
             <header><span>N{selected.from} → N{selected.to}</span><b>{linkMetric(selected)} cm</b></header>
-            <div><PlotCanvas frame={plotFor(active, selected)} label={`${active} selected link`} webgl /></div>
+            <div><PlotCanvas frame={plotFor(active, selected)} label={`${active} selected link`} webgl axes={active === 'Live Distance' ? 'bounds' : 'none'} /></div>
             <footer>{#each mobileLegend() as item}<span>{item}</span>{/each}</footer>
           </article>
         {:else}
@@ -454,7 +475,7 @@
             {#each links as link}
               <button class="link-cell" onclick={() => { selectedId = link.id; focused = link; }} aria-label={`Open ${active} for node ${link.from} to node ${link.to}`}>
                 <header><b>N{link.from}<i>→</i>N{link.to}</b><span>{linkMetric(link)} cm</span></header>
-                <div class="cell-plot"><PlotCanvas frame={plotFor(active, link)} label={`${active}, node ${link.from} to node ${link.to}`} /></div>
+                <div class="cell-plot"><PlotCanvas frame={plotFor(active, link)} label={`${active}, node ${link.from} to node ${link.to}`} axes={active === 'Live Distance' ? 'bounds' : 'none'} /></div>
                 <footer><span>{linkFooter(link)}</span><i></i></footer>
               </button>
             {/each}
@@ -471,7 +492,7 @@
   <div class="focus-backdrop" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) focused = null; }}>
     <div class="focus-panel" role="dialog" aria-modal="true" tabindex="-1" aria-label={`Focused link ${focused.from} to ${focused.to}`}>
       <header><div><p>{active.toUpperCase()}</p><h2>NODE {focused.from} <i>→</i> NODE {focused.to}</h2></div><div><strong>{linkMetric(focused)} cm</strong><button onclick={() => focused = null} aria-label="Close focus view">CLOSE</button></div></header>
-      <div class="focus-plot"><PlotCanvas frame={plotFor(active === 'Network Health' ? 'Live Distance' : active, focused)} label="Focused link plot" webgl /></div>
+      <div class="focus-plot"><PlotCanvas frame={plotFor(active === 'Network Health' ? 'Live Distance' : active, focused)} label="Focused link plot" webgl axes={active === 'Live Distance' || active === 'Network Health' ? 'full' : 'none'} /></div>
       <footer><span>SS RAW <b>{distanceValue(focused,['raw_ss_cm','raw_ss'])}</b></span><span>SS SMOOTHED <b>{distanceValue(focused,['smoothed_ss_cm','smoothed_ss'])}</b></span><span>DS-TWR <b>{distanceValue(focused,['smoothed_ds_cm','smoothed_ds','raw_ds_cm','raw_ds'])}</b></span><span>QUALITY <b>{live.links.get(focused.id)?.quality ?? '—'}</b></span></footer>
     </div>
   </div>
@@ -481,7 +502,7 @@
   <header><div><p>INSTRUMENT</p><h2>Settings</h2></div><button onclick={() => settingsOpen = false} aria-label="Close settings">×</button></header>
   <div class="settings-body">
     <fieldset><legend>Acquisition</legend><label>Slow FFT cadence<select onchange={(e)=>settingChanged('slow_fft_cadence_s',+e.currentTarget.value)}><option value="1">1.0 s</option><option value="0.5">0.5 s</option><option value="2">2.0 s</option></select></label><label>Reference half-life<output>{range.toFixed(1)} s</output><input type="range" min="0.1" max="30" step="0.1" value={range} oninput={(e)=>{range=+e.currentTarget.value;settingChanged('reference_half_life_s',range);}} /></label></fieldset>
-    <fieldset><legend>Signal processing</legend><label>Distance smoothing<output>{smoothing.toFixed(1)} s</output><input type="range" min="1" max="30" step="0.1" value={smoothing} oninput={(e)=>{smoothing=+e.currentTarget.value;settingChanged('distance_smoothing_s',smoothing);}} /></label><label>Hampel radius<input type="number" min="0" max="64" value="5" onchange={(e)=>settingChanged('hampel_radius',+e.currentTarget.value)} /></label><label>FFT window<select onchange={(e)=>settingChanged('fft_window',e.currentTarget.value)}><option value="hann">Hann</option><option value="hamming">Hamming</option><option value="blackman">Blackman</option><option value="rectangular">Rectangular</option></select></label></fieldset>
+    <fieldset><legend>Signal processing</legend><label>CIR alignment<select value={alignmentMode} onchange={(e)=>{alignmentMode=e.currentTarget.value;settingChanged('cir_alignment_mode',alignmentMode);}}><option value="correlation">Reference correlation</option><option value="first_path">DW3000 first path</option></select></label><label>Distance smoothing<output>{smoothing.toFixed(1)} s</output><input type="range" min="1" max="30" step="0.1" value={smoothing} oninput={(e)=>{smoothing=+e.currentTarget.value;settingChanged('distance_smoothing_s',smoothing);}} /></label><label>Hampel radius<input type="number" min="0" max="64" value="5" onchange={(e)=>settingChanged('hampel_radius',+e.currentTarget.value)} /></label><label>FFT window<select onchange={(e)=>settingChanged('fft_window',e.currentTarget.value)}><option value="hann">Hann</option><option value="hamming">Hamming</option><option value="blackman">Blackman</option><option value="rectangular">Rectangular</option></select></label></fieldset>
     <fieldset><legend>Display</legend><label><span>Peak markers</span><input type="checkbox" checked /></label><label><span>30 FPS plots</span><input type="checkbox" checked disabled /></label></fieldset>
     <fieldset><legend>Protected clips</legend><label>Name<input maxlength="120" bind:value={clipName} placeholder="Optional label" /></label><label>Note<input maxlength="2000" bind:value={clipNote} placeholder="Optional context" /></label><button class="snapshot" onclick={saveClip} disabled={clipState === 'capturing'}>SAVE 30 + 30 SECOND CLIP</button><div class="capture-progress"><i style={`width:${clipProgress}%`}></i></div>{#each clips as clip}<p>{String((clip.value as Record<string,unknown>)?.status ?? 'unknown').toUpperCase()} · CLIP {String(clip.id)} {String((clip.value as Record<string,unknown>)?.name ?? '')} {#if (clip.value as Record<string,unknown>)?.status === 'complete'}<a href={api?.clipDownload(Number(clip.id))}>DOWNLOAD ZIP</a>{/if} <button class="text-button" onclick={()=>deleteClip(Number(clip.id))} disabled={(clip.value as Record<string,unknown>)?.status === 'collecting'}>DELETE</button></p>{/each}</fieldset>
     <fieldset><legend>Backend</legend><label>REST base<input value="/api" readonly /></label><p>{backendMessage}. Binary HMT1 WebSocket follows the active analysis topic and reconnects with exponential backoff.</p></fieldset>

@@ -1,4 +1,4 @@
-import type { Envelope, LinkLiveData, PlotFrame, TopicKey } from './types';
+import type { Envelope, LinkLiveData, PlotFrame, PositionRange, TopicKey } from './types';
 
 const colors = { amber: '#f4bd62', teal: '#45e0c1', violet: '#b995ff', blue: '#57a9ff' };
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' ? value as Record<string, unknown> : {};
@@ -34,8 +34,11 @@ function lineFrame(topic: TopicKey, payload: Record<string, unknown>): PlotFrame
     const rawDs = centimetres(['raw_ds_cm','ds_raw_cm'], ['raw_ds','ds_raw','ds']);
     const smoothDs = centimetres(['smoothed_ds_cm','ds_smoothed_cm'], ['smoothed_ds','ds_smoothed']);
     if (!rawSs && !smoothSs && !rawDs && !smoothDs) return undefined;
-    const [min,max] = extrema([rawSs,smoothSs,rawDs,smoothDs],[0,1000]);
-    return { series: [rawSs && { data: rawSs, color: colors.amber }, smoothSs && { data: smoothSs, color: colors.teal, width: 2 }, rawDs && { data: rawDs, color: colors.violet }, smoothDs && { data: smoothDs, color: colors.blue, width: 2 }].filter(Boolean) as NonNullable<PlotFrame['series']>, min, max, xLabel:'history', yLabel:'cm' };
+    const dsWindow = smoothDs ? Array.from(smoothDs).filter(Number.isFinite).sort((a,b)=>a-b) : [];
+    const middle = Math.floor(dsWindow.length / 2);
+    const medianDs = dsWindow.length ? (dsWindow.length % 2 ? dsWindow[middle] : (dsWindow[middle - 1] + dsWindow[middle]) / 2) : undefined;
+    const [min,max] = medianDs !== undefined ? [medianDs - 10, medianDs + 10] : extrema([rawSs,smoothSs,rawDs,smoothDs],[0,1000]);
+    return { series: [smoothSs && { data: smoothSs, color: colors.amber, width: 2, ranging: 'ss' as const, smoothed: true }, rawSs && { data: rawSs, color: colors.amber, points: true, ranging: 'ss' as const }, smoothDs && { data: smoothDs, color: colors.violet, width: 2, ranging: 'ds' as const, smoothed: true }, rawDs && { data: rawDs, color: colors.violet, points: true, ranging: 'ds' as const }].filter(Boolean) as NonNullable<PlotFrame['series']>, min, max, xLabel:'history sample', yLabel:'cm' };
   }
   if (topic === 'fast-fft') {
     const magnitude = firstArray(payload, ['magnitude', 'magnitudes', 'db']);
@@ -65,8 +68,8 @@ function cirFrame(payload: Record<string, unknown>): PlotFrame | undefined {
   const backendCurve = firstArray(sample, ['resampled', 'curve']);
   const curve = (backendCurve && backendCurve.length > 0) ? backendCurve : resample(raw, Math.max(2, raw.length * 16));
   const [,max] = extrema([raw,curve],[0,1]);
-  const markerRaw=number(sample.marker_raw),markerAligned=number(sample.marker_aligned),denominator=Math.max(1,raw.length-1);
-  return { series: [{ data: curve, color: colors.teal, width: 2 }, { data: raw, color: colors.amber, points: true }], min: 0, max: max * 1.08, markers: [markerRaw !== undefined && { at: Math.max(0,Math.min(1,markerRaw/denominator)), color: colors.amber }, markerAligned !== undefined && { at: Math.max(0,Math.min(1,markerAligned/denominator)), color: colors.violet }].filter(Boolean) as NonNullable<PlotFrame['markers']>, xLabel:'aligned CIR tap', yLabel:'linear magnitude' };
+  const markerAligned=number(sample.marker_aligned),denominator=Math.max(1,raw.length-1);
+  return { series: [{ data: curve, color: colors.teal, width: 2 }, { data: raw, color: colors.amber, points: true }], min: 0, max: max * 1.08, markers: [markerAligned !== undefined && { at: Math.max(0,Math.min(1,markerAligned/denominator)), color: colors.violet }].filter(Boolean) as NonNullable<PlotFrame['markers']>, xLabel:'aligned CIR tap', yLabel:'linear magnitude' };
 }
 
 function heatFrame(payload: Record<string, unknown>): PlotFrame | undefined {
@@ -80,25 +83,38 @@ function heatFrame(payload: Record<string, unknown>): PlotFrame | undefined {
 
 export class LiveStore {
   readonly links = new Map<string, LinkLiveData>();
+  readonly positionRanges = new Map<string, PositionRange>();
   health: Record<string, unknown> | null = null;
   topology: Record<string, unknown> | null = null;
   settings: Record<string, unknown> | null = null;
   calibration: Record<string, unknown> | null = null;
   lastError = '';
   private histories = new Map<string, number[]>();
-  private waterfallRows = new Map<string, { width: number; rows: Float32Array[] }>();
+  private waterfallRows = new Map<string, { width: number; rows: { eventS: number; values: Float32Array }[] }>();
   private waterfallSeconds = 5;
+  private processingEpoch: bigint | undefined;
+  private configurationEpoch: bigint | undefined;
   constructor(private readonly changed: () => void) {}
 
   resetStream(): void {
     this.links.clear();
     this.histories.clear();
     this.waterfallRows.clear();
+    this.positionRanges.clear();
     this.lastError = '';
     this.changed();
   }
 
   ingest(envelope: Envelope): void {
+    if ((this.processingEpoch !== undefined && this.processingEpoch !== envelope.processingEpoch)
+      || (this.configurationEpoch !== undefined && this.configurationEpoch !== envelope.configurationEpoch)) {
+      this.links.clear();
+      this.histories.clear();
+      this.waterfallRows.clear();
+      this.positionRanges.clear();
+    }
+    this.processingEpoch = envelope.processingEpoch;
+    this.configurationEpoch = envelope.configurationEpoch;
     const payload = record(envelope.payload);
     this.ingestPayload(envelope.topic, payload);
   }
@@ -117,6 +133,16 @@ export class LiveStore {
         const value = number(payload[key]); if (value !== undefined) plottingPayload[key] = this.append(`${id}:distance:${key}`,value);
       });
       keys.forEach((key) => { const history=this.histories.get(`${id}:distance:${key}`); if (history) plottingPayload[key]=history; });
+      const sample=record(payload.sample),kind=String(sample.kind ?? (number(payload.raw_ds) !== undefined ? 'ds' : ''));
+      if (kind === 'ds') {
+        const sf=number(sample.from) ?? from,st=number(sample.to) ?? to,a=Math.min(sf,st),b=Math.max(sf,st),key=`${a}>${b}`;
+        const raw=number(payload.raw_ds) ?? number(sample.raw_m),smoothed=number(payload.smoothed_ds) ?? number(sample.moving_average_m),eventS=number(sample.event_s) ?? number(payload.event_s) ?? 0,round=number(sample.round) ?? number(payload.round) ?? 0;
+        const evidence=Array.isArray(sample.evidence) ? sample.evidence.join(':') : `${eventS}:${round}`;
+        const previous=this.positionRanges.get(key),window=previous?.window.slice() ?? [];
+        if (smoothed !== undefined && previous?.evidence !== evidence) { window.push(smoothed); if (window.length>256) window.shift(); }
+        const sorted=window.slice().sort((x,y)=>x-y),middle=Math.floor(sorted.length/2),ultra=sorted.length ? (sorted.length%2 ? sorted[middle] : (sorted[middle-1]+sorted[middle])/2) : undefined;
+        this.positionRanges.set(key,{a,b,raw,smoothed,ultra,outlier:Boolean(sample.outlier),eventS,round,evidence,window});
+      }
     }
     if (topic === 'cfo') {
       ['raw_ppm','filtered_ppm','raw','filtered','cfo_ppm'].forEach((key) => {
@@ -148,14 +174,19 @@ export class LiveStore {
   private waterfallFrame(id: string, payload: Record<string, unknown>): PlotFrame | undefined {
     const row = numbers(payload.row), width = number(payload.width);
     if (!row || !width || row.length !== width) return undefined;
+    const eventS = number(payload.event_s) ?? Date.now() / 1000;
     let ring = this.waterfallRows.get(id);
     if (!ring || ring.width !== width) { ring = { width, rows: [] }; this.waterfallRows.set(id, ring); }
-    ring.rows.push(row); const retained=Math.ceil(this.waterfallSeconds*30); if (ring.rows.length > retained) ring.rows.splice(0,ring.rows.length-retained);
-    const stride=Math.max(1,Math.ceil(ring.rows.length/128)),displayed=ring.rows.filter((_,index)=>index%stride===0);
+    ring.rows.push({ eventS, values: row });
+    ring.rows = ring.rows.filter((item) => eventS - item.eventS <= this.waterfallSeconds);
+    const stride=Math.max(1,Math.ceil(ring.rows.length/128));
+    const displayed=ring.rows.filter((_,index)=>index%stride===0 || index===ring.rows.length-1).reverse();
     const data = new Float32Array(displayed.length * width);
-    displayed.forEach((values,index) => data.set(values,index*width));
+    displayed.forEach((item,index) => data.set(item.values,index*width));
     const [min,max] = extrema([data],[0,1]);
-    return { heatmap: data, heatWidth: width, heatHeight: displayed.length, min, max, xLabel:'aligned delay', yLabel:'slow time' };
+    const xMin=number(payload.x_min),xMax=number(payload.x_max),marker=number(payload.marker);
+    const markerAt=marker !== undefined && xMin !== undefined && xMax !== undefined && marker >= xMin && marker <= xMax ? (marker-xMin)/(xMax-xMin) : undefined;
+    return { heatmap: data, heatWidth: width, heatHeight: displayed.length, min, max, markers: markerAt === undefined ? [] : [{at:markerAt,color:colors.violet}], xLabel:xMin === undefined || xMax === undefined ? 'aligned delay' : `${xMin}..${xMax} aligned taps`, yLabel:'newest → oldest' };
   }
 
   loadTopology(value: unknown): void {
@@ -165,7 +196,7 @@ export class LiveStore {
       const item=record(entry), latestFast=record(item.latest_fast_fft), latestSlow=record(item.latest_slow_fft), distance=record(item.distance);
       if (Object.keys(latestFast).length) this.ingestPayload('fast-fft',{ from:item.from,to:item.to,...latestFast });
       if (Object.keys(latestSlow).length) this.ingestPayload('slow-fft',{ from:item.from,to:item.to,...latestSlow });
-      if (Object.keys(distance).length) this.ingestPayload('distance',{ from:item.from,to:item.to,[`${String(distance.kind ?? 'ss') === 'ds' ? 'smoothed_ds' : 'smoothed_ss'}`]:distance.moving_average_m ?? distance.calibrated_m });
+      if (Object.keys(distance).length) this.ingestPayload('distance',{ from:item.from,to:item.to,sample:distance,[`${String(distance.kind ?? 'ss') === 'ds' ? 'smoothed_ds' : 'smoothed_ss'}`]:distance.moving_average_m ?? distance.calibrated_m,[`${String(distance.kind ?? 'ss') === 'ds' ? 'raw_ds' : 'raw_ss'}`]:distance.raw_m });
     });
     this.changed();
   }

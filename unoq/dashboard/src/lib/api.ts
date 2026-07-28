@@ -51,7 +51,7 @@ export class HeimdallApi {
   }
 
   subscribe(tab: Tab): void {
-    this.topic = tab.toLowerCase().replaceAll(' ', '-');
+    this.topic = tab === 'Live CIR' ? 'instantaneous-cir' : tab === 'Board Positions' ? 'live-distance' : tab.toLowerCase().replaceAll(' ', '-');
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.sendSubscription();
       if (this.topic === 'live-distance') void this.bootstrapDistanceHistory();

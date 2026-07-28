@@ -54,6 +54,7 @@ pub struct Pipeline {
 
 struct LinkState {
     reference: CirReference,
+    reference_marker_raw: Option<f64>,
     cir: Vec<CirFrame>,
     observations: u64,
     first_event_s: Option<f64>,
@@ -63,6 +64,8 @@ struct LinkState {
     cfo_history: Vec<(f64, f64, f64)>,
     latest_fast_fft: Option<Value>,
     latest_slow_fft: Option<Value>,
+    waterfall_pending_spike: bool,
+    waterfall_persistent_change: bool,
 }
 
 #[derive(Clone)]
@@ -73,6 +76,9 @@ struct CirFrame {
     usb_sequence: u32,
     aligned: Vec<Complex64>,
     magnitude_16x: Vec<f32>,
+    waterfall: Vec<Complex64>,
+    waterfall_x_min: f64,
+    waterfall_x_max: f64,
     marker_raw: f64,
     marker_aligned: f64,
     correlation: f64,
@@ -155,6 +161,7 @@ pub struct DspSettings {
     pub hampel_threshold_sigma: f64,
     pub fft_window: String,
     pub reference_mode: String,
+    pub cir_alignment_mode: String,
     pub reference_minimum_energy: f64,
     pub reference_half_life_s: f64,
     pub cir_max_lag: usize,
@@ -183,6 +190,7 @@ impl Default for DspSettings {
             hampel_threshold_sigma: 3.0,
             fft_window: "hann".to_owned(),
             reference_mode: "qualified".to_owned(),
+            cir_alignment_mode: "correlation".to_owned(),
             reference_minimum_energy: 1e-9,
             reference_half_life_s: 4.0,
             cir_max_lag: 8,
@@ -198,8 +206,8 @@ impl Default for DspSettings {
             waterfall_noise_clip_db: 12.0,
             waterfall_fixed_scale_min: -60.0,
             waterfall_fixed_scale_max: -10.0,
-            waterfall_tap_min: -40,
-            waterfall_tap_max: 63,
+            waterfall_tap_min: -20,
+            waterfall_tap_max: 50,
         }
     }
 }
@@ -426,7 +434,15 @@ impl Pipeline {
                 }),
             ));
         }
-        messages.extend(self.consume_cir(&observation, event_tick, event_s, cfo_filtered, topics));
+        if observation.obs_flags & 0x01 != 0 {
+            messages.extend(self.consume_cir(
+                &observation,
+                event_tick,
+                event_s,
+                cfo_filtered,
+                topics,
+            ));
+        }
         messages.extend(self.consume_timing(
             TimingObservation {
                 event_tick,
@@ -463,12 +479,15 @@ impl Pipeline {
                 )
             })
             .collect::<Vec<_>>();
-        let correction_db = (3.0 - observation.dgc_decision as f64) * 2.65;
+        let correction_db = (observation.dgc_decision as f64 - 3.0) * 2.65;
         let dgc_linear = 10.0_f64.powf(correction_db / 20.0);
         let (scaled, mut quality) = scale_cir(&raw, dgc_linear, observation.accum_count as u32);
+        let marker_raw =
+            observation.fp_index_q10_6 as f64 / 64.0 - observation.cir_start_offset as f64;
         let reference_mode = reference_mode(&self.settings);
         let link = self.links.entry(key).or_insert_with(|| LinkState {
             reference: CirReference::new(reference_mode),
+            reference_marker_raw: None,
             cir: Vec::new(),
             observations: 0,
             first_event_s: None,
@@ -478,6 +497,8 @@ impl Pipeline {
             cfo_history: Vec::new(),
             latest_fast_fft: None,
             latest_slow_fft: None,
+            waterfall_pending_spike: false,
+            waterfall_persistent_change: false,
         });
         let reference = link
             .reference
@@ -486,7 +507,13 @@ impl Pipeline {
         let delay = reference.as_ref().and_then(|reference| {
             normalized_correlation_delay(reference, &scaled, self.settings.cir_max_lag)
         });
-        let delay_samples = delay.map_or(0.0, |value| value.delay_samples);
+        let delay_samples = if self.settings.cir_alignment_mode == "first_path"
+            && observation.obs_flags & 0x04 != 0
+        {
+            marker_raw - *link.reference_marker_raw.get_or_insert(marker_raw)
+        } else {
+            delay.map_or(0.0, |value| value.delay_samples)
+        };
         let correlation = delay.map_or(0.0, |value| value.correlation);
         if let Some(delay) = delay {
             quality.insert(delay.quality);
@@ -502,21 +529,45 @@ impl Pipeline {
         for value in &mut aligned {
             *value *= rotation;
         }
-        let marker_raw =
-            observation.fp_index_q10_6 as f64 / 64.0 - observation.cir_start_offset as f64;
         let marker_aligned = marker_raw - delay_samples;
         let evidence_id = (observation.usb_sequence as u64) << 32 | observation.observed_k as u64;
         let want_cir = topics & Topic::Cir.bit() != 0;
         let want_waterfall = topics & Topic::Waterfall.bit() != 0;
         let want_fast = topics & Topic::FastFft.bit() != 0;
         let want_slow = topics & Topic::SlowFft.bit() != 0;
-        let magnitude_16x = if want_waterfall || want_cir {
+        let resampled = if want_waterfall || want_cir {
             resample_cir_16x(&aligned)
+        } else {
+            Vec::new()
+        };
+        let magnitude_16x = if want_cir {
+            resampled
                 .iter()
                 .map(|value| value.norm() as f32)
                 .collect::<Vec<_>>()
         } else {
             Vec::new()
+        };
+        let reference_peak_16x = reference
+            .as_ref()
+            .map(|reference| resample_cir_16x(reference))
+            .and_then(|values| {
+                values
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| a.norm_sqr().total_cmp(&b.norm_sqr()))
+                    .map(|(index, _)| index as i64)
+            })
+            .unwrap_or(0);
+        let (waterfall, waterfall_x_min, waterfall_x_max) = if want_waterfall {
+            waterfall_grid(
+                &resampled,
+                reference_peak_16x,
+                self.settings.waterfall_tap_min,
+                self.settings.waterfall_tap_max,
+            )
+        } else {
+            (Vec::new(), 0.0, 0.0)
         };
         let frame = CirFrame {
             event_tick,
@@ -525,6 +576,9 @@ impl Pipeline {
             usb_sequence: observation.usb_sequence,
             aligned: aligned.clone(),
             magnitude_16x: magnitude_16x.clone(),
+            waterfall,
+            waterfall_x_min,
+            waterfall_x_max,
             marker_raw,
             marker_aligned,
             correlation,
@@ -596,16 +650,20 @@ impl Pipeline {
             ));
         }
         if want_waterfall {
-            let row = waterfall_processed_row(link, &frame, &self.settings);
-            let width = row.len();
-            payloads.push((
-                Topic::Waterfall,
-                json!({
-                    "from": key.0, "to": key.1, "round": observation.observed_k,
-                    "event_s": event_s, "row": row, "width": width,
-                    "marker": marker_aligned, "quality": quality.0, "evidence": evidence_id
-                }),
-            ));
+            if let Some(row) = waterfall_processed_row(link, &frame, &self.settings) {
+                let width = row.len();
+                payloads.push((
+                    Topic::Waterfall,
+                    json!({
+                        "from": key.0, "to": key.1, "round": observation.observed_k,
+                        "event_s": event_s, "row": row, "width": width,
+                        "x_min": frame.waterfall_x_min, "x_max": frame.waterfall_x_max,
+                        "x_step": if width > 1 { (frame.waterfall_x_max - frame.waterfall_x_min) / (width - 1) as f64 } else { 0.0 },
+                        "marker": marker_aligned - reference_peak_16x as f64 / 16.0,
+                        "quality": quality.0, "evidence": evidence_id
+                    }),
+                ));
+            }
         }
         if want_fast {
             let fast = fast_fft_complex(
@@ -965,7 +1023,13 @@ impl Pipeline {
         self.cfo = DirectionalCfoIntegrator::new(self.settings.cfo_half_life_s);
         for link in self.links.values_mut() {
             link.reference = CirReference::new(reference_mode(&self.settings));
+            link.reference_marker_raw = None;
+            link.cir.clear();
             link.last_slow_fft_s = None;
+            link.latest_fast_fft = None;
+            link.latest_slow_fft = None;
+            link.waterfall_pending_spike = false;
+            link.waterfall_persistent_change = false;
         }
         for pair in self.pairs.values_mut() {
             recompute_distance_filters(pair, &self.settings);
@@ -1316,17 +1380,6 @@ fn schedule_gap(from: u8, to: u8, n: u8) -> Option<i64> {
     (gap != 0).then_some(gap as i64)
 }
 
-fn downsample_row(values: &[f32], target_width: usize) -> Vec<f32> {
-    if values.len() <= target_width || target_width == 0 {
-        return values.to_vec();
-    }
-    let stride = values.len().div_ceil(target_width);
-    values
-        .chunks(stride)
-        .map(|chunk| chunk.iter().copied().fold(0.0_f32, f32::max))
-        .collect()
-}
-
 fn parse_pair(value: &str) -> Option<(u8, u8)> {
     let (a, b) = value.split_once('>').or_else(|| value.split_once('-'))?;
     let (a, b) = (a.parse().ok()?, b.parse().ok()?);
@@ -1489,8 +1542,17 @@ fn validate_settings(settings: &DspSettings) -> Result<()> {
         || !(1.0..=30.0).contains(&settings.slow_fft_history_s)
         || !settings.fast_time_sample_rate_hz.is_finite()
         || settings.fast_time_sample_rate_hz <= 0.0
+        || !settings.waterfall_noise_clip_db.is_finite()
+        || !(0.0..=40.0).contains(&settings.waterfall_noise_clip_db)
+        || !settings.waterfall_fixed_scale_min.is_finite()
+        || !settings.waterfall_fixed_scale_max.is_finite()
+        || settings.waterfall_fixed_scale_min >= settings.waterfall_fixed_scale_max
+        || !(-64..=62).contains(&settings.waterfall_tap_min)
+        || !(-63..=63).contains(&settings.waterfall_tap_max)
+        || settings.waterfall_tap_min >= settings.waterfall_tap_max
         || !["rectangular", "hann", "hamming", "blackman"].contains(&settings.fft_window.as_str())
         || !["first", "qualified", "adaptive"].contains(&settings.reference_mode.as_str())
+        || !["correlation", "first_path"].contains(&settings.cir_alignment_mode.as_str())
     {
         bail!("invalid DSP settings");
     }
@@ -1638,90 +1700,118 @@ fn calibration_pairs(collection: &CalibrationCollection) -> Vec<CalibrationPair>
         .collect()
 }
 
-fn waterfall_processed_row(link: &LinkState, frame: &CirFrame, settings: &DspSettings) -> Vec<f32> {
-    let tap_min = settings.waterfall_tap_min.max(-64).min(63);
-    let tap_max = settings.waterfall_tap_max.max(tap_min).min(63);
-    let mut rows: Vec<Vec<Complex64>> = if settings.waterfall_reject_spikes {
-        link.cir
-            .iter()
-            .filter(|f| f.correlation >= 0.90)
-            .map(|f| f.aligned.clone())
-            .collect()
-    } else {
-        link.cir.iter().map(|f| f.aligned.clone()).collect()
-    };
-    if rows.len() < 2 {
-        return downsample_row(&frame.magnitude_16x, 256);
+fn waterfall_grid(
+    resampled: &[Complex64],
+    reference_peak_16x: i64,
+    tap_min: i8,
+    tap_max: i8,
+) -> (Vec<Complex64>, f64, f64) {
+    let span_16x = (tap_max as i64 - tap_min as i64) * 16;
+    let width = (span_16x as usize + 1).min(256);
+    let mut row = Vec::with_capacity(width);
+    for column in 0..width {
+        let relative_16x = tap_min as i64 * 16
+            + if width > 1 {
+                (column as f64 * span_16x as f64 / (width - 1) as f64).round() as i64
+            } else {
+                0
+            };
+        let source = reference_peak_16x + relative_16x;
+        row.push(if source >= 0 && (source as usize) < resampled.len() {
+            resampled[source as usize]
+        } else {
+            Complex64::new(0.0, 0.0)
+        });
     }
+    (row, tap_min as f64, tap_max as f64)
+}
+
+fn waterfall_processed_row(
+    link: &mut LinkState,
+    frame: &CirFrame,
+    settings: &DspSettings,
+) -> Option<Vec<f32>> {
+    if !settings.waterfall_reject_spikes || frame.correlation >= 0.90 {
+        link.waterfall_pending_spike = false;
+        link.waterfall_persistent_change = false;
+    } else if link.waterfall_persistent_change {
+        // Continue publishing a sustained channel change.
+    } else if link.waterfall_pending_spike {
+        link.waterfall_pending_spike = false;
+        link.waterfall_persistent_change = true;
+    } else {
+        link.waterfall_pending_spike = true;
+        return None;
+    }
+    if !settings.waterfall_clutter && !settings.waterfall_path_loss {
+        return Some(
+            frame
+                .waterfall
+                .iter()
+                .map(|value| value.norm() as f32)
+                .collect(),
+        );
+    }
+    let rows = link
+        .cir
+        .iter()
+        .rev()
+        .filter(|item| !item.waterfall.is_empty())
+        .take(32)
+        .map(|item| item.waterfall.as_slice())
+        .collect::<Vec<_>>();
+    let mut row = frame.waterfall.clone();
     if settings.waterfall_clutter {
         if settings.waterfall_magnitude_clutter {
-            subtract_magnitude_mean(&mut rows);
+            subtract_magnitude_mean(&rows, &mut row);
+        } else if settings.waterfall_nuisance_fit {
+            project_static_nuisance(&rows, &mut row);
         } else {
-            subtract_complex_mean(&mut rows);
+            subtract_complex_mean(&rows, &mut row);
         }
-    }
-    if settings.waterfall_clutter
-        && settings.waterfall_nuisance_fit
-        && !settings.waterfall_magnitude_clutter
-    {
-        project_static_nuisance(&mut rows);
     }
     if settings.waterfall_path_loss {
-        apply_noise_clip(&mut rows, settings.waterfall_noise_clip_db);
-        apply_path_loss(&mut rows, 0.25);
+        apply_noise_clip(
+            std::slice::from_mut(&mut row),
+            settings.waterfall_noise_clip_db,
+            frame.waterfall_x_min,
+            frame.waterfall_x_max,
+        );
+        apply_path_loss(
+            std::slice::from_mut(&mut row),
+            0.25,
+            frame.waterfall_x_min,
+            frame.waterfall_x_max,
+        );
     }
-    let aligned = &frame.aligned;
-    let count = (tap_max - tap_min + 1) as usize;
-    let mut mag = Vec::with_capacity(count);
-    for i in tap_min..=tap_max {
-        let idx = (i.max(0) as usize).min(aligned.len() - 1);
-        mag.push(aligned[idx].norm() as f32);
-    }
-    let ratio = mag.len() as f64 / aligned.len() as f64;
-    let target = (256.0 * ratio) as usize;
-    downsample_row(&mag, target.max(1))
+    Some(row.iter().map(|value| value.norm() as f32).collect())
 }
 
-fn subtract_magnitude_mean(rows: &mut [Vec<Complex64>]) {
+fn subtract_magnitude_mean(rows: &[&[Complex64]], target: &mut [Complex64]) {
     if rows.len() < 2 {
         return;
     }
-    let taps = rows.first().map_or(0, |r| r.len());
-    for x in 0..taps {
+    for x in 0..target.len() {
         let mean: f64 = rows.iter().map(|r| r[x].norm()).sum::<f64>() / rows.len() as f64;
-        for row in rows.iter_mut() {
-            let residual = (row[x].norm() - mean).abs();
-            row[x] = Complex64::new(residual, 0.0);
-        }
+        target[x] = Complex64::new((target[x].norm() - mean).abs(), 0.0);
     }
 }
 
-fn subtract_complex_mean(rows: &mut [Vec<Complex64>]) {
+fn subtract_complex_mean(rows: &[&[Complex64]], target: &mut [Complex64]) {
     if rows.len() < 2 {
         return;
     }
-    let taps = rows.first().map_or(0, |r| r.len());
-    for x in 0..taps {
-        let mut mr = 0.0;
-        let mut mi = 0.0;
-        for row in rows.iter() {
-            mr += row[x].re;
-            mi += row[x].im;
-        }
-        mr /= rows.len() as f64;
-        mi /= rows.len() as f64;
-        for row in rows.iter_mut() {
-            row[x].re -= mr;
-            row[x].im -= mi;
-        }
+    for x in 0..target.len() {
+        let mean = rows.iter().map(|row| row[x]).sum::<Complex64>() / rows.len() as f64;
+        target[x] -= mean;
     }
 }
 
-fn project_static_nuisance(rows: &mut [Vec<Complex64>]) {
+fn project_static_nuisance(rows: &[&[Complex64]], target: &mut [Complex64]) {
     if rows.len() < 3 {
-        return subtract_complex_mean(rows);
+        return subtract_complex_mean(rows, target);
     }
-    let n = rows.first().map_or(0, |r| r.len());
+    let n = target.len();
     let h: Vec<_> = (0..n)
         .map(|x| {
             let (mut re, mut im) = (0.0, 0.0);
@@ -1751,40 +1841,43 @@ fn project_static_nuisance(rows: &mut [Vec<Complex64>]) {
     }
     let det = a * c - br * br - bi * bi;
     if !(det > 1e-18 * a * c) {
-        return subtract_complex_mean(rows);
+        return subtract_complex_mean(rows, target);
     }
-    for row in rows.iter_mut() {
-        let (mut pr, mut pi, mut qr, mut qi) = (0.0, 0.0, 0.0, 0.0);
-        for x in 0..n {
-            let (hr, hi) = h[x];
-            let (dr, di) = d[x];
-            pr += hr * row[x].re + hi * row[x].im;
-            pi += hr * row[x].im - hi * row[x].re;
-            qr += dr * row[x].re + di * row[x].im;
-            qi += dr * row[x].im - di * row[x].re;
-        }
-        let ar = (c * pr - (br * qr - bi * qi)) / det;
-        let ai = (c * pi - (br * qi + bi * qr)) / det;
-        let br2 = (-(br * pr + bi * pi) + a * qr) / det;
-        let bi2 = (-(br * pi - bi * pr) + a * qi) / det;
-        for x in 0..n {
-            let (hr, hi) = h[x];
-            let (dr, di) = d[x];
-            row[x].re -= ar * hr - ai * hi + br2 * dr - bi2 * di;
-            row[x].im -= ar * hi + ai * hr + br2 * di + bi2 * dr;
-        }
+    let (mut pr, mut pi, mut qr, mut qi) = (0.0, 0.0, 0.0, 0.0);
+    for x in 0..n {
+        let (hr, hi) = h[x];
+        let (dr, di) = d[x];
+        pr += hr * target[x].re + hi * target[x].im;
+        pi += hr * target[x].im - hi * target[x].re;
+        qr += dr * target[x].re + di * target[x].im;
+        qi += dr * target[x].im - di * target[x].re;
+    }
+    let ar = (c * pr - (br * qr - bi * qi)) / det;
+    let ai = (c * pi - (br * qi + bi * qr)) / det;
+    let br2 = (-(br * pr + bi * pi) + a * qr) / det;
+    let bi2 = (-(br * pi - bi * pr) + a * qi) / det;
+    for x in 0..n {
+        let (hr, hi) = h[x];
+        let (dr, di) = d[x];
+        target[x].re -= ar * hr - ai * hi + br2 * dr - bi2 * di;
+        target[x].im -= ar * hi + ai * hr + br2 * di + bi2 * dr;
     }
 }
 
-fn apply_noise_clip(rows: &mut [Vec<Complex64>], clip_db: f64) {
+fn apply_noise_clip(rows: &mut [Vec<Complex64>], clip_db: f64, x_min: f64, x_max: f64) {
     if rows.is_empty() {
         return;
     }
     let taps = rows.first().map_or(0, |r| r.len());
-    let noise_taps = (taps as i32).min(32) as usize;
     let mut noise_vals: Vec<f64> = rows
         .iter()
-        .flat_map(|row| row.iter().take(noise_taps))
+        .flat_map(|row| {
+            row.iter().enumerate().filter_map(move |(index, value)| {
+                let x =
+                    x_min + index as f64 * (x_max - x_min) / taps.saturating_sub(1).max(1) as f64;
+                (-20.0..=-8.0).contains(&x).then_some(value)
+            })
+        })
         .map(|v| v.norm())
         .collect();
     noise_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -1802,12 +1895,14 @@ fn apply_noise_clip(rows: &mut [Vec<Complex64>], clip_db: f64) {
     }
 }
 
-fn apply_path_loss(rows: &mut [Vec<Complex64>], los_distance_m: f64) {
+fn apply_path_loss(rows: &mut [Vec<Complex64>], los_distance_m: f64, x_min: f64, x_max: f64) {
     let tap_path_m = 0.299792458 * 1.0016; // metres per CIR tap (light speed * air index)
     let max_gain = 10.0_f64.powf(18.0 / 20.0); // cap at +18 dB
     for row in rows.iter_mut() {
-        for (x, v) in row.iter_mut().enumerate() {
-            let gain = (los_distance_m + (x as f64) * tap_path_m) / los_distance_m;
+        let last = row.len().saturating_sub(1).max(1) as f64;
+        for (index, v) in row.iter_mut().enumerate() {
+            let x = x_min + index as f64 * (x_max - x_min) / last;
+            let gain = (los_distance_m + x.max(0.0) * tap_path_m) / los_distance_m;
             *v = *v * gain.min(max_gain);
         }
     }
@@ -2068,6 +2163,102 @@ mod tests {
                 .iter()
                 .all(|message| { crate::telemetry::envelope_topic(message) == Some(Topic::Cir) })
         );
+    }
+
+    #[test]
+    fn invalid_cir_is_not_admitted() {
+        let mut pipeline = Pipeline::new();
+        pipeline.configure(&hello_record());
+        let mut invalid = observation(0, 1, 10, 0, 100, 1);
+        invalid.obs_flags = 0;
+        let messages = pipeline.consume_canonical_inner(invalid, Topic::Cir.bit());
+        assert!(messages.is_empty());
+        assert!(pipeline.links.is_empty());
+        assert_eq!(pipeline.observations, 1);
+    }
+
+    #[test]
+    fn waterfall_grid_is_peak_relative_without_edge_duplication() {
+        let resampled = (0..=32)
+            .map(|value| Complex64::new(value as f64, 0.0))
+            .collect::<Vec<_>>();
+        let (row, x_min, x_max) = waterfall_grid(&resampled, 16, -2, 2);
+        assert_eq!((x_min, x_max, row.len()), (-2.0, 2.0, 65));
+        assert!(row[..16].iter().all(|value| value.norm() == 0.0));
+        assert_eq!(row[16].re, 0.0);
+        assert_eq!(row[32].re, 16.0);
+        assert_eq!(row[48].re, 32.0);
+        assert!(row[49..].iter().all(|value| value.norm() == 0.0));
+    }
+
+    #[test]
+    fn waterfall_emits_the_processed_current_row() {
+        let make_frame = |round, sequence| CirFrame {
+            event_tick: round as i64,
+            event_s: round as f64,
+            round,
+            usb_sequence: sequence,
+            aligned: Vec::new(),
+            magnitude_16x: Vec::new(),
+            waterfall: vec![Complex64::new(2.0, 0.0), Complex64::new(4.0, 0.0)],
+            waterfall_x_min: -1.0,
+            waterfall_x_max: 1.0,
+            marker_raw: 0.0,
+            marker_aligned: 0.0,
+            correlation: 1.0,
+            quality: 0,
+        };
+        let current = make_frame(2, 2);
+        let mut link = LinkState {
+            reference: CirReference::new(ReferenceMode::First),
+            reference_marker_raw: None,
+            cir: vec![make_frame(1, 1), current.clone()],
+            observations: 2,
+            first_event_s: Some(1.0),
+            latest_event_s: Some(2.0),
+            last_slow_fft_s: None,
+            latest_cfo_ppm: None,
+            cfo_history: Vec::new(),
+            latest_fast_fft: None,
+            latest_slow_fft: None,
+            waterfall_pending_spike: false,
+            waterfall_persistent_change: false,
+        };
+        let settings = DspSettings {
+            waterfall_clutter: true,
+            waterfall_magnitude_clutter: true,
+            waterfall_reject_spikes: false,
+            ..DspSettings::default()
+        };
+        let row = waterfall_processed_row(&mut link, &current, &settings).unwrap();
+        assert!(row.iter().all(|value| value.abs() < 1e-6));
+
+        let mut low_correlation = current.clone();
+        low_correlation.correlation = 0.80;
+        let reject_spikes = DspSettings::default();
+        assert!(waterfall_processed_row(&mut link, &low_correlation, &reject_spikes).is_none());
+        assert!(waterfall_processed_row(&mut link, &low_correlation, &reject_spikes).is_some());
+        assert!(link.waterfall_persistent_change);
+        assert!(waterfall_processed_row(&mut link, &current, &reject_spikes).is_some());
+        assert!(!link.waterfall_persistent_change);
+    }
+
+    #[test]
+    fn invalid_waterfall_ranges_are_rejected() {
+        let mut pipeline = Pipeline::new();
+        assert!(
+            pipeline
+                .update_settings(&json!({"waterfall_tap_min": 20, "waterfall_tap_max": -20}))
+                .is_err()
+        );
+        assert!(
+            pipeline
+                .update_settings(
+                    &json!({"waterfall_fixed_scale_min": -10, "waterfall_fixed_scale_max": -60})
+                )
+                .is_err()
+        );
+        assert_eq!(pipeline.processing_epoch, 0);
     }
 
     #[test]
