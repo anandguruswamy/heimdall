@@ -1,5 +1,5 @@
 [Unit]
-Description=Heimdall UNO Q fusion service
+Description=Heimdall UNO Q live ingest agent
 After=local-fs.target
 
 [Service]
@@ -7,6 +7,7 @@ Type=simple
 User=arduino
 Group=arduino
 ExecStart=/home/arduino/projects/heimdall/unoq/deploy/run-heimdall.sh
+EnvironmentFile=-/etc/default/heimdall-agent
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=10
@@ -14,7 +15,6 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/arduino/heimdall-data
 
 [Install]
 WantedBy=multi-user.target

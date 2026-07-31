@@ -2107,7 +2107,7 @@ mod tests {
                 && value["smoothed_ss"].is_number()
                 && value["from"] == 0
                 && value["to"] == 1
-                && value["sample"]["evidence"].is_array()
+                && value["evidence"].is_array()
         }));
         let ds = distance
             .iter()
@@ -2129,7 +2129,7 @@ mod tests {
             .map(|message| payload(message))
             .unwrap();
         assert!(cir["magnitude"].is_array());
-        assert!(cir.get("resampled").is_none());
+        assert!(cir["resampled"].is_array());
         let waterfall = messages
             .iter()
             .find(|message| crate::telemetry::envelope_topic(message) == Some(Topic::Waterfall))
@@ -2258,7 +2258,7 @@ mod tests {
                 )
                 .is_err()
         );
-        assert_eq!(pipeline.processing_epoch, 0);
+        assert_eq!(pipeline.processing_epoch, 1);
     }
 
     #[test]

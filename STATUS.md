@@ -608,6 +608,19 @@ calibration remains before timestamps can be treated as accurate ranges.
 
 ## Next executable checkpoint
 
+- Live migration in progress (2026-07-30): `heimdall-service agent` now keeps
+  only CDC validation, local health, LED status support, and UDP forwarding;
+  `heimdall-service server` receives the live stream before the existing DSP
+  pipeline. The agent writes no raw archive or spool. See
+  `unoq/deploy/LIVE-MIGRATION.md` for startup and firewall requirements.
+- Portable live split deployed on 2026-07-30. UNO Q `192.168.137.98` runs the
+  agent and forwards to the Windows hotspot gateway `192.168.137.1:7878` with
+  zero agent UDP send drops. The Windows server exposes the full dashboard on
+  `http://192.168.137.1:8080`; it received the HELLO/configuration and all 20
+  expected directed links. Host tests pass (55 tests), the ARM64 test binaries
+  link, and the deployed binary SHA-256 is
+  `4A858180A1AA559D860323565D6E234C7A6E4FF123DC7FDEC0CFD535B1D53C8A`.
+
 N=5/M=2 is hardware-qualified with all nodes active at 28.571 Hz, including
 lossless steady-state gateway export at the full modeled 187,200 B/s. The next
 deployment checkpoint is improving node 2 placement/link reliability, then

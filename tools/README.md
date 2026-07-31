@@ -64,6 +64,26 @@ Exact application dependency checksums are locked by `unoq/Cargo.lock` and
 or standalone `flatc`, record its immutable digest or archive SHA-256 here and
 retain the redistributable artifact under `tools/installers/linux-arm64/`.
 
+### Repeatable Windows ARM64 build path
+
+The UNO Q service must be built on Windows, not on the deployed board. The
+tracked wrappers under `unoq/tools/` use Rust
+`1.93.1-aarch64-pc-windows-gnullvm` and Zig `0.15.2` for two distinct links:
+
+| Script | Purpose |
+|---|---|
+| `unoq/tools/test-host.ps1` | Runs Rust tests as Windows ARM64 executables. |
+| `unoq/tools/test-linux-arm64.ps1` | Cross-compiles test binaries for UNO Q without running them on Windows. |
+| `unoq/tools/build-linux-arm64.ps1 -Release` | Builds `heimdall-service` for `aarch64-unknown-linux-gnu`. |
+| `unoq/tools/run-windows-server.ps1` | Runs the live processing server on the Windows host. |
+
+The Rust target `aarch64-unknown-linux-gnu` must be installed for the pinned
+toolchain. The scripts expect Zig at
+`tools/installers/windows-arm64/zig-aarch64-windows-0.15.2/zig.exe`; set the
+per-session `HEIMDALL_ZIG` environment variable to an extracted cached copy
+elsewhere when necessary. `zig-host-link.ps1` is required because Cargo also
+builds Windows ARM64 proc-macros/build scripts before it can cross-link Linux.
+
 ## Radar-map host tooling
 
 The experimental replay mapper under `host-tools/radar-map/` runs downstream

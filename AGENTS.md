@@ -40,6 +40,15 @@ Heimdall work.
   process, its input/output device or socket, and its boot-start configuration
   on the UNO Q.
 
+## UNO Q access
+
+- Connect to the deployed UNO Q over SSH with:
+  `ssh -i C:\Users\anand\Homelab\Heimdall\.secrets\ssh\unoq_wifi_ed25519 arduino@192.168.8.215`
+- For the current portable-demo hotspot (2026-07-30), the UNO Q is
+  `192.168.137.98`; the laptop hotspot gateway is `192.168.137.1`.
+  This DHCP address is not stable and must be verified before a demo.
+- Do not add the private key or other secrets to source control.
+
 ## Hardware assumptions
 
 - DWM3001CDK nodes with DW3110 radios and nRF52833 MCUs.

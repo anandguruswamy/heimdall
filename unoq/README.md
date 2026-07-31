@@ -12,26 +12,26 @@ archive and replay, ranging/CIR/FFT processing, REST and FlatBuffers WebSocket
 APIs, and the embedded Svelte dashboard. The Python implementation under
 `heimdall/` remains the reference adapter.
 
-Build and test on the UNO Q:
-
-```sh
-CC=tools/zig-cc AR=tools/zig-ar \
-CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=tools/zig-cc \
-cargo test --workspace --locked
-
-CC=tools/zig-cc AR=tools/zig-ar \
-CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=tools/zig-cc \
-cargo build --release --locked --package heimdall-service
-```
-
 On the Windows ARM64 development host, install the pinned
 `1.93.1-aarch64-pc-windows-gnullvm` Rust toolchain with its
 `aarch64-unknown-linux-gnu` target and extract the documented Zig 0.15.2 archive
-under `tools/installers/windows-arm64/`, then cross-build with:
+under `tools/installers/windows-arm64/`, then use the tracked wrappers:
 
 ```powershell
+# Runs host-side Rust tests on Windows ARM64.
+.\tools\test-host.ps1
+
+# Compiles and links test executables for the UNO Q, without trying to run them.
+.\tools\test-linux-arm64.ps1
+
+# Produces the deployable Linux ARM64 binary.
 .\tools\build-linux-arm64.ps1 -Release
 ```
+
+The wrappers use the cached Zig executable at
+`tools/installers/windows-arm64/zig-aarch64-windows-0.15.2/zig.exe`. If the
+archive is extracted elsewhere, set `HEIMDALL_ZIG` to its absolute `zig.exe`
+path for that PowerShell session. Do not build the Rust service on the UNO Q.
 
 The deployable binary is written to
 `target/aarch64-unknown-linux-gnu/release/heimdall-service`.

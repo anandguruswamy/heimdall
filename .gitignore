@@ -27,6 +27,7 @@ unoq/dashboard/dist/
 
 # UNO Q runtime data
 unoq/data/
+unoq/windows-server.*.log
 *.husb
 *.sqlite3
 *.sqlite3-shm

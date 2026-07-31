@@ -9,6 +9,8 @@ use crc32fast::hash as crc32;
 use std::collections::{BTreeMap, HashMap};
 use thiserror::Error;
 
+pub mod live;
+
 pub const SYNC: [u8; 2] = [0xc3, 0xa5];
 pub const USB_VERSION: u8 = 1;
 pub const BEACON_VERSION: u8 = 1;

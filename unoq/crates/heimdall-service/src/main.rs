@@ -1,7 +1,8 @@
 use std::{
+    collections::HashMap,
     fs::File,
     io::Read,
-    net::SocketAddr,
+    net::{SocketAddr, UdpSocket},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -9,7 +10,7 @@ use std::{
         mpsc::{self, Receiver, SyncSender, TrySendError},
     },
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 #[cfg(unix)]
@@ -17,9 +18,11 @@ use std::os::fd::AsRawFd;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use heimdall_protocol::live::{LiveFragment, fragment_record};
 use heimdall_service::{
     api::{self, AppState},
     archive::{ArchiveWriter, ordered_segments, verify_archive},
+    live_agent::{self, AgentState},
     metadata::Metadata,
     pipeline::{Pipeline, PipelineSummary},
 };
@@ -38,6 +41,27 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Thin UNO Q agent: USB validation, health UI, and best-effort live forwarding.
+    Agent {
+        #[arg(
+            long,
+            default_value = "/dev/serial/by-id/usb-Open_UWB_Heimdall_Gateway_7556160612A31510-if00"
+        )]
+        device: PathBuf,
+        #[arg(long)]
+        target: SocketAddr,
+        #[arg(long, default_value = "0.0.0.0:8080")]
+        bind: SocketAddr,
+    },
+    /// Windows live processor: UDP intake, DSP, API, WebSocket, and dashboard.
+    Server {
+        #[arg(long, default_value = "0.0.0.0:7878")]
+        udp_bind: SocketAddr,
+        #[arg(long, default_value = "0.0.0.0:8080")]
+        bind: SocketAddr,
+        #[arg(long, default_value = "data")]
+        data: PathBuf,
+    },
     Serve {
         #[arg(
             long,
@@ -76,12 +100,189 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     match Cli::parse().command {
+        Command::Agent {
+            device,
+            target,
+            bind,
+        } => agent(device, target, bind).await,
+        Command::Server {
+            udp_bind,
+            bind,
+            data,
+        } => live_server(udp_bind, bind, data).await,
         Command::Serve { device, data, bind } => serve(device, data, bind).await,
         Command::Replay { path, chunk_size } => print_summary(replay(&path, chunk_size)?),
         Command::Inspect { path } => inspect(&path),
         Command::Verify { archive, database } => verify(&archive, &database),
         Command::Benchmark { nodes, iterations } => benchmark(nodes, iterations),
     }
+}
+
+async fn agent(device: PathBuf, target: SocketAddr, bind: SocketAddr) -> Result<()> {
+    let state = AgentState::new();
+    let running = Arc::new(AtomicBool::new(true));
+    let reader = spawn_agent_cdc(device, target, state.clone(), running.clone());
+    let listener = tokio::net::TcpListener::bind(bind).await?;
+    tracing::info!(%bind, %target, "UNO Q live agent listening");
+    let result = axum::serve(listener, live_agent::router(state))
+        .await
+        .map_err(anyhow::Error::from);
+    running.store(false, Ordering::Release);
+    reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("agent CDC worker panicked"))?;
+    result
+}
+
+async fn live_server(udp_bind: SocketAddr, bind: SocketAddr, data: PathBuf) -> Result<()> {
+    std::fs::create_dir_all(&data)?;
+    let metadata = Metadata::open(data.join("heimdall.sqlite3"))?;
+    let state = AppState::new(metadata, &data)?;
+    let (processing_tx, processing_rx) = mpsc::sync_channel(1024);
+    let processor = spawn_processor(processing_rx, state.clone());
+    let running = Arc::new(AtomicBool::new(true));
+    let receiver = spawn_udp_receiver(udp_bind, running.clone(), processing_tx, state.clone())?;
+    let listener = tokio::net::TcpListener::bind(bind).await?;
+    tracing::info!(%bind, %udp_bind, "live processing server listening");
+    let result = api::serve(listener, state).await;
+    running.store(false, Ordering::Release);
+    receiver
+        .join()
+        .map_err(|_| anyhow::anyhow!("UDP worker panicked"))?;
+    processor
+        .join()
+        .map_err(|_| anyhow::anyhow!("processing worker panicked"))?;
+    result
+}
+
+fn spawn_agent_cdc(
+    device: PathBuf,
+    target: SocketAddr,
+    state: AgentState,
+    running: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let socket = match UdpSocket::bind("0.0.0.0:0") {
+            Ok(socket) => socket,
+            Err(error) => {
+                tracing::error!(%error, "unable to create UDP sender");
+                return;
+            }
+        };
+        let session_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |time| time.as_nanos() as u64);
+        let mut transport_sequence = 0_u64;
+        while running.load(Ordering::Acquire) {
+            match File::open(&device) {
+                Ok(mut input) => {
+                    if let Err(error) = configure_raw_tty(&input) {
+                        tracing::warn!(%error, device=%device.display(), "failed to configure raw CDC mode");
+                        thread::sleep(Duration::from_secs(1));
+                        continue;
+                    }
+                    let mut buffer = [0_u8; 16 * 1024];
+                    while running.load(Ordering::Acquire) {
+                        match input.read(&mut buffer) {
+                            Ok(0) => break,
+                            Ok(count) => {
+                                for record in state.ingest(&buffer[..count]) {
+                                    let packets = match fragment_record(
+                                        session_id,
+                                        transport_sequence,
+                                        record.sequence,
+                                        &record.raw,
+                                    ) {
+                                        Ok(packets) => packets,
+                                        Err(error) => {
+                                            tracing::warn!(%error, "live record cannot be framed");
+                                            continue;
+                                        }
+                                    };
+                                    transport_sequence = transport_sequence.wrapping_add(1);
+                                    for packet in packets {
+                                        if socket.send_to(&packet, target).is_err() {
+                                            state.send_drops.fetch_add(1, Ordering::Relaxed);
+                                        }
+                                    }
+                                    state.forwarded.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, "CDC read failed");
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, device=%device.display(), "CDC open failed; reconnecting")
+                }
+            }
+            if running.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_secs(1));
+            }
+        }
+    })
+}
+
+struct PendingRecord {
+    fragments: Vec<Option<Vec<u8>>>,
+    received: usize,
+    created: Instant,
+}
+
+fn spawn_udp_receiver(
+    bind: SocketAddr,
+    running: Arc<AtomicBool>,
+    processing_tx: SyncSender<ProcessingInput>,
+    state: AppState,
+) -> Result<thread::JoinHandle<()>> {
+    let socket = UdpSocket::bind(bind)?;
+    socket.set_read_timeout(Some(Duration::from_millis(100)))?;
+    Ok(thread::spawn(move || {
+        let mut pending: HashMap<(u64, u64), PendingRecord> = HashMap::new();
+        let mut active_session = None;
+        let mut buffer = [0_u8; 1_500];
+        while running.load(Ordering::Acquire) {
+            let Ok((count, _)) = socket.recv_from(&mut buffer) else {
+                pending.retain(|_, record| record.created.elapsed() < Duration::from_millis(100));
+                continue;
+            };
+            let Ok(fragment) = LiveFragment::decode(&buffer[..count]) else {
+                continue;
+            };
+            if active_session != Some(fragment.session_id) {
+                active_session = Some(fragment.session_id);
+                pending.clear();
+                let _ = processing_tx.try_send(ProcessingInput::Reset);
+            }
+            let key = (fragment.session_id, fragment.transport_sequence);
+            let record = pending.entry(key).or_insert_with(|| PendingRecord {
+                fragments: vec![None; fragment.fragment_count as usize],
+                received: 0,
+                created: Instant::now(),
+            });
+            if record.fragments.len() != fragment.fragment_count as usize {
+                pending.remove(&key);
+                continue;
+            }
+            let slot = &mut record.fragments[fragment.fragment_index as usize];
+            if slot.is_none() {
+                *slot = Some(fragment.payload);
+                record.received += 1;
+            }
+            if record.received == record.fragments.len() {
+                let record = pending.remove(&key).unwrap();
+                let bytes: Vec<u8> = record.fragments.into_iter().flatten().flatten().collect();
+                if let Err(TrySendError::Full(_)) =
+                    processing_tx.try_send(ProcessingInput::Data(bytes))
+                {
+                    state.processing_drops.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+    }))
 }
 
 async fn serve(device: PathBuf, data: PathBuf, bind: SocketAddr) -> Result<()> {

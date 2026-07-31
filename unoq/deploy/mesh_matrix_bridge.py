@@ -19,6 +19,22 @@ def topology():
 
 
 def matrix_line(document):
+    # The thin agent exposes direct observation freshness instead of the old
+    # DSP-derived link topology, so the matrix remains local during a server outage.
+    if "expected_nodes" in document:
+        nodes = document.get("nodes", [])
+        connected = sum(1 for node in nodes if node.get("connected"))
+        if document.get("gateway_node") is not None:
+            connected += 1
+        levels = [0] * 5
+        for node in nodes:
+            node_id = int(node.get("node_id", -1))
+            if 0 <= node_id < len(levels) and node.get("connected"):
+                # The agent intentionally avoids DSP; a full bar means a fresh
+                # validated observation, while the health page exposes raw power.
+                levels[node_id] = 7
+        return ",".join([str(min(9, connected)), *(str(level) for level in levels)]) + "\n"
+
     config = document.get("config") or {}
     node_count = int(config.get("n_nodes", 0))
     gateway = int(config.get("node_id", 0))
