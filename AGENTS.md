@@ -26,6 +26,20 @@ Heimdall work.
   information, and integrity check.
 - Capture/replay is a first-class adapter for development and testing.
 
+## Build and deployment workflow
+
+- Build the UNO Q Rust service on this Windows development machine. Use the
+  cached cross-compilation toolchain documented in `tools/README.md` and target
+  `aarch64-unknown-linux-gnu`.
+- Do not run `cargo build` or `cargo build --release` on the UNO Q. The UNO Q
+  is a deployment target, not the Rust build host; transfer the verified
+  cross-compiled binary there.
+- Arduino sketches are the exception: compile and upload UNO Q MCU sketches
+  on the UNO Q with `arduino-cli`, using `arduino:zephyr:unoq`.
+- After deploying a Rust service or boot-time helper, verify the running
+  process, its input/output device or socket, and its boot-start configuration
+  on the UNO Q.
+
 ## Hardware assumptions
 
 - DWM3001CDK nodes with DW3110 radios and nRF52833 MCUs.
