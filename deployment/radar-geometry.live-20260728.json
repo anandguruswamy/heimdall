@@ -1,0 +1,41 @@
+{
+  "schema": "heimdall-geometry/1",
+  "units": "m",
+  "revision": "dashboard-live-5962002",
+  "frame": {
+    "name": "dashboard-range-derived",
+    "origin": "N0 antenna phase centre",
+    "axes": "+X toward N1, +Y side selected by N2, +Z side selected by N3"
+  },
+  "provenance": {
+    "source": "UNO Q Board Positions",
+    "range_source": "smoothed",
+    "configuration_revision": 4208,
+    "newest_event_s": 5962.0015,
+    "pairs": [
+      {"a": 1, "b": 2, "distance_m": 2.3258594011425964, "age_s": 0.014000000000123691},
+      {"a": 1, "b": 4, "distance_m": 1.1407996492324661, "age_s": 0.028000000000247383},
+      {"a": 0, "b": 1, "distance_m": 1.6680748427405963, "age_s": 0.014000000000123691},
+      {"a": 1, "b": 3, "distance_m": 2.1936585072719583, "age_s": 0.014000000000123691},
+      {"a": 2, "b": 4, "distance_m": 1.8473699797509109, "age_s": 0.028000000000247383},
+      {"a": 0, "b": 2, "distance_m": 2.913894986141903, "age_s": 0.007000000000516593},
+      {"a": 2, "b": 3, "distance_m": 2.1963515749470277, "age_s": 0.007000000000516593},
+      {"a": 3, "b": 4, "distance_m": 2.3311957418419857, "age_s": 0.028000000000247383},
+      {"a": 0, "b": 3, "distance_m": 1.8261609692374723, "age_s": 0.0},
+      {"a": 0, "b": 4, "distance_m": 2.6209278577090704, "age_s": 0.028000000000247383}
+    ],
+    "fit_rmse_m": 0.0026575218314880567,
+    "fit_rank": 9,
+    "fit_degrees_of_freedom": 9,
+    "fit_iterations": 4,
+    "fit_converged": true,
+    "calibration_status": "antenna-delay-not-independently-verified"
+  },
+  "nodes": [
+    {"node_id": 0, "position_m": [0.0, 0.0, 0.0]},
+    {"node_id": 1, "position_m": [1.6722097064028691, 0.0, 0.0]},
+    {"node_id": 2, "position_m": [1.7599839723920285, 2.323216469814138, 0.0]},
+    {"node_id": 3, "position_m": [0.39878131986048565, 1.206790635766697, 1.3128789726862673]},
+    {"node_id": 4, "position_m": [2.4903571060906384, 0.6793779664502394, 0.42353935543061805]}
+  ]
+}

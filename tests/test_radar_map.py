@@ -1,10 +1,13 @@
 from pathlib import Path
 import gc
+import json
 import struct
 import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
+from urllib.request import urlopen
 
 import numpy as np
 
@@ -15,7 +18,7 @@ sys.path.insert(0, str(RADAR_MAP))
 from radar_map.model import Geometry, GridSpec, LinkProfile, METRES_PER_TAP, QualityConfig  # noqa: E402
 from radar_map.capture import decode_capture  # noqa: E402
 from radar_map.processing import backproject, build_link_profiles  # noqa: E402
-from radar_map.server import slice_payload  # noqa: E402
+from radar_map.server import create_server, point_cloud_payload, slice_payload  # noqa: E402
 from radar_map.storage import export_volume, load_volume  # noqa: E402
 from test_h3_ingest import hello_payload, sample_stream  # noqa: E402
 from unoq.heimdall.protocol import HELLO, encode_record  # noqa: E402
@@ -129,19 +132,68 @@ class BackprojectionTests(unittest.TestCase):
         np.testing.assert_allclose(estimate, target, atol=0.11)
 
     def test_export_round_trip_and_slice_axis_order(self):
-        profile = LinkProfile(0, 1, np.arange(10.0), np.arange(10.0), 4, 1.0)
+        profile = LinkProfile(
+            0,
+            1,
+            np.arange(10.0),
+            np.arange(10.0),
+            4,
+            1.0,
+            static_magnitude=np.arange(10.0) * 2,
+        )
         geometry = Geometry({0: np.array([0.0, 0.0, 0.0]), 1: np.array([1.0, 0.0, 0.0])})
-        result = backproject([profile], geometry, GridSpec((0.0, 0.0, 0.0), (1.0, 1.0, 1.0), 0.5))
+        grid = GridSpec((0.0, 0.0, 0.0), (1.0, 1.0, 1.0), 0.5)
+        result = backproject([profile], geometry, grid, product="motion")
+        static_result = backproject([profile], geometry, grid, product="static")
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
-            export_volume(result, output, {"fixture": "synthetic"})
+            export_volume(
+                result,
+                output,
+                {"fixture": "synthetic"},
+                additional_products={"static": static_result},
+            )
             volume, confidence, metadata = load_volume(output)
+            static_volume, static_confidence, _ = load_volume(output, "static")
+            self.assertGreater(float(np.max(static_volume)), float(np.max(volume)))
             payload = slice_payload(volume, confidence, metadata, "xz", 1)
             self.assertEqual(payload["array_order"], ["z", "x"])
             self.assertEqual(payload["shape"], [3, 3])
             np.testing.assert_array_equal(volume[:, 1, :], payload["values"])
+            points = point_cloud_payload(volume, confidence, metadata, 80, limit=4)
+            self.assertLessEqual(len(points["points"]), 4)
+            self.assertEqual(points["schema"], "heimdall-radar-point-cloud/1")
+
+            server = create_server(output, "127.0.0.1", 0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{server.server_address[1]}"
+                with urlopen(base + "/", timeout=2) as response:
+                    viewer = response.read()
+                    self.assertIn(b"Motion Residual Field", viewer)
+                    self.assertIn(b'id="x-min"', viewer)
+                    self.assertIn(b'id="z-max"', viewer)
+                    self.assertEqual(response.headers.get_content_type(), "text/html")
+                with urlopen(base + "/api/v1/points?percentile=80&limit=4&product=static", timeout=2) as response:
+                    served_points = json.load(response)
+                    self.assertLessEqual(len(served_points["points"]), 4)
+                    self.assertEqual(served_points["product"], "static")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+                server.volume._mmap.close()
+                server.confidence._mmap.close()
+                for name, mapping in server.product_volumes.items():
+                    if mapping is not server.volume:
+                        mapping._mmap.close()
+                for mapping in server.extra_mappings:
+                    mapping._mmap.close()
             volume._mmap.close()
             confidence._mmap.close()
+            static_volume._mmap.close()
+            static_confidence._mmap.close()
             del volume, confidence
             gc.collect()
 

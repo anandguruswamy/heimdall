@@ -74,6 +74,7 @@ def build_link_profiles(
     geometry: Geometry,
     quality: QualityConfig = QualityConfig(),
     clutter_frames: int = 16,
+    direct_path_guard_taps: float = 2.0,
 ) -> tuple[list[LinkProfile], dict[str, object]]:
     grouped: dict[tuple[int, int], list[object]] = {}
     rejected = Counter()
@@ -143,6 +144,8 @@ def build_link_profiles(
             if abs(cross) > 0:
                 row *= np.exp(-1j * np.angle(cross))
         baseline_count = max(0, clutter_frames)
+        static_magnitude = np.median(np.abs(rows), axis=0)
+        static_magnitude[excess_taps <= direct_path_guard_taps] = 0.0
         if baseline_count:
             baseline_rows = rows[:baseline_count]
             baseline = np.median(baseline_rows.real, axis=0) + 1j * np.median(
@@ -161,6 +164,7 @@ def build_link_profiles(
                 magnitude=magnitude.astype(np.float32),
                 accepted_frames=len(accepted),
                 median_correlation=float(np.median(kept_correlations)),
+                static_magnitude=static_magnitude.astype(np.float32),
             )
         )
         link_stats.append(
@@ -180,10 +184,18 @@ def build_link_profiles(
         "rejected": dict(sorted(rejected.items())),
         "links": link_stats,
         "clutter_frames": clutter_frames,
+        "direct_path_guard_taps": direct_path_guard_taps,
     }
 
 
-def backproject(profiles: list[LinkProfile], geometry: Geometry, grid: GridSpec) -> VolumeResult:
+def backproject(
+    profiles: list[LinkProfile],
+    geometry: Geometry,
+    grid: GridSpec,
+    product: str = "motion",
+) -> VolumeResult:
+    if product not in {"motion", "static"}:
+        raise ValueError("product must be 'motion' or 'static'")
     x_m, y_m, z_m = grid.axes()
     zz, yy, xx = np.meshgrid(z_m, y_m, x_m, indexing="ij")
     points = np.stack((xx, yy, zz), axis=-1)
@@ -201,8 +213,13 @@ def backproject(profiles: list[LinkProfile], geometry: Geometry, grid: GridSpec)
         )
         predicted_taps = np.maximum(0.0, excess_m / METRES_PER_TAP)
         valid = predicted_taps <= profile.excess_taps[-1]
+        profile_magnitude = (
+            profile.static_magnitude
+            if product == "static" and profile.static_magnitude is not None
+            else profile.magnitude
+        )
         evidence = np.interp(
-            predicted_taps.ravel(), profile.excess_taps, profile.magnitude, left=0.0, right=0.0
+            predicted_taps.ravel(), profile.excess_taps, profile_magnitude, left=0.0, right=0.0
         ).reshape(volume.shape)
         weight = max(0.05, profile.median_correlation)
         volume += evidence * weight * valid
@@ -217,6 +234,7 @@ def backproject(profiles: list[LinkProfile], geometry: Geometry, grid: GridSpec)
         z_m=z_m,
         metadata={
             "schema": "heimdall-radar-volume/1",
+            "product": product,
             "array_order": "zyx",
             "units": {"position": "m", "volume": "scaled-cir-magnitude"},
             "metres_per_cir_tap": METRES_PER_TAP,
@@ -225,6 +243,7 @@ def backproject(profiles: list[LinkProfile], geometry: Geometry, grid: GridSpec)
             "spacing_m": grid.spacing_m,
             "geometry_revision": geometry.revision,
             "geometry_frame": geometry.frame,
+            "geometry_provenance": geometry.provenance,
             "geometry_nodes": [
                 {"node_id": node_id, "position_m": position.tolist()}
                 for node_id, position in sorted(geometry.positions.items())

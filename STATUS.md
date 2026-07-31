@@ -570,6 +570,35 @@ calibration remains before timestamps can be treated as accurate ranges.
   wheel exists for that release, so the validated laptop path currently uses
   CPython x86-64 under Windows ARM64 emulation. Zarr remains optional and
   unpinned until its storage contract is stabilized.
+- The radar-map server now includes a dependency-free browser viewer with
+  linked XY/XZ/YZ heatmaps and an interactive WebGL 3D point cloud. The point
+  products are percentile-thresholded and capped server-side, board coordinates
+  are overlaid, and canonical `TOP +Z` / 3D cameras render +X right and +Y up.
+  Static-environment magnitude with a two-tap direct-path guard and complex
+  median-baseline motion residual are exported and selectable independently.
+- A fresh protected live capture was triggered through the UNO Q API as clip 6.
+  It contains 25,877 records and 11,227,684 raw bytes with SHA-256
+  `290C66ED400F3846710C5DFCEDF82A92E44760D553090D006331BEDD7AE93D61`.
+  Replay produced 33,664 canonical observations across all 20 links; 33,533
+  passed radar-map quality gates and 131 were classified `false_first_path`.
+- `deployment/radar-geometry.live-20260728.json` records a contemporaneous
+  range-derived frame with N0 at the origin, N1 on +X, N2 on +Y, and N3 on +Z.
+  It is now the exact `dashboard-live-5962002` geometry export rather than an
+  independently reconstructed range fit. The snapshot records all ten smoothed
+  DS-TWR inputs, edge ages, five coordinate triples, rank 9/9, four iterations,
+  and 0.27 cm RMS. Programmatic comparison against radar metadata reports zero
+  coordinate difference. The dual live-data volumes use 5 cm spacing over a
+  `71x67x47` grid.
+- The dashboard retains DS edges but displays each edge's age, and its canonical
+  reset/top cameras no longer render +Y downward. Projection orientation and
+  solver behavior pass all six tests. Board Positions exposes the exact solved
+  geometry as a downloadable JSON snapshot, and the live audit stores the same
+  snapshot for radar replay. Svelte checking, the production frontend build,
+  and 93 Python tests pass. The corrected ARM64 service binary has SHA-256
+  `6C826C204EDC2CFBE54DC3A62AFD9DBA435ADD5CD5A43EFFB8EF17B72AC9FEFD`.
+  Deployment remains pending because both
+  `arduino@192.168.8.215` and `arduino@chinny` reject non-interactive SSH
+  authentication.
 
 ## Next executable checkpoint
 

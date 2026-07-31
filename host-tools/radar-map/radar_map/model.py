@@ -16,6 +16,7 @@ class Geometry:
     positions: dict[int, np.ndarray]
     frame: dict[str, object] = field(default_factory=dict)
     revision: str | None = None
+    provenance: dict[str, object] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path) -> "Geometry":
@@ -41,6 +42,7 @@ class Geometry:
             positions=positions,
             frame=dict(document.get("frame", {})),
             revision=document.get("revision"),
+            provenance=dict(document.get("provenance", {})),
         )
 
 
@@ -80,6 +82,7 @@ class LinkProfile:
     magnitude: np.ndarray
     accepted_frames: int
     median_correlation: float
+    static_magnitude: np.ndarray | None = None
 
 
 @dataclass(frozen=True)

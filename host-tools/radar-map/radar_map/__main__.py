@@ -26,6 +26,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     build.add_argument("--spacing", type=float, default=0.10, help="voxel spacing in metres")
     build.add_argument("--clutter-frames", type=int, default=16)
+    build.add_argument("--direct-path-guard-taps", type=float, default=2.0)
     build.add_argument("--zarr", action="store_true", help="also export volume.zarr")
     build.add_argument(
         "--require-complete-stream",
@@ -71,7 +72,11 @@ def main() -> None:
         max_start_offset_jump_samples=args.max_start_offset_jump,
     )
     profiles, quality_stats = build_link_profiles(
-        observations, geometry, quality=quality, clutter_frames=args.clutter_frames
+        observations,
+        geometry,
+        quality=quality,
+        clutter_frames=args.clutter_frames,
+        direct_path_guard_taps=args.direct_path_guard_taps,
     )
     if not profiles:
         raise SystemExit("capture produced no usable directed-link profiles")
@@ -81,7 +86,8 @@ def main() -> None:
         (bounds[1], bounds[3], bounds[5]),
         args.spacing,
     )
-    result = backproject(profiles, geometry, grid)
+    result = backproject(profiles, geometry, grid, product="motion")
+    static_result = backproject(profiles, geometry, grid, product="static")
     processing = {
         "tool_version": "0.1.0",
         "capture": str(args.capture),
@@ -94,6 +100,7 @@ def main() -> None:
         args.output,
         processing,
         zarr=args.zarr,
+        additional_products={"static": static_result},
     )
     print(
         f"Wrote {result.volume.shape} volume from {len(profiles)} directed links to {args.output}"

@@ -23,6 +23,11 @@ const distance=(a:Vec3,b:Vec3)=>Math.hypot(a.x-b.x,a.y-b.y,a.z-b.z);
 const clonePositions=(positions:Vec3[])=>positions.map((point)=>({...point}));
 const pair=(ranges:Range[],a:number,b:number)=>ranges.find((edge)=>edge.a===Math.min(a,b)&&edge.b===Math.max(a,b))?.distance;
 
+export function projectBoardPoint(point:Vec3,center:Vec3,span:number,yaw:number,pitch:number,zoom:number){
+  const x=point.x-center.x,y=point.y-center.y,z=point.z-center.z,cy=Math.cos(yaw),sy=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch),rx=cy*x-sy*y,ry=sy*x+cy*y,rz=cp*z-sp*ry,depth=sp*z+cp*ry,factor=3/(3+depth/Math.max(span,1e-6));
+  return{nx:rx/span*zoom*factor,ny:rz/span*zoom*factor,factor};
+}
+
 export function selectedRanges(values:Iterable<PositionRange>,source:RangeSource):Range[] {
   return Array.from(values).flatMap((value)=>{
     const measurement=source==='raw'?value.raw:source==='smoothed'?value.smoothed:value.ultra;

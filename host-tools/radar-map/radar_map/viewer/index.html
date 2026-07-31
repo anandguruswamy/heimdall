@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Heimdall Radar Volume</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="masthead">
+    <div>
+      <p class="eyebrow">HEIMDALL / DOWNSTREAM ANALYSIS</p>
+      <h1>Radar Volume <span>01</span></h1>
+    </div>
+    <div class="status"><i></i><span id="status">CONNECTING</span></div>
+  </header>
+
+  <div id="geometry-warning" class="warning" hidden>
+    <strong id="geometry-warning-title">NON-SURVEYED GEOMETRY</strong>
+    <span id="geometry-warning-text">This volume is not a surveyed physical localization result.</span>
+  </div>
+
+  <main>
+    <section class="volume-panel panel">
+      <div class="panel-heading">
+        <div>
+          <p class="section-number">A / VOLUME</p>
+          <h2 id="product-title">Motion Residual Field</h2>
+        </div>
+        <p class="hint">DRAG TO ORBIT · WHEEL TO ZOOM</p>
+      </div>
+      <div class="scene-wrap">
+        <canvas id="scene" aria-label="Interactive 3D radar point cloud"></canvas>
+        <div id="node-labels" class="node-labels" aria-hidden="true"></div>
+        <div class="antenna-register">
+          <p>ANTENNA PHASE CENTRES · X / Y / Z</p>
+          <div id="antenna-list"></div>
+        </div>
+        <div class="axis-key"><span class="x">X</span><span class="y">Y</span><span class="z">Z</span></div>
+        <div class="scene-readout">
+          <strong id="point-count">0</strong><span>VOXELS SHOWN</span>
+          <strong id="peak-value">0</strong><span>PEAK ENERGY</span>
+        </div>
+      </div>
+      <div class="controls">
+        <div class="product-switch" aria-label="Radar product">
+          <button id="product-motion" class="active" type="button">MOTION</button>
+          <button id="product-static" type="button">STATIC</button>
+        </div>
+        <label>
+          <span>Evidence percentile <output id="percentile-value">85.0%</output></span>
+          <input id="percentile" type="range" min="50" max="99.5" step="0.5" value="85">
+        </label>
+        <label>
+          <span>Point scale <output id="point-size-value">3.0</output></span>
+          <input id="point-size" type="range" min="1" max="8" step="0.5" value="3">
+        </label>
+        <div class="view-controls"><button id="top-view" type="button">TOP +Z</button><button id="reset-view" type="button">RESET 3D</button></div>
+      </div>
+      <div class="bounds-controls">
+        <div class="bounds-heading">
+          <strong>POINT BOUNDS</strong>
+          <span>HIDE EVIDENCE OUTSIDE RANGE</span>
+        </div>
+        <div class="axis-bounds">
+          <label><span>X minimum <output id="x-min-value">—</output></span><input id="x-min" type="range" aria-label="Minimum X point bound"></label>
+          <label><span>X maximum <output id="x-max-value">—</output></span><input id="x-max" type="range" aria-label="Maximum X point bound"></label>
+        </div>
+        <div class="axis-bounds">
+          <label><span>Y minimum <output id="y-min-value">—</output></span><input id="y-min" type="range" aria-label="Minimum Y point bound"></label>
+          <label><span>Y maximum <output id="y-max-value">—</output></span><input id="y-max" type="range" aria-label="Maximum Y point bound"></label>
+        </div>
+        <div class="axis-bounds">
+          <label><span>Z minimum <output id="z-min-value">—</output></span><input id="z-min" type="range" aria-label="Minimum Z point bound"></label>
+          <label><span>Z maximum <output id="z-max-value">—</output></span><input id="z-max" type="range" aria-label="Maximum Z point bound"></label>
+        </div>
+      </div>
+    </section>
+
+    <section class="slice-panel panel">
+      <div class="panel-heading">
+        <div>
+          <p class="section-number">B / SECTIONS</p>
+          <h2>Orthogonal Slices</h2>
+        </div>
+        <div class="legend"><span>LOW</span><i></i><span>HIGH</span></div>
+      </div>
+      <div class="slice-grid">
+        <article class="slice" data-plane="xy">
+          <div><h3>XY</h3><output>Z 0.00 m</output></div>
+          <canvas aria-label="XY radar slice"></canvas>
+          <input type="range" min="0" max="0" value="0" aria-label="XY slice Z position">
+        </article>
+        <article class="slice" data-plane="xz">
+          <div><h3>XZ</h3><output>Y 0.00 m</output></div>
+          <canvas aria-label="XZ radar slice"></canvas>
+          <input type="range" min="0" max="0" value="0" aria-label="XZ slice Y position">
+        </article>
+        <article class="slice" data-plane="yz">
+          <div><h3>YZ</h3><output>X 0.00 m</output></div>
+          <canvas aria-label="YZ radar slice"></canvas>
+          <input type="range" min="0" max="0" value="0" aria-label="YZ slice X position">
+        </article>
+      </div>
+    </section>
+
+    <section class="telemetry panel">
+      <p class="section-number">C / RUN DATA</p>
+      <div class="metrics">
+        <div><span>GRID</span><strong id="grid-shape">—</strong></div>
+        <div><span>SPACING</span><strong id="spacing">—</strong></div>
+        <div><span>LINKS</span><strong id="links">—</strong></div>
+        <div><span>OBSERVATIONS</span><strong id="observations">—</strong></div>
+        <div><span>GEOMETRY</span><strong id="geometry-revision">—</strong></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>EXPERIMENTAL REPLAY PRODUCT</span>
+    <span>VOLUME ORDER Z / Y / X</span>
+  </footer>
+  <script src="/app.js"></script>
+</body>
+</html>

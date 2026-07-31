@@ -104,6 +104,7 @@ async function run() {
         scale: document.querySelector('.segmented[aria-label="Scale"] button.active')?.textContent?.trim() ?? null,
         waterfallScaleLimits: [...document.querySelectorAll('.scale-control input[type="number"]')].map((item)=>Number(item.value)),
         boardFit: [...document.querySelectorAll('.diagnostics dl dt')].map((item)=>[item.textContent?.trim(),item.nextElementSibling?.textContent?.trim()]),
+        boardGeometry: document.querySelector('.positions-layout')?.dataset.geometry ?? null,
         linkLayout: [...document.querySelectorAll('.link-cell')].slice(0,5).map((item)=>{const box=item.getBoundingClientRect();return {label:item.querySelector('header b')?.textContent?.trim(),x:Math.round(box.x),y:Math.round(box.y)};})
       }))()`);
       const slug = tab.toLowerCase().replaceAll(/[^a-z0-9]+/g, '-');
@@ -132,6 +133,7 @@ async function run() {
         await cdp.evaluate(`document.querySelector('.focus-panel header button')?.click()`);
       }
       audits.push({ viewport: viewport.name, tab, screenshotCaptured, focusAxes, ...state });
+      if (tab === 'Board Positions' && state.boardGeometry) writeFileSync(join(output, `${viewport.name}-board-geometry.json`), `${JSON.stringify(JSON.parse(state.boardGeometry),null,2)}\n`);
       if (tab === 'CIR Waterfall') await cdp.evaluate(`[...document.querySelectorAll('.segmented[aria-label="Scale"] button')].find((item)=>item.textContent.trim()==='Linear')?.click()`);
     }
   }
@@ -146,7 +148,8 @@ async function run() {
     const boardOk=item.tab!=='Board Positions'||(boardFit['JACOBIAN RANK']==='9/9'&&boardFit.OPTIMIZER?.startsWith('CONVERGED'));
     return item.active !== item.tab || item.status !== 'LIVE' || item.synthetic || !columnMajor || !axesOk || !scaleOk || !scaleLimitsOk || !boardOk || item.canvases.some((canvas) => canvas.width < 1 || canvas.height < 1) || (!['Network Health', 'Distance Calibration'].includes(item.tab) && item.noData > 0);
   });
-  const report = { url, output, audits, exceptions: exceptions.length, failures: failures.length, screenshotFailures: audits.filter((item)=>item.screenshotCaptured===false).length };
+  const exceptionDetails=exceptions.map((event)=>event.params?.exceptionDetails?.exception?.description ?? event.params?.exceptionDetails?.text ?? 'unknown exception');
+  const report = { url, output, audits, exceptions: exceptions.length, exceptionDetails, failures: failures.length, screenshotFailures: audits.filter((item)=>item.screenshotCaptured===false).length };
   console.log(JSON.stringify(report, null, 2));
   if (failures.length || exceptions.length) process.exitCode = 1;
   cdp.socket.close();

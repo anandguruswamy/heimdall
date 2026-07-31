@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { solvePositions, type Vec3 } from '../src/lib/positions.ts';
+import { projectBoardPoint, solvePositions, type Vec3 } from '../src/lib/positions.ts';
 
 const truth:Vec3[]=[
   {x:0,y:0,z:0},
@@ -56,4 +56,14 @@ test('reports an invalid frame below four nodes without extending positions',()=
   const solution=solvePositions(3,[],[0,1,2],3);
   assert.equal(solution.status,'NEED 4 NODES');
   assert.equal(solution.positions.length,3);
+});
+
+test('canonical dashboard cameras render +X right and +Y up',()=>{
+  const center={x:0,y:0,z:0};
+  for(const pitch of [-Math.PI/2,-.65]){
+    const x=projectBoardPoint({x:1,y:0,z:0},center,1,0,pitch,1);
+    const y=projectBoardPoint({x:0,y:1,z:0},center,1,0,pitch,1);
+    assert.ok(x.nx>0&&Math.abs(x.ny)<1e-12);
+    assert.ok(Math.abs(y.nx)<1e-12&&y.ny>0);
+  }
 });
