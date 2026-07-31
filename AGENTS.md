@@ -70,6 +70,14 @@ Heimdall work.
 
 ## Collaboration workflow
 
+- Before a build, deployment, upload, restart, network reconfiguration, or
+  other operation likely to take more than a few seconds, state the exact
+  operation and expected duration. Report completion as soon as the requested
+  action is verified; do not silently wait for optional diagnostics or cleanup.
+- Ask before an operation likely to take more than 30 seconds unless the user
+  explicitly requested a build, deployment, or similarly long-running action.
+- Prefer the smallest verification that proves the requested result. Defer
+  optional analysis and cleanup until after reporting that result.
 - Before starting a requested task, briefly assess whether it should continue
   in the current conversation or start in a new session, and tell the user
   which is more appropriate.

@@ -37,6 +37,7 @@ export type Envelope = {
   configurationEpoch: bigint;
   processingEpoch: bigint;
   droppedEvents: number;
+  receivedAtMs?: number;
   payload: unknown;
 };
 

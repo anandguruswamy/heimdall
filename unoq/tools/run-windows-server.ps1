@@ -6,12 +6,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
+$binary = Join-Path $workspace 'target\windows-server\heimdall-service.exe'
+$dataPath = if ([IO.Path]::IsPathRooted($Data)) { $Data } else { Join-Path $workspace $Data }
 
-# Match test-host.ps1 so native Windows builds can compile bundled SQLite and
-# link Cargo build scripts without Visual Studio.
-$env:CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER = Join-Path $PSScriptRoot 'zig-host-cc.cmd'
-$env:CC_aarch64_pc_windows_gnullvm = Join-Path $PSScriptRoot 'zig-host-c-cc.cmd'
-$env:AR_aarch64_pc_windows_gnullvm = Join-Path $PSScriptRoot 'zig-ar.cmd'
+if (-not (Test-Path -LiteralPath $binary)) {
+    throw "Build the Windows server first with .\tools\build-windows-server.ps1"
+}
 
-& rustup run 1.93.1-aarch64-pc-windows-gnullvm cargo run --locked --manifest-path (Join-Path $workspace 'Cargo.toml') --package heimdall-service -- server --udp-bind $UdpBind --bind $Bind --data $Data
+& $binary server --udp-bind $UdpBind --bind $Bind --data $dataPath
 exit $LASTEXITCODE

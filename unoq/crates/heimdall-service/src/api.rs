@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     path::PathBuf,
     sync::{
         Arc,
@@ -28,10 +28,38 @@ use crate::{
     clips::ClipManager,
     metadata::Metadata,
     pipeline::Pipeline,
-    telemetry::{Topic, envelope_topic},
+    telemetry::{Topic, envelope_batch, envelope_key, envelope_topic},
 };
 
 include!(concat!(env!("OUT_DIR"), "/assets.rs"));
+
+#[derive(Default)]
+pub struct LiveMetrics {
+    pub udp_datagrams: AtomicU64,
+    pub udp_invalid: AtomicU64,
+    pub records_completed: AtomicU64,
+    pub records_expired: AtomicU64,
+    pub microbatches: AtomicU64,
+    pub batched_records: AtomicU64,
+    pub processing_queue_depth: AtomicU64,
+    pub processing_queue_high_water: AtomicU64,
+    pub queue_wait_count: AtomicU64,
+    pub queue_wait_ns: AtomicU64,
+    pub queue_wait_max_ns: AtomicU64,
+    pub processing_count: AtomicU64,
+    pub processing_ns: AtomicU64,
+    pub processing_max_ns: AtomicU64,
+    pub websocket_coalesced: AtomicU64,
+    pub websocket_lagged: AtomicU64,
+    pub websocket_send_count: AtomicU64,
+    pub websocket_updates: AtomicU64,
+    pub websocket_send_ns: AtomicU64,
+    pub websocket_send_max_ns: AtomicU64,
+}
+
+pub fn record_max(target: &AtomicU64, value: u64) {
+    target.fetch_max(value, Ordering::Relaxed);
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -40,6 +68,7 @@ pub struct AppState {
     pub clips: ClipManager,
     pub stream: broadcast::Sender<Vec<u8>>,
     pub processing_drops: Arc<AtomicU64>,
+    pub live_metrics: Arc<LiveMetrics>,
     pub archive_errors: Arc<AtomicU64>,
     pub archive_paused: Arc<std::sync::atomic::AtomicBool>,
     pub archive_last_error: Arc<Mutex<Option<String>>>,
@@ -71,6 +100,7 @@ impl AppState {
             metadata,
             stream,
             processing_drops: Arc::new(AtomicU64::new(0)),
+            live_metrics: Arc::new(LiveMetrics::default()),
             archive_errors: Arc::new(AtomicU64::new(0)),
             archive_paused: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             archive_last_error: Arc::new(Mutex::new(None)),
@@ -167,6 +197,11 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
     });
     let archive_paused = state.archive_paused.load(Ordering::Relaxed);
     let archive_last_error = state.archive_last_error.lock().clone();
+    let metrics = &state.live_metrics;
+    let average_ms = |total: &AtomicU64, count: &AtomicU64| {
+        let count = count.load(Ordering::Relaxed);
+        (count > 0).then(|| total.load(Ordering::Relaxed) as f64 / count as f64 / 1_000_000.0)
+    };
     let free_percent = if total_bytes == 0 {
         None
     } else {
@@ -177,6 +212,26 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
         "pipeline": pipeline.summary(),
         "processing_queue_drops": state.processing_drops.load(Ordering::Relaxed),
         "websocket_clients": state.web_clients.load(Ordering::Relaxed),
+        "live": {
+            "udp_datagrams": metrics.udp_datagrams.load(Ordering::Relaxed),
+            "udp_invalid": metrics.udp_invalid.load(Ordering::Relaxed),
+            "records_completed": metrics.records_completed.load(Ordering::Relaxed),
+            "records_expired": metrics.records_expired.load(Ordering::Relaxed),
+            "microbatches": metrics.microbatches.load(Ordering::Relaxed),
+            "batched_records": metrics.batched_records.load(Ordering::Relaxed),
+            "queue_depth": metrics.processing_queue_depth.load(Ordering::Relaxed),
+            "queue_high_water": metrics.processing_queue_high_water.load(Ordering::Relaxed),
+            "queue_wait_avg_ms": average_ms(&metrics.queue_wait_ns, &metrics.queue_wait_count),
+            "queue_wait_max_ms": metrics.queue_wait_max_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0,
+            "processing_avg_ms": average_ms(&metrics.processing_ns, &metrics.processing_count),
+            "processing_max_ms": metrics.processing_max_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0,
+            "websocket_coalesced": metrics.websocket_coalesced.load(Ordering::Relaxed),
+            "websocket_lagged": metrics.websocket_lagged.load(Ordering::Relaxed),
+            "websocket_send_avg_ms": average_ms(&metrics.websocket_send_ns, &metrics.websocket_send_count),
+            "websocket_send_max_ms": metrics.websocket_send_max_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0,
+            "websocket_batches": metrics.websocket_send_count.load(Ordering::Relaxed),
+            "websocket_updates": metrics.websocket_updates.load(Ordering::Relaxed)
+        },
         "archive": {"closed_bytes": archive_bytes, "free_bytes": free_bytes, "total_bytes": total_bytes,
             "free_percent": free_percent, "paused": archive_paused,
             "errors": state.archive_errors.load(Ordering::Relaxed), "last_error": archive_last_error},
@@ -321,6 +376,7 @@ async fn stream(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl Int
             state.stream.subscribe(),
             state.web_clients,
             state.topic_demand,
+            state.live_metrics,
         )
     })
 }
@@ -330,6 +386,7 @@ async fn websocket(
     mut receiver: broadcast::Receiver<Vec<u8>>,
     clients: Arc<AtomicU64>,
     demand: Arc<[AtomicU64; 8]>,
+    metrics: Arc<LiveMetrics>,
 ) {
     clients.fetch_add(1, Ordering::Relaxed);
     struct ClientGuard(Arc<AtomicU64>);
@@ -340,6 +397,9 @@ async fn websocket(
     }
     let _guard = ClientGuard(clients);
     let mut topics = HashSet::new();
+    let mut pending = BTreeMap::<String, Vec<u8>>::new();
+    let mut publish = tokio::time::interval(Duration::from_millis(16));
+    publish.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             message = socket.recv() => match message {
@@ -362,13 +422,37 @@ async fn websocket(
                 _ => {}
             },
             message = receiver.recv() => match message {
-                Ok(bytes) => if envelope_topic(&bytes).is_some_and(|topic| topics.contains(&topic))
-                    && socket.send(Message::Binary(bytes.into())).await.is_err() { break; },
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    let _ = socket.send(Message::Close(None)).await;
-                    break;
+                Ok(bytes) => if envelope_topic(&bytes).is_some_and(|topic| topics.contains(&topic)) {
+                    let key = envelope_key(&bytes).unwrap_or_else(|| format!("unknown:{}", pending.len()));
+                    if pending.insert(key, bytes).is_some() {
+                        metrics.websocket_coalesced.fetch_add(1, Ordering::Relaxed);
+                    }
+                },
+                // Live views can skip stale samples; closing here forces the
+                // browser to reset its rolling histories on every brief lag.
+                Err(broadcast::error::RecvError::Lagged(count)) => {
+                    metrics.websocket_lagged.fetch_add(count, Ordering::Relaxed);
                 },
                 Err(broadcast::error::RecvError::Closed) => break,
+            },
+            _ = publish.tick(), if !pending.is_empty() => {
+                let messages = std::mem::take(&mut pending);
+                let updates = messages.len() as u64;
+                let bytes = envelope_batch(messages.into_values());
+                let started = std::time::Instant::now();
+                let sent = matches!(
+                    tokio::time::timeout(
+                        Duration::from_millis(50),
+                        socket.send(Message::Binary(bytes.into()))
+                    ).await,
+                    Ok(Ok(()))
+                );
+                let elapsed = started.elapsed().as_nanos() as u64;
+                metrics.websocket_send_count.fetch_add(1, Ordering::Relaxed);
+                metrics.websocket_updates.fetch_add(updates, Ordering::Relaxed);
+                metrics.websocket_send_ns.fetch_add(elapsed, Ordering::Relaxed);
+                record_max(&metrics.websocket_send_max_ns, elapsed);
+                if !sent { break; }
             }
         }
     }

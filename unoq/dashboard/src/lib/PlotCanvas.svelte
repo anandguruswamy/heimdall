@@ -2,8 +2,9 @@
   import { onMount } from 'svelte';
   import type { PlotFrame } from './types';
 
-  let { frame, label = 'Signal plot', animate = true, webgl = false, axes = 'none' }: { frame: () => PlotFrame; label?: string; animate?: boolean; webgl?: boolean; axes?: 'none'|'bounds'|'full' } = $props();
+  let { frame, revision = 0, label = 'Signal plot', animate = true, webgl = false, axes = 'none' }: { frame: () => PlotFrame; revision?: number; label?: string; animate?: boolean; webgl?: boolean; axes?: 'none'|'bounds'|'full' } = $props();
   let canvas: HTMLCanvasElement;
+  let current = $state<PlotFrame>({});
 
   const ticks = (min: number, max: number) => Array.from({ length: 5 }, (_, index) => max - index * (max - min) / 4);
   const xTicks = (value: PlotFrame) => { const count=Math.max(2,...(value.series ?? []).map((series)=>series.data.length)); return Array.from({length:5},(_,index)=>Math.round(index*(count-1)/4)); };
@@ -20,6 +21,16 @@
     let color = -1;
     let pointSize: WebGLUniformLocation | null = null;
     let lastFrame: PlotFrame | null = null;
+    let cssWidth = canvas.clientWidth;
+    let cssHeight = canvas.clientHeight;
+    let axisSignature = '';
+    let sizeDirty = true;
+    const resize = new ResizeObserver(([entry]) => {
+      cssWidth = entry.contentRect.width;
+      cssHeight = entry.contentRect.height;
+      sizeDirty = true;
+    });
+    resize.observe(canvas);
     const contextLost = (event: Event) => { event.preventDefault(); lastFrame = null; };
     const contextRestored = () => location.reload();
     if (gl) {
@@ -45,9 +56,11 @@
     }
 
     const size = () => {
+      if (!sizeDirty) return false;
+      sizeDirty = false;
       const dpr = Math.min(devicePixelRatio, 2);
-      const w = Math.max(1, Math.floor(canvas.clientWidth * dpr));
-      const h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+      const w = Math.max(1, Math.floor(cssWidth * dpr));
+      const h = Math.max(1, Math.floor(cssHeight * dpr));
       if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; return true; }
       return false;
     };
@@ -103,21 +116,35 @@
       }
       for (const marker of f.markers ?? []) { const x=marker.at*2-1,c=rgb(marker.color),v=new Float32Array([x,-1,...c,x,1,...c]); gl.bufferData(gl.ARRAY_BUFFER,v,gl.STREAM_DRAW); gl.uniform1f(pointSize,1); gl.drawArrays(gl.LINES,0,2); }
     };
-    const loop = (now: number) => { if (now - last >= 33 || !animate) { const resized=size(),f=frame(); if (!document.hidden && (resized || f !== lastFrame)) { gl ? drawGl(f) : draw2d(f); lastFrame=f; } last = now; } if (animate) raf = requestAnimationFrame(loop); };
+    const loop = (now: number) => {
+      if (now - last >= 33 || !animate) {
+        const resized = size();
+         void revision;
+         const value = frame();
+         const nextAxisSignature = axes === 'none' ? '' : `${value.min}|${value.max}|${value.xLabel}|${value.yLabel}|${Math.max(0,...(value.series ?? []).map((series)=>series.data.length))}`;
+         if (nextAxisSignature !== axisSignature) { axisSignature = nextAxisSignature; current = value; }
+        if (!document.hidden && (resized || value !== lastFrame)) {
+          gl ? drawGl(value) : draw2d(value);
+          lastFrame = value;
+        }
+        last = now;
+      }
+      if (animate) raf = requestAnimationFrame(loop);
+    };
     raf = requestAnimationFrame(loop);
-    return () => { cancelAnimationFrame(raf); canvas.removeEventListener('webglcontextlost',contextLost); canvas.removeEventListener('webglcontextrestored',contextRestored); if (gl) { if (buffer) gl.deleteBuffer(buffer); if (program) gl.deleteProgram(program); } };
+    return () => { cancelAnimationFrame(raf); resize.disconnect(); canvas.removeEventListener('webglcontextlost',contextLost); canvas.removeEventListener('webglcontextrestored',contextRestored); if (gl) { if (buffer) gl.deleteBuffer(buffer); if (program) gl.deleteProgram(program); } };
   });
 </script>
 
 <div class="plot" class:bound-axes={axes === 'bounds'} class:full-axes={axes === 'full'}>
   <canvas bind:this={canvas} aria-label={label}></canvas>
-  {#if axes === 'bounds' && frame().min !== undefined && frame().max !== undefined}
-    <div class="y-bounds"><span>{tickLabel(frame().max!)} {frame().yLabel ?? ''}</span><span>{tickLabel(frame().min!)} {frame().yLabel ?? ''}</span></div>
-  {:else if axes === 'full' && frame().min !== undefined && frame().max !== undefined}
-    <div class="y-ticks">{#each ticks(frame().min!, frame().max!) as tick, index}<span style={`top:${index * 25}%`}>{tickLabel(tick)}</span>{/each}</div>
-    <div class="x-ticks">{#each xTicks(frame()) as tick, index}<span style={`left:${index * 25}%`}>{tick}</span>{/each}</div>
+  {#if axes === 'bounds' && current.min !== undefined && current.max !== undefined}
+    <div class="y-bounds"><span>{tickLabel(current.max)} {current.yLabel ?? ''}</span><span>{tickLabel(current.min)} {current.yLabel ?? ''}</span></div>
+  {:else if axes === 'full' && current.min !== undefined && current.max !== undefined}
+    <div class="y-ticks">{#each ticks(current.min, current.max) as tick, index}<span style={`top:${index * 25}%`}>{tickLabel(tick)}</span>{/each}</div>
+    <div class="x-ticks">{#each xTicks(current) as tick, index}<span style={`left:${index * 25}%`}>{tick}</span>{/each}</div>
   {/if}
-  <span class="x-axis">{frame().xLabel ?? ''}</span><span class="y-axis">{frame().yLabel ?? ''}</span>
+  <span class="x-axis">{current.xLabel ?? ''}</span><span class="y-axis">{current.yLabel ?? ''}</span>
 </div>
 
 <style>

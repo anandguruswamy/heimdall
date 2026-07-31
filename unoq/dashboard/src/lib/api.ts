@@ -1,4 +1,4 @@
-import { decodeEnvelope } from './envelope';
+import { decodeEnvelopes } from './envelope';
 import type { Envelope, StreamStatus, Tab } from './types';
 
 export type BootstrapData = { health?: unknown; topology?: unknown; distanceHistory?: unknown; settings?: unknown; calibration?: unknown };
@@ -78,7 +78,7 @@ export class HeimdallApi {
       if (this.topic === 'live-distance') void this.bootstrapDistanceHistory();
     };
     this.socket.onmessage = (event: MessageEvent<ArrayBuffer>) => {
-      try { this.onFrame(decodeEnvelope(event.data)); }
+      try { const receivedAtMs=performance.now(); for(const envelope of decodeEnvelopes(event.data)){envelope.receivedAtMs=receivedAtMs;this.onFrame(envelope);} }
       catch (error) { this.onError(error instanceof Error ? error.message : 'Invalid telemetry envelope'); }
     };
     this.socket.onerror = () => this.socket?.close();

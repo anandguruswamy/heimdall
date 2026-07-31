@@ -7,11 +7,9 @@
   let { live, nodeCount, revision }: { live:LiveStore; nodeCount:number; revision:number }=$props();
   type Snapshot={id:string;name:string;created:string;ranges:PositionRange[]};
   let mode=$state<'live'|'snapshot'>('live'),source:RangeSource=$state('smoothed'),edgeMode:'residual'|'neutral'|'hidden'=$state('residual'),origin=$state(0),xAxis=$state(1),xyPlane=$state(2),above=$state(3),snapshots=$state<Snapshot[]>([]),snapshotId=$state('');
-  let solveRevision=$state(0),rangesDirty=true;
   const positionSolver=new PositionSolver();
   const nodes=$derived(Array.from({length:nodeCount},(_,i)=>i));
-  $effect(()=>{void revision;rangesDirty=true});
-  const liveRanges=$derived.by(()=>{void solveRevision;return Array.from(live.positionRanges.values()).map((item)=>({...item,window:item.window.slice()}));});
+  const liveRanges=$derived.by(()=>{void revision;return Array.from(live.positionRanges.values()).map((item)=>({...item,window:item.window.slice()}));});
   const snapshot=$derived(snapshots.find((item)=>item.id===snapshotId));
   const rangeState=$derived(mode==='snapshot'&&snapshot?snapshot.ranges:liveRanges);
   const ranges=$derived(selectedRanges(rangeState,source));
@@ -19,7 +17,7 @@
   const solution=$derived(positionSolver.solve(nodeCount,ranges,[origin,xAxis,xyPlane],above));
   const age=(a:number,b:number)=>{const value=rangeState.find((item)=>item.a===Math.min(a,b)&&item.b===Math.max(a,b));return value?Math.max(0,newestRangeEvent-value.eventS):undefined};
   const geometryDocument=$derived.by(()=>({schema:'heimdall-geometry/1',units:'m',revision:`dashboard-${mode}-${Math.round(newestRangeEvent*1000)}`,frame:{name:'dashboard-range-derived',origin:`N${origin} antenna phase centre`,axes:`+X toward N${xAxis}, +Y side selected by N${xyPlane}, +Z side selected by N${above}`},provenance:{source:'UNO Q Board Positions',range_source:source,configuration_revision:revision,newest_event_s:newestRangeEvent,fit_rmse_m:solution.rmse,fit_rank:solution.rank,fit_degrees_of_freedom:solution.degreesOfFreedom,fit_iterations:solution.iterations,fit_converged:solution.converged,pairs:solution.edges.map((edge)=>({a:edge.a,b:edge.b,distance_m:edge.measured,age_s:age(edge.a,edge.b)})),calibration_status:'antenna-delay-not-independently-verified'},nodes:solution.positions.map((point,node_id)=>({node_id,position_m:[point.x,point.y,point.z]}))}));
-  onMount(()=>{try{snapshots=JSON.parse(sessionStorage.getItem('heimdall-position-snapshots')??'[]');snapshotId=snapshots.at(-1)?.id??''}catch{snapshots=[]}const timer=setInterval(()=>{if(rangesDirty){rangesDirty=false;solveRevision++}},100);return()=>clearInterval(timer)});
+  onMount(()=>{try{snapshots=JSON.parse(sessionStorage.getItem('heimdall-position-snapshots')??'[]');snapshotId=snapshots.at(-1)?.id??''}catch{snapshots=[]}});
   function saveSnapshots(){sessionStorage.setItem('heimdall-position-snapshots',JSON.stringify(snapshots))}
   function capture(){const created=new Date().toISOString(),item={id:`${Date.now()}`,name:`Snapshot ${snapshots.length+1} · ${created.slice(11,19)}`,created,ranges:liveRanges};snapshots=[...snapshots,item];snapshotId=item.id;mode='snapshot';saveSnapshots()}
   function removeSnapshot(){snapshots=snapshots.filter((item)=>item.id!==snapshotId);snapshotId=snapshots.at(-1)?.id??'';if(!snapshotId)mode='live';saveSnapshots()}

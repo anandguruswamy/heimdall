@@ -3,9 +3,9 @@ import type { Envelope, TopicKey } from './types';
 const topics: TopicKey[] = ['health', 'distance', 'cir', 'waterfall', 'slow-fft', 'fast-fft', 'cfo', 'calibration'];
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
-export function decodeEnvelope(buffer: ArrayBuffer): Envelope {
-  const bytes = new Uint8Array(buffer);
-  const view = new DataView(buffer);
+export function decodeEnvelope(buffer: ArrayBuffer, byteOffset = 0, byteLength = buffer.byteLength - byteOffset): Envelope {
+  const bytes = new Uint8Array(buffer, byteOffset, byteLength);
+  const view = new DataView(buffer, byteOffset, byteLength);
   const requireRange = (offset: number, length: number) => {
     if (!Number.isSafeInteger(offset) || offset < 0 || offset + length > bytes.length) throw new Error('Truncated HMT1 envelope');
   };
@@ -47,4 +47,21 @@ export function decodeEnvelope(buffer: ArrayBuffer): Envelope {
     droppedEvents: scalar(5) < 0 ? 0 : u32(scalar(5)),
     payload: JSON.parse(text) as unknown
   };
+}
+
+export function decodeEnvelopes(buffer: ArrayBuffer): Envelope[] {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length < 4 || String.fromCharCode(...bytes.subarray(0, 4)) !== 'HMB1') return [decodeEnvelope(buffer)];
+  if (bytes.length < 8) throw new Error('Truncated HMB1 batch');
+  const view = new DataView(buffer), count = view.getUint16(4, true), envelopes: Envelope[] = [];
+  let offset = 8;
+  for (let index = 0; index < count; index++) {
+    if (offset + 4 > bytes.length) throw new Error('Truncated HMB1 item length');
+    const length = view.getUint32(offset, true); offset += 4;
+    if (offset + length > bytes.length) throw new Error('Truncated HMB1 item');
+    envelopes.push(decodeEnvelope(buffer, offset, length));
+    offset += length;
+  }
+  if (offset !== bytes.length) throw new Error('Trailing HMB1 data');
+  return envelopes;
 }

@@ -620,6 +620,32 @@ calibration remains before timestamps can be treated as accurate ranges.
   expected directed links. Host tests pass (55 tests), the ARM64 test binaries
   link, and the deployed binary SHA-256 is
   `4A858180A1AA559D860323565D6E234C7A6E4FF123DC7FDEC0CFD535B1D53C8A`.
+- Windows live-path tuning was deployed on 2026-07-30: strict topic gating
+  prevents distance/health views from running CIR DSP; UDP records are
+  microbatched for at most 2 ms; WebSocket output retains only the newest
+  topic/link/kind value every 16 ms; and dashboard state/rendering is browser
+  frame-coalesced and event-driven. A five-node live sample had zero processing
+  drops and expired records, 0.032 ms average queue wait, 0.392 ms average
+  processing time, and 0.037 ms average WebSocket send time. The server ran at
+  approximately 7% of one CPU core while receiving all 20 directed links.
+- WebSocket delivery was subsequently changed to one `HMB1` binary batch per
+  16 ms interval. A live distance sample carried an average 21.6 latest link
+  updates per browser message, with zero queue drops or expired UDP records;
+  this removes the previous hundreds-to-thousands of individual browser message
+  callbacks per second.
+- The live path returned to the `Ullas` infrastructure network on 2026-07-31:
+  UNO Q `192.168.8.215` forwards to Windows `192.168.8.101:7878`, and the
+  dashboard is at `http://192.168.8.101:8080`. Direct-network probing measured
+  22.1 ms p95 latency with no periodic stalls. The Windows Mobile Hotspot path
+  measured 113-122 ms p95 with recurring 190-210 ms pauses; those pauses were
+  present before server processing and are not caused by dashboard rendering.
+  After retargeting, all 20 directed links advanced with zero processing queue
+  drops and invalid UDP datagrams. Rootless boot remains the existing `@reboot`
+  crontab launcher, with the target in
+  `/home/arduino/.config/heimdall-agent.env`.
+- Remaining UNO Q transport work is deliberately deferred: periodically replay
+  HELLO so a Windows restart does not require restarting the agent, and add a
+  clocked transport timestamp before claiming measured cross-machine latency.
 
 N=5/M=2 is hardware-qualified with all nodes active at 28.571 Hz, including
 lossless steady-state gateway export at the full modeled 187,200 B/s. The next

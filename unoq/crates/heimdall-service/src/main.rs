@@ -20,7 +20,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use heimdall_protocol::live::{LiveFragment, fragment_record};
 use heimdall_service::{
-    api::{self, AppState},
+    api::{self, AppState, record_max},
     archive::{ArchiveWriter, ordered_segments, verify_archive},
     live_agent::{self, AgentState},
     metadata::Metadata,
@@ -239,49 +239,93 @@ fn spawn_udp_receiver(
     state: AppState,
 ) -> Result<thread::JoinHandle<()>> {
     let socket = UdpSocket::bind(bind)?;
-    socket.set_read_timeout(Some(Duration::from_millis(100)))?;
+    socket.set_read_timeout(Some(Duration::from_millis(2)))?;
     Ok(thread::spawn(move || {
         let mut pending: HashMap<(u64, u64), PendingRecord> = HashMap::new();
         let mut active_session = None;
         let mut buffer = [0_u8; 1_500];
+        let mut batch = Vec::with_capacity(64 * 1024);
+        let mut batch_records = 0_u64;
+        let mut batch_started = Instant::now();
         while running.load(Ordering::Acquire) {
-            let Ok((count, _)) = socket.recv_from(&mut buffer) else {
-                pending.retain(|_, record| record.created.elapsed() < Duration::from_millis(100));
-                continue;
-            };
-            let Ok(fragment) = LiveFragment::decode(&buffer[..count]) else {
-                continue;
-            };
-            if active_session != Some(fragment.session_id) {
-                active_session = Some(fragment.session_id);
-                pending.clear();
-                let _ = processing_tx.try_send(ProcessingInput::Reset);
-            }
-            let key = (fragment.session_id, fragment.transport_sequence);
-            let record = pending.entry(key).or_insert_with(|| PendingRecord {
-                fragments: vec![None; fragment.fragment_count as usize],
-                received: 0,
-                created: Instant::now(),
-            });
-            if record.fragments.len() != fragment.fragment_count as usize {
-                pending.remove(&key);
-                continue;
-            }
-            let slot = &mut record.fragments[fragment.fragment_index as usize];
-            if slot.is_none() {
-                *slot = Some(fragment.payload);
-                record.received += 1;
-            }
-            if record.received == record.fragments.len() {
-                let record = pending.remove(&key).unwrap();
-                let bytes: Vec<u8> = record.fragments.into_iter().flatten().flatten().collect();
-                if let Err(TrySendError::Full(_)) =
-                    processing_tx.try_send(ProcessingInput::Data(bytes))
-                {
-                    state.processing_drops.fetch_add(1, Ordering::Relaxed);
+            if let Ok((count, _)) = socket.recv_from(&mut buffer) {
+                state
+                    .live_metrics
+                    .udp_datagrams
+                    .fetch_add(1, Ordering::Relaxed);
+                let Ok(fragment) = LiveFragment::decode(&buffer[..count]) else {
+                    state
+                        .live_metrics
+                        .udp_invalid
+                        .fetch_add(1, Ordering::Relaxed);
+                    continue;
+                };
+                if active_session != Some(fragment.session_id) {
+                    try_enqueue_processing(
+                        &processing_tx,
+                        &state,
+                        std::mem::take(&mut batch),
+                        batch_records,
+                    );
+                    batch_records = 0;
+                    active_session = Some(fragment.session_id);
+                    pending.clear();
+                    if processing_tx.send(ProcessingInput::Reset).is_err() {
+                        break;
+                    }
+                }
+                let key = (fragment.session_id, fragment.transport_sequence);
+                let record = pending.entry(key).or_insert_with(|| PendingRecord {
+                    fragments: vec![None; fragment.fragment_count as usize],
+                    received: 0,
+                    created: Instant::now(),
+                });
+                if record.fragments.len() != fragment.fragment_count as usize {
+                    pending.remove(&key);
+                    state
+                        .live_metrics
+                        .udp_invalid
+                        .fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
+                let slot = &mut record.fragments[fragment.fragment_index as usize];
+                if slot.is_none() {
+                    *slot = Some(fragment.payload);
+                    record.received += 1;
+                }
+                if record.received == record.fragments.len() {
+                    let record = pending.remove(&key).unwrap();
+                    if batch.is_empty() {
+                        batch_started = Instant::now();
+                    }
+                    batch.extend(record.fragments.into_iter().flatten().flatten());
+                    batch_records += 1;
+                    state
+                        .live_metrics
+                        .records_completed
+                        .fetch_add(1, Ordering::Relaxed);
                 }
             }
+
+            let before = pending.len();
+            pending.retain(|_, record| record.created.elapsed() < Duration::from_millis(100));
+            state
+                .live_metrics
+                .records_expired
+                .fetch_add((before - pending.len()) as u64, Ordering::Relaxed);
+            if !batch.is_empty()
+                && (batch.len() >= 64 * 1024 || batch_started.elapsed() >= Duration::from_millis(2))
+            {
+                try_enqueue_processing(
+                    &processing_tx,
+                    &state,
+                    std::mem::replace(&mut batch, Vec::with_capacity(64 * 1024)),
+                    batch_records,
+                );
+                batch_records = 0;
+            }
         }
+        try_enqueue_processing(&processing_tx, &state, batch, batch_records);
     }))
 }
 
@@ -389,12 +433,7 @@ fn spawn_cdc(
                                         &mut processing_buffer,
                                         Vec::with_capacity(16 * 1024),
                                     );
-                                    if let Err(error) =
-                                        processing_tx.try_send(ProcessingInput::Data(batch))
-                                        && matches!(error, TrySendError::Full(_))
-                                    {
-                                        state.processing_drops.fetch_add(1, Ordering::Relaxed);
-                                    }
+                                    try_enqueue_processing(&processing_tx, &state, batch, 0);
                                     last_processing_flush = Instant::now();
                                 }
                             }
@@ -404,12 +443,8 @@ fn spawn_cdc(
                             }
                         }
                     }
-                    if !processing_buffer.is_empty()
-                        && let Err(error) =
-                            processing_tx.try_send(ProcessingInput::Data(processing_buffer))
-                        && matches!(error, TrySendError::Full(_))
-                    {
-                        state.processing_drops.fetch_add(1, Ordering::Relaxed);
+                    if !processing_buffer.is_empty() {
+                        try_enqueue_processing(&processing_tx, &state, processing_buffer, 0);
                     }
                     if let Err(error) = archive.finish() {
                         state.archive_errors.fetch_add(1, Ordering::Relaxed);
@@ -432,7 +467,46 @@ fn spawn_cdc(
 
 enum ProcessingInput {
     Reset,
-    Data(Vec<u8>),
+    Data { bytes: Vec<u8>, enqueued: Instant },
+}
+
+fn try_enqueue_processing(
+    sender: &SyncSender<ProcessingInput>,
+    state: &AppState,
+    bytes: Vec<u8>,
+    records: u64,
+) {
+    if bytes.is_empty() {
+        return;
+    }
+    if records > 0 {
+        state
+            .live_metrics
+            .microbatches
+            .fetch_add(1, Ordering::Relaxed);
+        state
+            .live_metrics
+            .batched_records
+            .fetch_add(records, Ordering::Relaxed);
+    }
+    let depth = state
+        .live_metrics
+        .processing_queue_depth
+        .fetch_add(1, Ordering::Relaxed)
+        + 1;
+    record_max(&state.live_metrics.processing_queue_high_water, depth);
+    if let Err(error) = sender.try_send(ProcessingInput::Data {
+        bytes,
+        enqueued: Instant::now(),
+    }) {
+        state
+            .live_metrics
+            .processing_queue_depth
+            .fetch_sub(1, Ordering::Relaxed);
+        if matches!(error, TrySendError::Full(_)) {
+            state.processing_drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 fn spawn_processor(receiver: Receiver<ProcessingInput>, state: AppState) -> thread::JoinHandle<()> {
@@ -440,11 +514,36 @@ fn spawn_processor(receiver: Receiver<ProcessingInput>, state: AppState) -> thre
         while let Ok(input) = receiver.recv() {
             match input {
                 ProcessingInput::Reset => state.pipeline.lock().reset_connection(),
-                ProcessingInput::Data(bytes) => {
+                ProcessingInput::Data { bytes, enqueued } => {
+                    state
+                        .live_metrics
+                        .processing_queue_depth
+                        .fetch_sub(1, Ordering::Relaxed);
+                    let wait = enqueued.elapsed().as_nanos() as u64;
+                    state
+                        .live_metrics
+                        .queue_wait_count
+                        .fetch_add(1, Ordering::Relaxed);
+                    state
+                        .live_metrics
+                        .queue_wait_ns
+                        .fetch_add(wait, Ordering::Relaxed);
+                    record_max(&state.live_metrics.queue_wait_max_ns, wait);
+                    let started = Instant::now();
                     let messages = state
                         .pipeline
                         .lock()
                         .feed_with_topics(&bytes, state.topic_mask());
+                    let elapsed = started.elapsed().as_nanos() as u64;
+                    state
+                        .live_metrics
+                        .processing_count
+                        .fetch_add(1, Ordering::Relaxed);
+                    state
+                        .live_metrics
+                        .processing_ns
+                        .fetch_add(elapsed, Ordering::Relaxed);
+                    record_max(&state.live_metrics.processing_max_ns, elapsed);
                     for message in messages {
                         let _ = state.stream.send(message);
                     }

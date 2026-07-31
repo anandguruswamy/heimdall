@@ -75,7 +75,10 @@ tracked wrappers under `unoq/tools/` use Rust
 | `unoq/tools/test-host.ps1` | Runs Rust tests as Windows ARM64 executables. |
 | `unoq/tools/test-linux-arm64.ps1` | Cross-compiles test binaries for UNO Q without running them on Windows. |
 | `unoq/tools/build-linux-arm64.ps1 -Release` | Builds `heimdall-service` for `aarch64-unknown-linux-gnu`. |
-| `unoq/tools/run-windows-server.ps1` | Runs the live processing server on the Windows host. |
+| `unoq/tools/build-windows-server.ps1` | Finite optimized native Windows server build. |
+| `unoq/tools/install-windows-server-task.ps1` | Stops, atomically deploys, and starts the direct executable as a Windows logon task. |
+| `unoq/tools/install-windows-firewall.ps1` | Creates elevated TCP/UDP rules for all hotspot firewall profiles. |
+| `unoq/tools/run-windows-server.ps1` | Runs an already-built server in the foreground for diagnostics. |
 
 The Rust target `aarch64-unknown-linux-gnu` must be installed for the pinned
 toolchain. The scripts expect Zig at

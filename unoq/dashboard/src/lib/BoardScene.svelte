@@ -2,8 +2,8 @@
   import { onMount } from 'svelte';
   import { projectBoardPoint, type PositionEdge, type Vec3 } from './positions';
   let { positions, edges, edgeMode = 'residual' }: { positions:Vec3[]; edges:PositionEdge[]; edgeMode:'residual'|'neutral'|'hidden' }=$props();
-  let canvas:HTMLCanvasElement,labels=$state<{id:number;x:number;y:number;visible:boolean}[]>([]),axisLabels=$state<{name:string;x:number;y:number;visible:boolean}[]>([]),yaw=0,pitch=-.65,zoom=1,dirty=true,framedNodeCount=0,viewCenter:Vec3|undefined,viewSpan=1;
-  $effect(()=>{positions;edges;edgeMode;if(positions.length!==framedNodeCount){framedNodeCount=positions.length;viewCenter=undefined}dirty=true;});
+  let canvas:HTMLCanvasElement,labels=$state<{id:number;x:number;y:number;visible:boolean}[]>([]),axisLabels=$state<{name:string;x:number;y:number;visible:boolean}[]>([]),yaw=0,pitch=-.65,zoom=1,dirty=true,framedNodeCount=0,viewCenter:Vec3|undefined,viewSpan=1,requestRender:(()=>void)|undefined;
+  $effect(()=>{positions;edges;edgeMode;if(positions.length!==framedNodeCount){framedNodeCount=positions.length;viewCenter=undefined}dirty=true;requestRender?.()});
   const color=(hex:string)=>[0,1,2].map((i)=>parseInt(hex.slice(1+i*2,3+i*2),16)/255);
   onMount(()=>{
     const gl=canvas.getContext('webgl2',{alpha:false,antialias:true});if(!gl)return;
@@ -19,11 +19,11 @@
       gl.useProgram(program);gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(vertices),gl.STREAM_DRAW);gl.enableVertexAttribArray(p);gl.enableVertexAttribArray(c);gl.vertexAttribPointer(p,2,gl.FLOAT,false,20,0);gl.vertexAttribPointer(c,3,gl.FLOAT,false,20,8);gl.uniform1f(size,1);gl.drawArrays(gl.LINES,0,vertices.length/5);
        const points:number[]=[];for(const q of projected)points.push(q.nx,q.ny,...color('#45e0c1'));gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(points),gl.STREAM_DRAW);gl.uniform1f(size,12*d);gl.drawArrays(gl.POINTS,0,positions.length);labels=projected.map((q,id)=>({id,x:q.x,y:q.y,visible:q.visible}));axisLabels=[['+X',{x:extent,y:0,z:0}],['+Y',{x:0,y:extent,z:0}],['+Z',{x:0,y:0,z:extent}]].map(([name,point])=>{const q=project(point as Vec3,w/d,h/d,center,span);return{name:name as string,x:q.x,y:q.y,visible:q.visible}});
     };
-    let raf=0;const loop=()=>{if(dirty){render();dirty=false}raf=requestAnimationFrame(loop)};loop();const resize=new ResizeObserver(()=>dirty=true);resize.observe(canvas);
-    let dragging=false,lastX=0,lastY=0;const down=(e:PointerEvent)=>{dragging=true;lastX=e.clientX;lastY=e.clientY;canvas.setPointerCapture(e.pointerId)},move=(e:PointerEvent)=>{if(!dragging)return;yaw+=(e.clientX-lastX)*.008;pitch=Math.max(-Math.PI/2,Math.min(Math.PI/2,pitch+(e.clientY-lastY)*.008));lastX=e.clientX;lastY=e.clientY;dirty=true},up=()=>dragging=false,wheel=(e:WheelEvent)=>{e.preventDefault();zoom=Math.max(.25,Math.min(5,zoom*Math.exp(-e.deltaY*.001)));dirty=true};canvas.addEventListener('pointerdown',down);canvas.addEventListener('pointermove',move);canvas.addEventListener('pointerup',up);canvas.addEventListener('wheel',wheel,{passive:false});return()=>{cancelAnimationFrame(raf);resize.disconnect();gl.deleteBuffer(buffer);gl.deleteProgram(program)};
+    let raf=0;const schedule=()=>{dirty=true;if(!raf)raf=requestAnimationFrame(()=>{raf=0;if(dirty){render();dirty=false}})};requestRender=schedule;schedule();const resize=new ResizeObserver(schedule);resize.observe(canvas);
+    let dragging=false,lastX=0,lastY=0;const down=(e:PointerEvent)=>{dragging=true;lastX=e.clientX;lastY=e.clientY;canvas.setPointerCapture(e.pointerId)},move=(e:PointerEvent)=>{if(!dragging)return;yaw+=(e.clientX-lastX)*.008;pitch=Math.max(-Math.PI/2,Math.min(Math.PI/2,pitch+(e.clientY-lastY)*.008));lastX=e.clientX;lastY=e.clientY;schedule()},up=()=>dragging=false,wheel=(e:WheelEvent)=>{e.preventDefault();zoom=Math.max(.25,Math.min(5,zoom*Math.exp(-e.deltaY*.001)));schedule()};canvas.addEventListener('pointerdown',down);canvas.addEventListener('pointermove',move);canvas.addEventListener('pointerup',up);canvas.addEventListener('wheel',wheel,{passive:false});return()=>{requestRender=undefined;cancelAnimationFrame(raf);resize.disconnect();gl.deleteBuffer(buffer);gl.deleteProgram(program)};
   });
-   function reset(){yaw=0;pitch=-.65;zoom=1;viewCenter=undefined;dirty=true}
-   function top(){yaw=0;pitch=-Math.PI/2;zoom=1;viewCenter=undefined;dirty=true}
+    function reset(){yaw=0;pitch=-.65;zoom=1;viewCenter=undefined;dirty=true;requestRender?.()}
+    function top(){yaw=0;pitch=-Math.PI/2;zoom=1;viewCenter=undefined;dirty=true;requestRender?.()}
 </script>
 <div class="scene"><canvas bind:this={canvas} aria-label="Interactive 3D board positions"></canvas><div class="labels">{#each labels as item}{#if item.visible}<span style={`left:${item.x}px;top:${item.y}px`}>N{item.id}</span>{/if}{/each}{#each axisLabels as item}{#if item.visible}<span class="axis" style={`left:${item.x}px;top:${item.y}px`}>{item.name}</span>{/if}{/each}</div><div class="hint">DRAG ORBIT · WHEEL ZOOM</div><div class="view-buttons"><button onclick={top}>TOP +Z</button><button onclick={reset}>RESET 3D</button></div></div>
 <style>

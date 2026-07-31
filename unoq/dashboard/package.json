@@ -9,6 +9,7 @@
     "test:positions": "node --experimental-strip-types --test scripts/position-solver.test.ts",
     "build": "vite build",
     "audit:live": "node scripts/live-tab-audit.mjs",
+    "audit:latency": "node scripts/live-latency-audit.mjs",
     "preview": "vite preview"
   },
   "devDependencies": {

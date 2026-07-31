@@ -19,6 +19,7 @@
   let distanceMode: 'ss'|'ds'|'both' = $state('both');
   let distanceSmoothed = $state(true);
   let distanceCensorNegative = $state(false);
+  let distanceHalfRangeCm = $state(10);
   let waterfallFixedScale = $state(true);
   let waterfallScaleMin = $state(-60);
   let waterfallScaleMax = $state(-10);
@@ -47,13 +48,24 @@
   let clipName = $state('');
   let clipNote = $state('');
   let compactMode = $state(false);
+  let uiCommitLatencyMs = $state(0);
   let waterfallSeconds = $state(5);
   let slowFftSeconds = $state(2);
   let settingsTimer: ReturnType<typeof setTimeout> | undefined;
   let healthTimer: ReturnType<typeof setInterval> | undefined;
   let swipeStartX: number | null = null;
   let api = $state.raw(null as unknown as HeimdallApi);
-  const live = new LiveStore(() => liveRevision++);
+  let revisionRaf = 0;
+  function requestUiRevision() {
+    if (revisionRaf) return;
+    revisionRaf = requestAnimationFrame(() => {
+      revisionRaf = 0;
+      live.flushFrames();
+      if (live.latestReceivedAtMs) uiCommitLatencyMs = performance.now() - live.latestReceivedAtMs;
+      liveRevision++;
+    });
+  }
+  const live = new LiveStore(requestUiRevision);
   const CIR_DB_OFFSET = -10 - 20 * Math.log10(11.2);
 
   const links = $derived(linksFor(nodeCount));
@@ -62,6 +74,7 @@
   const calibrationLive = $derived.by(() => { void liveRevision; return live.calibration?.live && typeof live.calibration.live === 'object' ? live.calibration.live as Record<string, unknown> : null; });
   const EMPTY_FRAME: PlotFrame = { series: [], min: 0, max: 1 };
   const dbFrameCache = new WeakMap<PlotFrame, Map<string, PlotFrame>>();
+  const distanceFrameCache = new WeakMap<PlotFrame, Map<string, PlotFrame>>();
   let calibrationFrameSource: unknown;
   let cachedCalibrationFrame: PlotFrame = EMPTY_FRAME;
 
@@ -81,8 +94,7 @@
       }
       let frame = data?.[topic];
       if (topic === 'distance' && frame?.series) {
-        frame = { ...frame, series: frame.series.filter((series) => (distanceMode === 'both' || series.ranging === distanceMode) && (distanceSmoothed || !series.smoothed)) };
-        if (distanceCensorNegative) frame = censorNegativeDistance(frame);
+        frame = distanceDisplayFrame(frame);
       }
       if (topic === 'fast-fft' && periodogramMode && frame?.series?.[0]) {
         const original = frame.series[0].data;
@@ -107,18 +119,40 @@
     };
   }
 
-  function censorNegativeDistance(frame: PlotFrame): PlotFrame {
+  function distanceDisplayFrame(frame: PlotFrame): PlotFrame {
+    const key = `${distanceMode}:${distanceSmoothed}:${distanceCensorNegative}:${distanceHalfRangeCm}`;
+    const cached = distanceFrameCache.get(frame)?.get(key);
+    if (cached) return cached;
+    const series = frame.series?.filter((item) => (distanceMode === 'both' || item.ranging === distanceMode) && (distanceSmoothed || !item.smoothed));
+    const filtered = distanceCensorNegative
+      ? censorNegativeDistance({ ...frame, series }, distanceHalfRangeCm)
+      : centeredDistanceRange(frame, series, distanceHalfRangeCm);
+    const variants = distanceFrameCache.get(frame) ?? new Map<string, PlotFrame>();
+    variants.set(key, filtered); distanceFrameCache.set(frame, variants);
+    return filtered;
+  }
+
+  function centeredDistanceRange(frame: PlotFrame, series: PlotFrame['series'], halfRangeCm: number): PlotFrame {
+    const ds = series?.find((item) => item.ranging === 'ds' && item.smoothed)?.data;
+    const candidates = ds ? [ds] : series?.map((item) => item.data) ?? [];
+    let center: number | undefined;
+    for (const values of candidates) {
+      for (let index = values.length - 1; index >= 0; index--) {
+        if (Number.isFinite(values[index])) { center=values[index]; break; }
+      }
+      if (center !== undefined) break;
+    }
+    if (center === undefined) return { ...frame, series, min: 0, max: halfRangeCm * 2 };
+    return { ...frame, series, min: center - halfRangeCm, max: center + halfRangeCm };
+  }
+
+  function censorNegativeDistance(frame: PlotFrame, halfRangeCm: number): PlotFrame {
     const series = frame.series?.map((item) => {
       const data = new Float32Array(item.data.length);
       for (let i = 0; i < item.data.length; i++) data[i] = item.data[i] < 0 ? Number.NaN : item.data[i];
       return { ...item, data };
     });
-    const ds = series?.find((item) => item.ranging === 'ds' && item.smoothed)?.data;
-    const values = (ds ? Array.from(ds) : series?.flatMap((item) => Array.from(item.data)) ?? []).filter(Number.isFinite).sort((a,b) => a-b);
-    if (!values.length) return { ...frame, series, min: 0, max: 10 };
-    const middle = Math.floor(values.length / 2);
-    const center = values.length % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2;
-    return { ...frame, series, min: center - 10, max: center + 10 };
+    return centeredDistanceRange(frame, series, halfRangeCm);
   }
 
   function toDbFrame(frame: PlotFrame, offset = 0, fixedBounds?: [number,number]): PlotFrame {
@@ -244,9 +278,7 @@
 
   function headerRound() {
     void liveRevision;
-    let round = 0;
-    live.links.forEach((link) => Object.values(link.payloads ?? {}).forEach((payload) => { const sample=payload?.sample as Record<string,unknown>|undefined; round=Math.max(round,Number(payload?.round ?? sample?.round ?? 0)); }));
-    return round ? round.toLocaleString() : '—';
+    return live.currentRound === undefined ? '—' : live.currentRound.toLocaleString();
   }
 
   function headerRate() {
@@ -272,7 +304,7 @@
       [time,'RX',`Parser CRC ${Number(parser?.crc_failures??0)} · framing ${Number(parser?.framing_errors??0)} · sequence gaps ${Number(parser?.sequence_gaps??0)}`,errors?'warn':'ok'],
       [time,'CFG',config ? `N=${Number(config.n_nodes??nodeCount)} · CH${Number(config.channel??9)} · configuration epoch ${Number(pipeline?.configuration_epoch??live.topology?.configuration_epoch??0)}` : 'Awaiting radio configuration','info'],
       [time,'NET',`Links ${Number(pipeline?.links_with_samples??0)} / ${Number(pipeline?.expected_links??links.length)} · processing epoch ${Number(pipeline?.processing_epoch??live.topology?.processing_epoch??0)}`,'info'],
-      [time,'SYS',`Clients ${Number(live.health?.websocket_clients??0)} · queue drops ${Number(live.health?.processing_queue_drops??0)} · RSS ${(Number((live.health?.process as Record<string,unknown>|undefined)?.rss_bytes??0)/1_000_000).toFixed(1)} MB`,'info'],
+      [time,'SYS',`Clients ${Number(live.health?.websocket_clients??0)} · queue drops ${Number(live.health?.processing_queue_drops??0)} · UI commit ${uiCommitLatencyMs.toFixed(1)} ms · RSS ${(Number((live.health?.process as Record<string,unknown>|undefined)?.rss_bytes??0)/1_000_000).toFixed(1)} MB`,'info'],
       [time,'DSK',`Archive ${(Number(archive.closed_bytes??0)/1_000_000).toFixed(1)} MB · free ${Number(archive.free_percent??0).toFixed(1)}%${archive.last_error ? ` · ${String(archive.last_error)}` : ''}`,archive.paused===true?'warn':'ok']
     ];
   }
@@ -409,16 +441,16 @@
         if (liveState?.status === 'complete') { snapshotState='complete'; snapshotProgress=100; }
         if (stored?.solution && typeof stored.solution === 'object') calibrationSolution=stored.solution as Record<string,unknown>;
       }
-      backendMessage = data.health || data.topology || data.settings ? 'Backend connected' : 'Backend unavailable · no live data'; liveRevision++;
-    }, (message) => { live.lastError = message; backendMessage = message; liveRevision++; }, () => {
+      backendMessage = data.health || data.topology || data.settings ? 'Backend connected' : 'Backend unavailable · no live data'; requestUiRevision();
+    }, (message) => { live.lastError = message; backendMessage = message; requestUiRevision(); }, () => {
       live.resetStream();
       backendMessage = 'Resynchronizing live state';
     });
     void api.getClips().then((value) => { clips = Array.isArray(value) ? value as Record<string,unknown>[] : []; });
     api.subscribe(active);
     api.connect();
-    healthTimer=setInterval(async()=>{ if(active!=='Network Health') return; try { const [health,topology]=await Promise.all([api.get('/health'),api.get('/topology')]); live.health=health as Record<string,unknown>; live.loadTopology(topology); liveRevision++; } catch {} },2_000);
-    return () => { clearTimeout(settingsTimer); clearInterval(healthTimer); compact.removeEventListener('change', updateCompact); api.close(); };
+    healthTimer=setInterval(async()=>{ if(active!=='Network Health') return; try { const [health,topology]=await Promise.all([api.get('/health'),api.get('/topology')]); live.health=health as Record<string,unknown>; live.loadTopology(topology); requestUiRevision(); } catch {} },500);
+    return () => { clearTimeout(settingsTimer); clearInterval(healthTimer); if(revisionRaf)cancelAnimationFrame(revisionRaf); compact.removeEventListener('change', updateCompact); api.close(); };
   });
 </script>
 
@@ -457,6 +489,7 @@
           <div class="segmented" aria-label="Ranging series"><button class:active={distanceMode === 'ss'} onclick={() => distanceMode = 'ss'}>SS-TWR</button><button class:active={distanceMode === 'ds'} onclick={() => distanceMode = 'ds'}>DS-TWR</button><button class:active={distanceMode === 'both'} onclick={() => distanceMode = 'both'}>Both</button></div>
           <label class="display-toggle"><input type="checkbox" bind:checked={distanceSmoothed} />SMOOTHED LINES</label>
           <label class="display-toggle"><input type="checkbox" bind:checked={distanceCensorNegative} />CENSOR NEGATIVE</label>
+          <label class="display-toggle">Y RANGE<select aria-label="Distance y-axis range" bind:value={distanceHalfRangeCm}>{#each [10,20,50,100,200] as value}<option value={value}>+/- {value} cm</option>{/each}</select></label>
         {:else if active === 'Fast-Time FFT'}
           <div class="segmented" aria-label="FFT display"><button class:active={!phaseMode && !periodogramMode} onclick={() => { phaseMode = false; periodogramMode = false; }}>Magnitude</button><button class:active={!periodogramMode && phaseMode} onclick={() => { phaseMode = true; periodogramMode = false; }}>Phase</button><button class:active={periodogramMode} onclick={() => { phaseMode = false; periodogramMode = true; }}>Periodogram</button></div>
         {:else if active === 'CFO'}
@@ -497,7 +530,7 @@
       <section class="cal-layout">
         <article class="panel pair-matrix"><header><span>UNDIRECTED PAIRS</span><b>{calibrationLive?.status ?? 'idle'}</b></header><div>{#each calibrationPairs as link}<button class:active={calibrationPair === link.id} onclick={() => calibrationPair = link.id}><span>{link.from}↔{link.to}</span>{#if pairValue(link.id) !== undefined}<b>{((pairValue(link.id) ?? 0)*100).toFixed(2)}</b><small>cm bias</small>{:else}<b>{referencesM[link.id] || '—'}</b><small>m ref</small>{/if}</button>{/each}</div></article>
         <article class="panel editor"><header><span>CALIBRATION CAPTURE</span><b>{snapshotState.toUpperCase()}</b></header><button class="snapshot" onclick={takeSnapshot} disabled={snapshotState === 'capturing'}>START ONE 10 SECOND SNAPSHOT</button><div class="capture-progress"><i style={`width:${snapshotProgress}%`}></i></div><div class="pair-label">PAIR <span>{calibrationPair.replace('>', ' ↔ ')}</span></div><label>TAPE REFERENCE <span>metres</span><input value={referencesM[calibrationPair] ?? ''} oninput={(e)=>referencesM={...referencesM,[calibrationPair]:e.currentTarget.value}} inputmode="decimal" min="0.01" type="number" step="0.001" placeholder="5.000" /></label><button class="snapshot" onclick={solveCalibration} disabled={snapshotState !== 'complete'}>SOLVE REFERENCES</button><div class="offset-readout"><span>BOARD OFFSETS</span><b>{boardOffsets() || 'Solve to calculate offsets'}</b><span>RESIDUALS</span><b>{residualSummary() || 'No solved residuals'}</b><span>FIT RMSE / REGULARIZATION</span><b>{calibrationSolution ? `${(Number(calibrationSolution.residual_rmse_m)*100).toFixed(2)} cm${calibrationSolution.poor_fit ? ' · WARNING > 5 cm' : ''} · λ ${Number(calibrationSolution.regularization).toExponential(1)}` : 'Not solved'}</b></div><button class="primary" onclick={applyCalibration} disabled={!calibrationSolution || calibrationSolution.has_full_rank !== true}>REVIEW AND APPLY FULL-RANK SOLUTION</button><button class="snapshot" onclick={rollbackCalibration}>ROLL BACK PREVIOUS CALIBRATION</button><p class:error={snapshotState === 'error' || calibrationSolution?.poor_fit === true || (calibrationSolution !== null && calibrationSolution.has_full_rank !== true)}>{calibrationSolution !== null && calibrationSolution.has_full_rank !== true ? 'More independent pair references are required before apply.' : backendMessage}</p></article>
-        <article class="panel preview"><header><span>FIT PREVIEW</span><b>RESIDUAL / CENTIMETRES</b></header><div class="preview-plot"><PlotCanvas frame={calibrationPreview} label="Calibration residual preview" /></div><div class="fit-stats"><div><span>RANK</span><b>{Number(calibrationSolution?.rank ?? 0)} / {Number(calibrationSolution?.columns ?? nodeCount)}</b></div><div><span>CONDITION</span><b>{Number(calibrationSolution?.condition_number ?? 0).toFixed(1)}</b></div><div><span>NEXT PAIR</span><b>{recommendedPair()}</b></div></div></article>
+        <article class="panel preview"><header><span>FIT PREVIEW</span><b>RESIDUAL / CENTIMETRES</b></header><div class="preview-plot"><PlotCanvas frame={calibrationPreview} revision={liveRevision} label="Calibration residual preview" /></div><div class="fit-stats"><div><span>RANK</span><b>{Number(calibrationSolution?.rank ?? 0)} / {Number(calibrationSolution?.columns ?? nodeCount)}</b></div><div><span>CONDITION</span><b>{Number(calibrationSolution?.condition_number ?? 0).toFixed(1)}</b></div><div><span>NEXT PAIR</span><b>{recommendedPair()}</b></div></div></article>
       </section>
     {:else}
       <section class="link-workspace">
@@ -508,7 +541,7 @@
           </aside>
           <article class="mobile-detail panel" onpointerdown={(event)=>swipeStartX=event.clientX} onpointerup={(event)=>finishLinkSwipe(event.clientX)} onpointercancel={()=>swipeStartX=null}>
             <header><span>N{selected.from} → N{selected.to}</span><b>{linkMetric(selected)} cm</b></header>
-            <div><PlotCanvas frame={plotFor(active, selected)} label={`${active} selected link`} webgl axes={active === 'Live Distance' ? 'bounds' : 'none'} /></div>
+            <div><PlotCanvas frame={plotFor(active, selected)} revision={liveRevision} label={`${active} selected link`} webgl axes={active === 'Live Distance' ? 'bounds' : 'none'} /></div>
             <footer>{#each mobileLegend() as item}<span>{item}</span>{/each}</footer>
           </article>
         {:else}
@@ -516,7 +549,7 @@
             {#each links as link}
               <button class="link-cell" onclick={() => { selectedId = link.id; focused = link; }} aria-label={`Open ${active} for node ${link.from} to node ${link.to}`}>
                 <header><b>N{link.from}<i>→</i>N{link.to}</b><span>{linkMetric(link)} cm</span></header>
-                <div class="cell-plot"><PlotCanvas frame={plotFor(active, link)} label={`${active}, node ${link.from} to node ${link.to}`} axes={active === 'Live Distance' ? 'bounds' : 'none'} /></div>
+                <div class="cell-plot"><PlotCanvas frame={plotFor(active, link)} revision={liveRevision} label={`${active}, node ${link.from} to node ${link.to}`} axes={active === 'Live Distance' ? 'bounds' : 'none'} /></div>
                 <footer><span>{linkFooter(link)}</span><i></i></footer>
               </button>
             {/each}
@@ -533,7 +566,7 @@
   <div class="focus-backdrop" role="presentation" onclick={(e) => { if (e.target === e.currentTarget) focused = null; }}>
     <div class="focus-panel" role="dialog" aria-modal="true" tabindex="-1" aria-label={`Focused link ${focused.from} to ${focused.to}`}>
       <header><div><p>{active.toUpperCase()}</p><h2>NODE {focused.from} <i>→</i> NODE {focused.to}</h2></div><div><strong>{linkMetric(focused)} cm</strong><button onclick={() => focused = null} aria-label="Close focus view">CLOSE</button></div></header>
-      <div class="focus-plot"><PlotCanvas frame={plotFor(active === 'Network Health' ? 'Live Distance' : active, focused)} label="Focused link plot" webgl axes={active === 'Live Distance' || active === 'Network Health' ? 'full' : 'none'} /></div>
+      <div class="focus-plot"><PlotCanvas frame={plotFor(active === 'Network Health' ? 'Live Distance' : active, focused)} revision={liveRevision} label="Focused link plot" webgl axes={active === 'Live Distance' || active === 'Network Health' ? 'full' : 'none'} /></div>
       <footer><span>SS RAW <b>{distanceValue(focused,['raw_ss_cm','raw_ss'])}</b></span><span>SS SMOOTHED <b>{distanceValue(focused,['smoothed_ss_cm','smoothed_ss'])}</b></span><span>DS-TWR <b>{distanceValue(focused,['smoothed_ds_cm','smoothed_ds','raw_ds_cm','raw_ds'])}</b></span><span>QUALITY <b>{live.links.get(focused.id)?.quality ?? '—'}</b></span></footer>
     </div>
   </div>

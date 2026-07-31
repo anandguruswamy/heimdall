@@ -36,6 +36,7 @@ pub struct Pipeline {
     canonical: CanonicalProcessor,
     cfo: DirectionalCfoIntegrator,
     links: BTreeMap<(u8, u8), LinkState>,
+    link_activity: BTreeMap<(u8, u8), LinkActivity>,
     pairs: BTreeMap<(u8, u8), PairState>,
     clock: RoundClock,
     config: Option<ConfigInfo>,
@@ -56,16 +57,20 @@ struct LinkState {
     reference: CirReference,
     reference_marker_raw: Option<f64>,
     cir: Vec<CirFrame>,
-    observations: u64,
-    first_event_s: Option<f64>,
-    latest_event_s: Option<f64>,
     last_slow_fft_s: Option<f64>,
-    latest_cfo_ppm: Option<f64>,
     cfo_history: Vec<(f64, f64, f64)>,
     latest_fast_fft: Option<Value>,
     latest_slow_fft: Option<Value>,
     waterfall_pending_spike: bool,
     waterfall_persistent_change: bool,
+}
+
+#[derive(Default)]
+struct LinkActivity {
+    observations: u64,
+    first_event_s: Option<f64>,
+    latest_event_s: Option<f64>,
+    latest_cfo_ppm: Option<f64>,
 }
 
 #[derive(Clone)]
@@ -222,6 +227,7 @@ pub struct PipelineSummary {
     pub expected_links: usize,
     pub configuration_epoch: u64,
     pub processing_epoch: u64,
+    pub current_round: Option<u32>,
     pub config: Option<ConfigInfo>,
     pub parser: ParserHealth,
 }
@@ -300,6 +306,10 @@ impl RoundClock {
         }
         (tick, tick as f64 * self.superslot_s)
     }
+
+    fn current_round(&self) -> Option<u32> {
+        self.anchor_k
+    }
 }
 
 impl Default for Pipeline {
@@ -316,6 +326,7 @@ impl Pipeline {
             canonical: CanonicalProcessor::new(),
             cfo: DirectionalCfoIntegrator::new(settings.cfo_half_life_s),
             links: BTreeMap::new(),
+            link_activity: BTreeMap::new(),
             pairs: BTreeMap::new(),
             clock: RoundClock::default(),
             config: None,
@@ -342,6 +353,7 @@ impl Pipeline {
         self.canonical = CanonicalProcessor::new();
         self.config = None;
         self.links.clear();
+        self.link_activity.clear();
         self.pairs.clear();
         self.cfo = DirectionalCfoIntegrator::new(self.settings.cfo_half_life_s);
         self.clock = RoundClock::default();
@@ -362,6 +374,22 @@ impl Pipeline {
                         if output.configuration_changed {
                             self.configure(hello);
                         }
+                    }
+                    if let DecodedRecord::CycleSummary(summary) = &output.decoded
+                        && topics & Topic::Health.bit() != 0
+                    {
+                        messages.push(self.message(
+                            Topic::Health,
+                            json!({
+                                "round": summary.k_cycle_start,
+                                "cycle_index": summary.cycle_index,
+                                "frames_received": summary.frames_received,
+                                "frames_expected": summary.frames_expected,
+                                "fcs_errors": summary.fcs_errors,
+                                "validation_rejects": summary.validation_rejects,
+                                "usb_queue_drops": summary.usb_queue_drops
+                            }),
+                        ));
                     }
                     for observation in output.observations {
                         messages.extend(self.consume_canonical_inner(observation, topics));
@@ -394,6 +422,7 @@ impl Pipeline {
         });
         self.configuration_epoch += 1;
         self.links.clear();
+        self.link_activity.clear();
         self.pairs.clear();
         self.cfo = DirectionalCfoIntegrator::new(self.settings.cfo_half_life_s);
         self.calibration = None;
@@ -421,6 +450,19 @@ impl Pipeline {
         let cfo_ratio = observation.cfo_raw as f64 / (1_u64 << 26) as f64;
         let cfo_filtered = self.cfo.update(from as u32, to as u32, event_s, cfo_ratio);
         let evidence_id = (observation.usb_sequence as u64) << 32 | observation.observed_k as u64;
+        let activity = self.link_activity.entry((from, to)).or_default();
+        activity.observations += 1;
+        activity.first_event_s = Some(
+            activity
+                .first_event_s
+                .map_or(event_s, |value| value.min(event_s)),
+        );
+        activity.latest_event_s = Some(
+            activity
+                .latest_event_s
+                .map_or(event_s, |value| value.max(event_s)),
+        );
+        activity.latest_cfo_ppm = Some(cfo_filtered * 1_000_000.0);
 
         let mut messages = Vec::new();
         if topics & Topic::Cfo.bit() != 0 {
@@ -434,7 +476,9 @@ impl Pipeline {
                 }),
             ));
         }
-        if observation.obs_flags & 0x01 != 0 {
+        let cir_topics =
+            Topic::Cir.bit() | Topic::Waterfall.bit() | Topic::FastFft.bit() | Topic::SlowFft.bit();
+        if observation.obs_flags & 0x01 != 0 && topics & cir_topics != 0 {
             messages.extend(self.consume_cir(
                 &observation,
                 event_tick,
@@ -489,11 +533,7 @@ impl Pipeline {
             reference: CirReference::new(reference_mode),
             reference_marker_raw: None,
             cir: Vec::new(),
-            observations: 0,
-            first_event_s: None,
-            latest_event_s: None,
             last_slow_fft_s: None,
-            latest_cfo_ppm: None,
             cfo_history: Vec::new(),
             latest_fast_fft: None,
             latest_slow_fft: None,
@@ -602,16 +642,6 @@ impl Pipeline {
             let excess = link.cir.len() - MAX_CIR_FRAMES;
             link.cir.drain(..excess);
         }
-        link.observations += 1;
-        link.first_event_s = Some(
-            link.first_event_s
-                .map_or(event_s, |first| first.min(event_s)),
-        );
-        link.latest_event_s = Some(
-            link.latest_event_s
-                .map_or(event_s, |last| last.max(event_s)),
-        );
-        link.latest_cfo_ppm = Some(cfo_filtered * 1_000_000.0);
         let cfo_sample = (
             event_s,
             observation.cfo_raw as f64 / (1_u64 << 26) as f64 * 1_000_000.0,
@@ -985,8 +1015,13 @@ impl Pipeline {
         }
     }
 
-    fn message(&mut self, topic: Topic, payload: Value) -> Vec<u8> {
+    fn message(&mut self, topic: Topic, mut payload: Value) -> Vec<u8> {
         self.stream_sequence += 1;
+        if let Some(object) = payload.as_object_mut()
+            && let Some(round) = self.clock.current_round()
+        {
+            object.insert("current_round".to_owned(), json!(round));
+        }
         let payload = serde_json::to_vec(&payload).unwrap_or_default();
         envelope(
             topic,
@@ -1223,10 +1258,11 @@ impl Pipeline {
             observations: self.observations,
             prehello_skipped: self.prehello_skipped,
             rejected: self.rejected,
-            links_with_samples: self.links.len(),
+            links_with_samples: self.link_activity.len(),
             expected_links: nodes.saturating_mul(nodes.saturating_sub(1)),
             configuration_epoch: self.configuration_epoch,
             processing_epoch: self.processing_epoch,
+            current_round: self.clock.current_round(),
             config: self.config.clone(),
             parser: parser_health(self.parser.stats(), self.parser.buffered_len()),
         }
@@ -1234,7 +1270,7 @@ impl Pipeline {
 
     pub fn topology(&self) -> Value {
         let Some(config) = &self.config else {
-            return json!({"config": null, "links": [], "parser": parser_health(self.parser.stats(), self.parser.buffered_len())});
+            return json!({"config": null, "current_round": self.clock.current_round(), "links": [], "parser": parser_health(self.parser.stats(), self.parser.buffered_len())});
         };
         let mut links = Vec::new();
         for from in 0..config.n_nodes {
@@ -1243,16 +1279,17 @@ impl Pipeline {
                     continue;
                 }
                 let state = self.links.get(&(from, to));
-                let span = state
-                    .and_then(|state| Some(state.latest_event_s? - state.first_event_s?))
+                let activity = self.link_activity.get(&(from, to));
+                let span = activity
+                    .and_then(|activity| Some(activity.latest_event_s? - activity.first_event_s?))
                     .unwrap_or(0.0);
                 let pair = self.pairs.get(&pair_key(from, to));
                 links.push(json!({
                     "from": from, "to": to, "id": format!("{from}>{to}"),
-                    "observations": state.map_or(0, |state| state.observations),
-                    "rate_hz": if span > 0.0 { state.map_or(0.0, |state| (state.observations.saturating_sub(1)) as f64 / span) } else { 0.0 },
-                    "latest_event_s": state.and_then(|state| state.latest_event_s),
-                    "cfo_ppm": state.and_then(|state| state.latest_cfo_ppm),
+                    "observations": activity.map_or(0, |activity| activity.observations),
+                    "rate_hz": if span > 0.0 { activity.map_or(0.0, |activity| (activity.observations.saturating_sub(1)) as f64 / span) } else { 0.0 },
+                    "latest_event_s": activity.and_then(|activity| activity.latest_event_s),
+                    "cfo_ppm": activity.and_then(|activity| activity.latest_cfo_ppm),
                     "cfo_history": state.map_or(0, |state| state.cfo_history.len()),
                     "cir_history": state.map_or(0, |state| state.cir.len()),
                     "latest_cir": state.and_then(|state| state.cir.last()).map(|frame| json!({
@@ -1267,7 +1304,7 @@ impl Pipeline {
         }
         json!({
             "config": config, "configuration_epoch": self.configuration_epoch,
-            "processing_epoch": self.processing_epoch, "settings": self.settings,
+            "processing_epoch": self.processing_epoch, "current_round": self.clock.current_round(), "settings": self.settings,
             "host_offsets": self.host_offsets, "links": links,
             "parser": parser_health(self.parser.stats(), self.parser.buffered_len())
         })
@@ -2166,6 +2203,22 @@ mod tests {
     }
 
     #[test]
+    fn distance_demand_skips_cir_processing() {
+        let mut pipeline = Pipeline::new();
+        pipeline.configure(&hello_record());
+        pipeline.consume_canonical_inner(observation(0, 1, 10, 0, 100, 1), Topic::Distance.bit());
+        let messages = pipeline
+            .consume_canonical_inner(observation(1, 0, 11, 1100, 1200, 2), Topic::Distance.bit());
+        assert!(pipeline.links.is_empty());
+        assert!(
+            messages
+                .iter()
+                .all(|message| crate::telemetry::envelope_topic(message) == Some(Topic::Distance))
+        );
+        assert_eq!(pipeline.summary().current_round, Some(11));
+    }
+
+    #[test]
     fn invalid_cir_is_not_admitted() {
         let mut pipeline = Pipeline::new();
         pipeline.configure(&hello_record());
@@ -2213,11 +2266,7 @@ mod tests {
             reference: CirReference::new(ReferenceMode::First),
             reference_marker_raw: None,
             cir: vec![make_frame(1, 1), current.clone()],
-            observations: 2,
-            first_event_s: Some(1.0),
-            latest_event_s: Some(2.0),
             last_slow_fft_s: None,
-            latest_cfo_ppm: None,
             cfo_history: Vec::new(),
             latest_fast_fft: None,
             latest_slow_fft: None,
