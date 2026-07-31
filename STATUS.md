@@ -597,8 +597,14 @@ calibration remains before timestamps can be treated as accurate ranges.
   and 93 Python tests pass. The corrected ARM64 service binary has SHA-256
   `6C826C204EDC2CFBE54DC3A62AFD9DBA435ADD5CD5A43EFFB8EF17B72AC9FEFD`.
   Deployment remains pending because both
-  `arduino@192.168.8.215` and `arduino@chinny` reject non-interactive SSH
-  authentication.
+   `arduino@192.168.8.215` and `arduino@chinny` reject non-interactive SSH
+   authentication.
+- The UNO Q was switched to headless boot on 2026-07-31: its default systemd
+  target is `multi-user.target`, and `lightdm` is disabled and inactive. After
+  reboot, `arduino-router.service` and the Heimdall launcher were verified
+  active. This does not affect SSH, Arduino CLI, or the deployed service. To
+  restore the local HDMI desktop, run `sudo systemctl set-default
+  graphical.target` and `sudo systemctl enable --now lightdm` on the UNO Q.
 
 ## Next executable checkpoint
 

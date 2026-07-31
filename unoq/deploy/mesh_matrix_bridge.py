@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 
 API_URL = "http://127.0.0.1:8080/api/topology"
-ROUTER_SOCKET = "/var/run/arduino-router.sock"
+MONITOR_ADDRESS = ("127.0.0.1", 7500)
 INTERVAL_SECONDS = 0.5
 FRESH_SECONDS = 2.5
 
@@ -52,37 +52,17 @@ def matrix_line(document):
     return ",".join([str(min(9, connected)), *(str(level) for level in levels)]) + "\n"
 
 
-def send(line, message_id):
-    def pack_string(value):
-        encoded = value.encode("utf-8")
-        if len(encoded) >= 32:
-            raise ValueError("router command string is too long")
-        return bytes((0xA0 | len(encoded),)) + encoded
-
-    command = (
-        bytes((0x94, 0x00, message_id))
-        + pack_string("mesh_update")
-        + bytes((0x91,))
-        + pack_string(line)
-    )
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-        connection.settimeout(1.0)
-        connection.connect(ROUTER_SOCKET)
-        connection.sendall(command)
-        try:
-            connection.recv(128)
-        except socket.timeout:
-            pass
-
-
 def main():
-    message_id = 0
+    connection = None
     while True:
         try:
-            send(matrix_line(topology()), message_id)
-            message_id = (message_id + 1) % 128
+            if connection is None:
+                connection = socket.create_connection(MONITOR_ADDRESS, timeout=1.0)
+            connection.sendall(matrix_line(topology()).encode("ascii"))
         except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError):
-            pass
+            if connection is not None:
+                connection.close()
+                connection = None
         time.sleep(INTERVAL_SECONDS)
 
 

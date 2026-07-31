@@ -29,9 +29,8 @@ uint8_t digitPatterns[10][5] = {
   {0b111, 0b101, 0b111, 0b001, 0b111}  // 9
 };
 
-int nodeCount = 5;
+int nodeCount = 0;
 int rssiLevels[BARS_COUNT] = {0, 0, 0, 0, 0};
-volatile bool displayDirty = false;
 
 char inputBuffer[64];
 int inputLen = 0;
@@ -105,25 +104,27 @@ bool parseLine(const char *line) {
   return true;
 }
 
-bool receiveMeshUpdate(String line) {
-  if (!parseLine(line.c_str())) {
-    return false;
-  }
-  displayDirty = true;
-  return true;
-}
-
 void setup() {
   Bridge.begin(SERIAL_BAUD);
-  Bridge.provide("mesh_update", receiveMeshUpdate);
+  Monitor.begin(SERIAL_BAUD);
   matrix.begin();
   renderAll();
 }
 
 void loop() {
-  if (displayDirty) {
-    displayDirty = false;
-    renderAll();
+  while (Monitor.available() > 0) {
+    char c = (char)Monitor.read();
+    if (c == '\n' || c == '\r') {
+      if (inputLen > 0) {
+        inputBuffer[inputLen] = '\0';
+        if (parseLine(inputBuffer)) {
+          renderAll();
+        }
+        inputLen = 0;
+      }
+    } else if (inputLen < (int)(sizeof(inputBuffer) - 1)) {
+      inputBuffer[inputLen++] = c;
+    }
   }
   delay(10);
 }
