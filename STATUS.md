@@ -648,12 +648,24 @@ calibration remains before timestamps can be treated as accurate ranges.
   uses the persistent NetworkManager profile `Heimdall Direct Ethernet` at
   `192.168.250.2/30`. Neither side installs a gateway or DNS server. The UNO Q
   launcher prefers Ethernet target `192.168.250.1:7878` while carrier is
-  present, then falls back automatically to the active `Ullas` or `Brahmand`
-  Wi-Fi mapping. Hardware verification measured 1 ms RTT with zero ping loss;
+  present, then falls back automatically to the configured target for the active
+  Wi-Fi profile. Hardware verification measured 1 ms RTT with zero ping loss;
   Windows received 1,324 UDP records in three seconds with all 20 directed
   links, advancing rounds, zero queue drops, and zero expired/invalid UDP
   records. Repeatable setup is in `configure-direct-ethernet.sh` and
   `enable-direct-ethernet.ps1`.
+- The `HaQathon` WPA3 network was configured and hardware-verified on 2026-08-03.
+  The persistent NetworkManager profile uses SAE, autoconnect priority 10, and
+  IPv4/IPv6 route metric 600; `Heimdall Direct Ethernet` retains priority 100.
+  With Ethernet unplugged, the UNO Q remained reachable over Wi-Fi at its
+  DHCP-assigned address `10.73.51.61`, and the launcher changed the agent target
+  to the Windows host at `10.73.51.192:7878` within its two-second polling loop.
+  The boot `@reboot` launcher and its Wi-Fi fallback in
+  `/home/arduino/.config/heimdall-agent.env` were verified. No UWB gateway board
+  was attached for this check, so CIR forwarding was not expected or tested.
+  These DHCP addresses are not stable and must be checked before use. Wi-Fi
+  credentials are stored only in the UNO Q NetworkManager profile and are
+  deliberately not recorded in this repository.
 - Remaining UNO Q transport work is deliberately deferred: periodically replay
   HELLO so a Windows restart does not require restarting the agent, and add a
   clocked transport timestamp before claiming measured cross-machine latency.

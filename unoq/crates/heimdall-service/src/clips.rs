@@ -1,5 +1,4 @@
 use std::{
-    collections::VecDeque,
     fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
@@ -19,7 +18,7 @@ use crate::{
     metadata::Metadata,
 };
 
-const CLIP_WINDOW_NS: i64 = 30_000_000_000;
+const CLIP_WINDOW_NS: i64 = 10_000_000_000;
 const MAX_ACTIVE_CLIPS: usize = 2;
 
 #[derive(Clone)]
@@ -31,7 +30,6 @@ pub struct ClipManager {
 
 struct ClipState {
     parser: StreamParser,
-    history: VecDeque<TimedRecord>,
     active: Vec<ActiveClip>,
 }
 
@@ -61,7 +59,6 @@ impl ClipManager {
             metadata,
             state: Arc::new(Mutex::new(ClipState {
                 parser: StreamParser::default(),
-                history: VecDeque::new(),
                 active: Vec::new(),
             })),
         })
@@ -71,7 +68,6 @@ impl ClipManager {
         let active = {
             let mut state = self.state.lock();
             state.parser = StreamParser::default();
-            state.history.clear();
             std::mem::take(&mut state.active)
         };
         for clip in active {
@@ -99,16 +95,10 @@ impl ClipManager {
         let initial = json!({
             "status": "capturing", "name": name, "note": note,
             "trigger_ns": trigger_ns, "deadline_ns": trigger_ns + CLIP_WINDOW_NS,
-            "pre_seconds": 30, "post_seconds": 30
+            "post_seconds": 10
         });
         let row = self.metadata.add_clip(&initial)?;
         let id = row["id"].as_i64().context("clip row has no id")?;
-        let records = state
-            .history
-            .iter()
-            .filter(|record| record.received_ns >= trigger_ns - CLIP_WINDOW_NS)
-            .cloned()
-            .collect();
         state.active.push(ActiveClip {
             id,
             trigger_ns,
@@ -116,7 +106,7 @@ impl ClipManager {
             name: name.to_owned(),
             note: note.to_owned(),
             context,
-            records,
+            records: Vec::new(),
         });
         Ok(row)
     }
@@ -135,19 +125,11 @@ impl ClipManager {
                 })
                 .collect::<Vec<_>>();
             for record in records {
-                state.history.push_back(record.clone());
                 for clip in &mut state.active {
                     if record.received_ns <= clip.deadline_ns {
                         clip.records.push(record.clone());
                     }
                 }
-            }
-            while state
-                .history
-                .front()
-                .is_some_and(|record| received_ns - record.received_ns > CLIP_WINDOW_NS)
-            {
-                state.history.pop_front();
             }
             let mut completed = Vec::new();
             let mut index = 0;
@@ -297,7 +279,10 @@ mod tests {
             .start(&json!({"name": "test"}), json!({"epoch": 1}), 0)
             .unwrap();
         let id = started["id"].as_i64().unwrap();
-        manager.ingest(CLIP_WINDOW_NS, &after);
+        assert_eq!(started["value"]["pre_seconds"].as_i64(), None);
+        assert_eq!(started["value"]["post_seconds"].as_i64(), Some(10));
+        manager.ingest(CLIP_WINDOW_NS / 2, &after);
+        manager.ingest(CLIP_WINDOW_NS + 1_000_000_000, &before);
         for _ in 0..100 {
             if metadata.clip(id).unwrap().unwrap()["value"]["status"] == "complete" {
                 break;
@@ -311,7 +296,10 @@ mod tests {
             .unwrap()
             .read_to_end(&mut raw)
             .unwrap();
-        assert_eq!(raw, [before, after].concat());
+        // The ring buffer was removed: only records received at or after the
+        // trigger are captured, so `before` (received before the trigger) is
+        // excluded even though it was ingested first.
+        assert_eq!(raw, [after].concat());
         assert!(manager.delete(id).unwrap());
         assert!(metadata.clip(id).unwrap().is_none());
     }

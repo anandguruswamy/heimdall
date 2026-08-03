@@ -261,6 +261,11 @@ fn spawn_udp_receiver(
                     continue;
                 };
                 if active_session != Some(fragment.session_id) {
+                    if !batch.is_empty() {
+                        state
+                            .clips
+                            .ingest(heimdall_service::metadata::now_ns(), &batch);
+                    }
                     try_enqueue_processing(
                         &processing_tx,
                         &state,
@@ -270,6 +275,7 @@ fn spawn_udp_receiver(
                     batch_records = 0;
                     active_session = Some(fragment.session_id);
                     pending.clear();
+                    state.clips.reset_stream();
                     if processing_tx.send(ProcessingInput::Reset).is_err() {
                         break;
                     }
@@ -316,6 +322,9 @@ fn spawn_udp_receiver(
             if !batch.is_empty()
                 && (batch.len() >= 64 * 1024 || batch_started.elapsed() >= Duration::from_millis(2))
             {
+                state
+                    .clips
+                    .ingest(heimdall_service::metadata::now_ns(), &batch);
                 try_enqueue_processing(
                     &processing_tx,
                     &state,
@@ -324,6 +333,11 @@ fn spawn_udp_receiver(
                 );
                 batch_records = 0;
             }
+        }
+        if !batch.is_empty() {
+            state
+                .clips
+                .ingest(heimdall_service::metadata::now_ns(), &batch);
         }
         try_enqueue_processing(&processing_tx, &state, batch, batch_records);
     }))

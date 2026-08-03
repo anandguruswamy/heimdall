@@ -7,7 +7,7 @@
   let current = $state<PlotFrame>({});
 
   const ticks = (min: number, max: number) => Array.from({ length: 5 }, (_, index) => max - index * (max - min) / 4);
-  const xTicks = (value: PlotFrame) => { const count=Math.max(2,...(value.series ?? []).map((series)=>series.data.length)); return Array.from({length:5},(_,index)=>Math.round(index*(count-1)/4)); };
+  const xTicks = (value: PlotFrame) => { const lengths=(value.series ?? []).map((series)=>series.data.length); const count = lengths.length ? Math.min(...lengths) : 2; return Array.from({length:5},(_,index)=>Math.round(index*(count-1)/4)); };
   const tickLabel = (value: number) => Math.abs(value) >= 100 ? value.toFixed(0) : value.toFixed(1);
 
   onMount(() => {

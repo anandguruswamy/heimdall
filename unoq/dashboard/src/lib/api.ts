@@ -3,11 +3,25 @@ import type { Envelope, StreamStatus, Tab } from './types';
 
 export type BootstrapData = { health?: unknown; topology?: unknown; distanceHistory?: unknown; settings?: unknown; calibration?: unknown };
 
+const tabTopics = (tab: Tab): string[] => {
+  switch (tab) {
+    case 'Board Positions': return ['live-distance', 'instantaneous-cir'];
+    case 'Live Distance': return ['live-distance'];
+    case 'Live CIR': return ['instantaneous-cir'];
+    case 'CIR Waterfall': return ['cir-waterfall'];
+    case 'Slow-Time FFT': return ['slow-time-fft'];
+    case 'Fast-Time FFT': return ['fast-time-fft'];
+    case 'Network Health': return ['network-health'];
+    case 'Distance Calibration': return ['distance-calibration'];
+    case 'CFO': return ['cfo'];
+  }
+};
+
 export class HeimdallApi {
   private socket?: WebSocket;
   private retry?: ReturnType<typeof setTimeout>;
   private stopped = false;
-  private topic = '';
+  private topics: string[] = [];
   private attempt = 0;
 
   constructor(
@@ -51,10 +65,10 @@ export class HeimdallApi {
   }
 
   subscribe(tab: Tab): void {
-    this.topic = tab === 'Live CIR' ? 'instantaneous-cir' : tab === 'Board Positions' ? 'live-distance' : tab.toLowerCase().replaceAll(' ', '-');
+    this.topics = tabTopics(tab);
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.sendSubscription();
-      if (this.topic === 'live-distance') void this.bootstrapDistanceHistory();
+      if (this.topics.includes('live-distance')) void this.bootstrapDistanceHistory();
     }
   }
 
@@ -75,7 +89,7 @@ export class HeimdallApi {
       this.onStatus('live');
       this.sendSubscription();
       void this.bootstrap();
-      if (this.topic === 'live-distance') void this.bootstrapDistanceHistory();
+      if (this.topics.includes('live-distance')) void this.bootstrapDistanceHistory();
     };
     this.socket.onmessage = (event: MessageEvent<ArrayBuffer>) => {
       try { const receivedAtMs=performance.now(); for(const envelope of decodeEnvelopes(event.data)){envelope.receivedAtMs=receivedAtMs;this.onFrame(envelope);} }
@@ -91,7 +105,7 @@ export class HeimdallApi {
   }
 
   private sendSubscription(): void {
-    this.socket?.send(JSON.stringify({ op: 'subscribe', topics: [this.topic] }));
+    this.socket?.send(JSON.stringify({ op: 'subscribe', topics: this.topics }));
   }
 
   private async bootstrap(): Promise<void> {

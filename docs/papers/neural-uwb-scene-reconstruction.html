@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Geometry-conditioned neural reconstruction of compact 3D scenes from all-pairs UWB channel impulse responses using a differentiable UWB renderer.">
+  <title>Neural 3D Scene Reconstruction from Multistatic UWB CIR Snapshots</title>
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [['\\(', '\\)']],
+        displayMath: [['\\[', '\\]']],
+        tags: 'ams'
+      },
+      chtml: { scale: 0.91 }
+    };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+  <style>
+    :root {
+      --ink: #111;
+      --muted: #4a4a4a;
+      --rule: #777;
+      --paper: #fff;
+      --screen: #d8dadd;
+      --accent: #123f67;
+      --soft: #f3f6f8;
+    }
+    * { box-sizing: border-box; }
+    html {
+      background: var(--screen);
+      color: var(--ink);
+      font-family: "Times New Roman", Times, serif;
+    }
+    body { margin: 0; }
+    article {
+      width: min(216mm, calc(100% - 24px));
+      min-height: 279mm;
+      margin: 18px auto;
+      padding: 17mm 15mm 19mm;
+      background: var(--paper);
+      box-shadow: 0 2px 14px #0003;
+    }
+    header { text-align: center; }
+    h1 {
+      max-width: 180mm;
+      margin: 0 auto 8px;
+      font-size: 23pt;
+      line-height: 1.08;
+      font-weight: 400;
+    }
+    .author { margin: 0; font-size: 12pt; }
+    .affiliation { margin: 2px 0 13px; color: var(--muted); font-size: 9.7pt; }
+    .abstract, .keywords {
+      max-width: 180mm;
+      margin: 0 auto 7px;
+      text-align: justify;
+      font-size: 9.15pt;
+      line-height: 1.17;
+    }
+    .label { font-weight: 700; font-style: italic; }
+    .rule { margin: 13px 0 15px; border: 0; border-top: 1px solid var(--ink); }
+    .columns {
+      column-count: 2;
+      column-gap: 7mm;
+      font-size: 9.35pt;
+      line-height: 1.16;
+      text-align: justify;
+      hyphens: auto;
+    }
+    section { break-inside: auto; }
+    h2 {
+      margin: 11px 0 5px;
+      font-size: 10.7pt;
+      line-height: 1.1;
+      text-align: center;
+      text-transform: uppercase;
+      break-after: avoid;
+    }
+    h3 {
+      margin: 8px 0 3px;
+      font-size: 9.8pt;
+      line-height: 1.1;
+      font-style: italic;
+      break-after: avoid;
+    }
+    p { margin: 0 0 6px; }
+    ol, ul { margin: 4px 0 7px; padding-left: 18px; }
+    li { margin-bottom: 2px; }
+    .dropcap::first-letter {
+      float: left;
+      padding: 0 2px 0 0;
+      font-size: 28pt;
+      line-height: .72;
+    }
+    .equation {
+      margin: 6px 0 8px;
+      text-align: center;
+      font-size: 9.8pt;
+      line-height: 1.25;
+      break-inside: avoid;
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+    mjx-container[display="true"] { margin: .35em 0 !important; }
+    figure { margin: 8px 0 9px; break-inside: avoid; }
+    figcaption {
+      margin-top: 3px;
+      font-size: 8.15pt;
+      line-height: 1.12;
+      text-align: justify;
+    }
+    svg { display: block; width: 100%; height: auto; border: 1px solid #aaa; background: #fafafa; }
+    table {
+      width: 100%;
+      margin: 6px 0 9px;
+      border-collapse: collapse;
+      font-size: 8.05pt;
+      line-height: 1.12;
+      break-inside: avoid;
+    }
+    caption { margin-bottom: 3px; font-size: 8.35pt; font-variant: small-caps; }
+    th, td { padding: 2px 3px; border-top: 1px solid #777; text-align: right; vertical-align: top; }
+    th { border-bottom: 1px solid #777; font-weight: 700; }
+    tr:last-child td { border-bottom: 1px solid #777; }
+    th:first-child, td:first-child { text-align: left; }
+    .wide { column-span: all; }
+    .note {
+      margin: 7px 0;
+      padding: 5px 7px;
+      border-left: 2px solid var(--accent);
+      background: var(--soft);
+      font-size: 8.55pt;
+      break-inside: avoid;
+    }
+    .algorithm {
+      margin: 6px 0 8px;
+      padding: 6px 8px;
+      border-top: 1px solid #555;
+      border-bottom: 1px solid #555;
+      font-size: 8.45pt;
+      break-inside: avoid;
+    }
+    .algorithm strong { display: block; margin-bottom: 3px; text-align: center; }
+    .algorithm ol { margin-bottom: 0; }
+    code { font-family: "Courier New", monospace; font-size: .88em; }
+    .references { padding-left: 20px; font-size: 8.05pt; line-height: 1.13; text-align: left; }
+    .references li { padding-left: 2px; margin-bottom: 4px; }
+    .footer-note {
+      margin-top: 10px;
+      padding-top: 5px;
+      border-top: 1px solid #777;
+      color: var(--muted);
+      font-size: 7.8pt;
+      text-align: center;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    @media (max-width: 760px) {
+      article { width: 100%; margin: 0; padding: 22px 18px; box-shadow: none; }
+      .columns { column-count: 1; }
+      .wide { column-span: none; }
+      h1 { font-size: 20pt; }
+    }
+    @media print {
+      @page { size: letter; margin: 13mm 12mm 15mm; }
+      html { background: #fff; }
+      article { width: auto; min-height: 0; margin: 0; padding: 0; box-shadow: none; }
+      a { color: inherit; }
+    }
+  </style>
+</head>
+<body>
+<article>
+  <header>
+    <h1>Geometry-Conditioned Neural 3D Scene Reconstruction from Multistatic UWB Channel Impulse Responses</h1>
+    <p class="author">Heimdall Project Technical Paper</p>
+    <p class="affiliation">Multi-Node Ultra-Wideband Sensing System, August 2026</p>
+    <p class="abstract"><span class="label">Abstract--</span>This paper proposes a compact neural inverse model for reconstructing a three-dimensional indoor scene from one network cycle of all-pairs ultra-wideband (UWB) channel impulse responses (CIRs). Five fixed or surveyed nodes produce 20 directed, 64-tap complex CIRs at 998.4 MHz accumulator sampling. Instead of evaluating a dense Cartesian delay-and-sum volume, the model predicts a finite set of typed geometric primitives: finite plane patches for architectural surfaces, anisotropic Gaussian surfels for localized or irregular scattering, and capsules for people. A shared one-dimensional link encoder and geometry-conditioned set transformer make the estimate invariant to node labeling and applicable to a supported distribution of node geometries. A set decoder produces primitive type, geometry, radio response, presence, and uncertainty. Training combines permutation-invariant supervised primitive matching with a differentiable UWB renderer, denoted UWBRender, that maps the predicted scene back to every directed CIR. UWBRender uses exact bistatic path geometry, image-source plane reflections, analytic Gaussian delay broadening, soft visibility, hardware nuisance variables, and a fixed precursor-free modified square-root-raised-cosine (MP-SRRC) pulse template consistent with the assumed IEEE 802.15.4 UWB pulse specification. The receiver output is formed with the transmit/receive correlation kernel rather than the transmit pulse alone. A staged synthetic-to-real training procedure is given. The method targets dominant surfaces, scatterers, and human occupancy; it does not claim unique recovery of arbitrary detailed geometry from a single snapshot.</p>
+    <p class="keywords"><span class="label">Index Terms--</span>Ultra-wideband, channel impulse response, inverse scattering, multistatic sensing, set transformer, differentiable rendering, Gaussian surfels, indoor mapping, synthetic data.</p>
+  </header>
+  <hr class="rule">
+
+  <main class="columns">
+    <section>
+      <h2>I. Introduction</h2>
+      <p class="dropcap">A network of spatially separated UWB radios measures a room from many bistatic viewpoints. For a transmitter at one node and a receiver at another, every delayed CIR component constrains scattering energy to an ellipsoid whose foci are the two nodes. Intersections of such evidence across multiple baselines contain information about walls, furniture, and people. The conventional reconstruction is delay-and-sum backprojection on a three-dimensional grid. If each axis has \(K\) samples, storage and evaluation scale as \(O(K^3)\), multiplied by the number of links. Fine spatial sampling therefore becomes expensive even though the measured CIR is sparse in delay.</p>
+      <p>This work replaces the dense grid with a compact scene of \(G\) geometric primitives and learns the inverse mapping from CIRs to primitive parameters. The representation is not conventional optical Gaussian splatting. UWB measurements project scene primitives onto a delay axis through bistatic propagation, not onto an image plane through a camera. The corresponding forward operator must model path length, pulse correlation, direction-dependent response, fractional delay, gain state, and noise.</p>
+      <p>The proposed method has five principal contributions:</p>
+      <ol>
+        <li>a precise tensor representation for a five-node, 64-tap directed-CIR snapshot;</li>
+        <li>a geometry-conditioned and node-permutation-invariant neural architecture;</li>
+        <li>a mixed primitive scene representation suitable for walls, clutter, and people;</li>
+        <li>a differentiable, sparse UWBRender forward model based on an assumed precursor-free MP-SRRC pulse; and</li>
+        <li>a hybrid training objective and synthetic-to-real curriculum that preserve physical consistency.</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>II. Measurement System</h2>
+      <h3>A. Node and Link Geometry</h3>
+      <p>Let \(N\geq5\) UWB nodes have phase-center positions \(\mathbf p_i\in\mathbb R^3\), indexed by \(i\in\mathcal V=\{0,\ldots,N-1\}\). The directed link set is</p>
+      <div class="equation">\[
+        \mathcal E=\{(i,j):i,j\in\mathcal V,\ i\ne j\},\qquad L=|\mathcal E|=N(N-1). \tag{1}
+      \]</div>
+      <p>For the target configuration, \(N=5\), hence \(L=20\) directed observations and ten distinct geometric baselines. Opposite directions share approximately reciprocal propagation geometry but retain separate antenna, gain, noise, and measurement-time effects.</p>
+
+      <h3>B. Heimdall CIR Record</h3>
+      <p>Receiver \(j\) reports a complex accumulator window for transmitter \(i\):</p>
+      <div class="equation">\[
+        \mathbf h_{ij}=\big[h_{ij}[0],\ldots,h_{ij}[S-1]\big]^\mathsf T\in\mathbb C^S,\qquad S=64. \tag{2}
+      \]</div>
+      <p>The sample period is \(T_s=(998.4\ \mathrm{MHz})^{-1}\approx1.0016\) ns, corresponding to \(cT_s\approx0.3003\) m of additional path length. The requested window begins 16 integer samples before the rounded first-path index. The record preserves the raw first-path estimate \(f^{\rm abs}_{ij}\) in Q10.6 units and the absolute window start \(s_{ij}\). The fractional first-path marker within the CIR is</p>
+      <div class="equation">\[
+        f_{ij}=\frac{f^{\rm abs}_{ij}}{64}-s_{ij}. \tag{3}
+      \]</div>
+      <p>Every tap is transported as signed \(i16\) in I-then-Q order after an arithmetic right shift of the DW3110 signed 18-bit accumulator components. Additional metadata includes DGC decision \(d_{ij}\), accumulation count \(A_{ij}\), CFO, first-path diagnostics, timestamps, validity, and truncation. A network cycle is 35 ms, so the 20 observations form a short assembled snapshot rather than a strictly simultaneous one.</p>
+
+      <table>
+        <caption>Table I. Target Measurement Profile</caption>
+        <thead><tr><th>Quantity</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>Nodes / directed links</td><td>5 / 20</td></tr>
+          <tr><td>Complex taps per link</td><td>64</td></tr>
+          <tr><td>Accumulator sample rate</td><td>998.4 MHz</td></tr>
+          <tr><td>Path increment per tap</td><td>0.3003 m</td></tr>
+          <tr><td>Nominal left-of-first-path taps</td><td>16</td></tr>
+          <tr><td>Per-link update rate</td><td>28.571 Hz</td></tr>
+          <tr><td>Full network cycle</td><td>35 ms</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>III. Problem Formulation</h2>
+      <h3>A. Bistatic Delay Constraint</h3>
+      <p>A single-bounce point at \(\mathbf x\) has total path length and LOS-relative excess length</p>
+      <div class="equation">\[
+      \begin{aligned}
+        \ell_{ij}(\mathbf x)&=\|\mathbf x-\mathbf p_i\|_2+\|\mathbf x-\mathbf p_j\|_2,\\
+        \Delta\ell_{ij}(\mathbf x)&=\ell_{ij}(\mathbf x)-\|\mathbf p_i-\mathbf p_j\|_2,\\
+        \Delta\tau_{ij}(\mathbf x)&=\Delta\ell_{ij}(\mathbf x)/c.
+      \end{aligned} \tag{4}
+      \]</div>
+      <p>One delay identifies an ellipsoidal shell, not a point. Localization follows only from consistent evidence across baselines and from prior structure. Coplanar or clustered node arrangements can leave severe vertical or mirror ambiguities.</p>
+
+      <h3>B. Compact Scene</h3>
+      <p>The scene is an unordered set</p>
+      <div class="equation">\[
+        \mathcal S=\{z_g\}_{g=1}^{G},\qquad G\leq G_{\max}, \tag{5}
+      \]</div>
+      <p>where each slot has a type \(t_g\in\{\varnothing,\mathrm{plane},\mathrm{surfel},\mathrm{capsule}\}\), presence \(q_g\), geometry \(\theta_g\), radio parameters \(\rho_g\), and uncertainty \(u_g\). The empty type permits a fixed-size decoder to represent variable cardinality.</p>
+
+      <h3>C. Inverse Problem</h3>
+      <p>Given the directed CIR set, metadata, and node positions, estimate a posterior over scenes:</p>
+      <div class="equation">\[
+        \widehat{\mathcal S},\widehat{\mathbf u}
+        =F_\Theta\!\left(\{\mathbf h_{ij},\mathbf m_{ij},\mathbf p_i,\mathbf p_j\}_{(i,j)\in\mathcal E}\right). \tag{6}
+      \]</div>
+      <p>The output coordinate frame is the frame supplied with \(\{\mathbf p_i\}\). If positions are recovered only from inter-node ranges, the reconstruction inherits their translation, rotation, and possible reflection gauge.</p>
+
+      <div class="note"><b>Scope:</b> Equation (6) is not uniquely invertible for arbitrary rooms. The model targets dominant planes, localized scattering regions, and human occupancy with calibrated uncertainty. Fine furniture geometry and unrestricted higher-order multipath remain underdetermined.</div>
+    </section>
+
+    <section>
+      <h2>IV. Network Input</h2>
+      <h3>A. CIR Calibration and Alignment</h3>
+      <p>Raw integer taps are converted to complex floating point and corrected using the same first-order host scaling as the current processing pipeline:</p>
+      <div class="equation">\[
+        h^{\rm sc}_{ij}[n]=\frac{10^{((d_{ij}-3)2.65)/20}}{\max(1,A_{ij})}
+        \left(I_{ij}[n]+\mathrm jQ_{ij}[n]\right). \tag{7}
+      \]</div>
+      <p>A differentiable fractional shift aligns the first path to a common marker \(f_0=16\):</p>
+      <div class="equation">\[
+        h^{\rm al}_{ij}[n]=\mathcal D_{f_0-f_{ij}}\{h^{\rm sc}_{ij}\}[n], \tag{8}
+      \]</div>
+      <p>where \(\mathcal D_\delta\) is a finite-support windowed-sinc or calibrated fractional-delay operator. A common phase is removed using the direct-path pulse template \(\mathbf r\):</p>
+      <div class="equation">\[
+        \phi_{ij}=\arg\langle\mathbf r,\mathbf h^{\rm al}_{ij}\rangle,\qquad
+        \bar h_{ij}[n]=h^{\rm al}_{ij}[n]e^{-\mathrm j\phi_{ij}}/a_{ij}. \tag{9}
+      \]</div>
+      <p>Here \(a_{ij}\) is a robust link amplitude scale. Its logarithm and the removed phase remain metadata so normalization does not erase received-power evidence. If packet-to-packet phase coherence is later demonstrated, phase removal can be relaxed.</p>
+
+      <h3>B. Directed-Link Token</h3>
+      <p>The shared CIR encoder receives three sample channels,</p>
+      <div class="equation">\[
+        \mathbf X_{ij}[n]=\left[\Re\bar h_{ij}[n],\Im\bar h_{ij}[n],
+        \log(\epsilon+|\bar h_{ij}[n]|)\right], \tag{10}
+      \]</div>
+      <p>with shape \(64\times3\). The scalar metadata vector contains \(f_{ij}\), \(\log a_{ij}\), DGC, accumulation count, CFO, quality flags, normalized observation time within the 35 ms cycle, and a missing-link mask. The geometric features are</p>
+      <div class="equation">\[
+        \mathbf g_{ij}=\left[\mathbf p_i',\mathbf p_j',
+        \mathbf p_j'-\mathbf p_i',\|\mathbf p_j'-\mathbf p_i'\|_2,s_p\right], \tag{11}
+      \]</div>
+      <p>where \(\mathbf p_i'=(\mathbf p_i-\bar{\mathbf p})/s_p\), \(\bar{\mathbf p}\) is the node centroid, and \(s_p\) is the RMS baseline scale retained explicitly in metres. Position covariance may be appended when geometry is range-derived.</p>
+    </section>
+
+    <section>
+      <h2>V. Neural Architecture</h2>
+      <figure class="wide">
+        <svg viewBox="0 0 1180 330" role="img" aria-label="Geometry-conditioned CIR set encoder and primitive decoder architecture">
+          <defs>
+            <marker id="arch-arrow" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#123f67"/></marker>
+          </defs>
+          <style>
+            .ab{fill:#eef3f7;stroke:#123f67;stroke-width:2}.ag{fill:#f4f4f4;stroke:#555;stroke-width:2}
+            .at{font:23px 'Times New Roman';fill:#111}.as{font:18px 'Times New Roman';fill:#333}
+            .aa{stroke:#123f67;stroke-width:3;marker-end:url(#arch-arrow)}
+          </style>
+          <rect class="ab" x="30" y="45" width="170" height="100" rx="8"/><text class="at" x="66" y="82">20 directed</text><text class="at" x="61" y="111">64-tap CIRs</text><text class="as" x="52" y="137">I/Q, magnitude, mask</text>
+          <rect class="ag" x="30" y="190" width="170" height="88" rx="8"/><text class="at" x="67" y="225">Geometry</text><text class="as" x="54" y="254">TX/RX pose + metadata</text>
+          <line class="aa" x1="200" y1="95" x2="274" y2="130"/><line class="aa" x1="200" y1="235" x2="274" y2="170"/>
+          <rect class="ab" x="280" y="90" width="185" height="125" rx="8"/><text class="at" x="310" y="127">Shared link</text><text class="at" x="326" y="156">encoder</text><text class="as" x="307" y="185">1D CNN + MLP</text><text class="as" x="323" y="207">20 x 128</text>
+          <line class="aa" x1="465" y1="152" x2="534" y2="152"/>
+          <rect class="ab" x="540" y="75" width="195" height="155" rx="8"/><text class="at" x="570" y="116">Set transformer</text><text class="as" x="575" y="151">6 geometry-aware</text><text class="as" x="587" y="177">attention blocks</text><text class="as" x="593" y="204">label invariant</text>
+          <line class="aa" x1="735" y1="152" x2="804" y2="152"/>
+          <rect class="ab" x="810" y="75" width="170" height="155" rx="8"/><text class="at" x="835" y="116">Primitive set</text><text class="at" x="851" y="145">decoder</text><text class="as" x="841" y="177">48 learned queries</text><text class="as" x="849" y="204">4 decoder blocks</text>
+          <line class="aa" x1="980" y1="152" x2="1034" y2="152"/>
+          <rect class="ab" x="1040" y="48" width="115" height="209" rx="8"/><text class="at" x="1060" y="85">Scene</text><text class="as" x="1055" y="120">planes</text><text class="as" x="1055" y="149">surfels</text><text class="as" x="1055" y="178">capsules</text><text class="as" x="1055" y="207">presence</text><text class="as" x="1055" y="236">uncertainty</text>
+          <path class="aa" d="M1095,258 C1095,315 650,318 650,235" fill="none"/><text class="as" x="748" y="309">UWBRender reconstruction loss</text>
+        </svg>
+        <figcaption>Fig. 1. Proposed architecture. Every directed link is encoded by shared weights and augmented with physical geometry. Set attention prevents dependence on node enumeration. Learned primitive queries produce an unordered compact scene, which UWBRender projects back to all CIRs.</figcaption>
+      </figure>
+
+      <h3>A. Shared Link Encoder</h3>
+      <p>A lightweight one-dimensional CNN applies four residual stages with widths 32, 64, 96, and 128, kernel sizes 7, 5, 5, and 3, strided downsampling, group normalization, and GELU activation. Attention pooling produces \(\mathbf e^{\rm cir}_{ij}\in\mathbb R^{128}\). Separate MLPs embed metadata and Fourier features of (11). Their sum with a learned direction-role embedding gives one link token:</p>
+      <div class="equation">\[
+        \mathbf e_{ij}=\mathbf e^{\rm cir}_{ij}+
+        E_m(\mathbf m_{ij})+E_g(\mathbf g_{ij})+\mathbf e_{\rm role}. \tag{12}
+      \]</div>
+
+      <h3>B. Geometry-Aware Set Encoder</h3>
+      <p>Six pre-normalized transformer blocks with model width 128, four heads, and feed-forward width 512 process the 20 tokens. Attention logits include a learned relative-geometry bias derived from baseline directions, midpoint separation, and shared-node indicators. Missing links are masked. Node identifiers are not embedded; random label permutation therefore leaves the represented physical problem unchanged.</p>
+
+      <h3>C. Primitive Set Decoder</h3>
+      <p>The decoder uses \(G_{\max}=48\) learned queries and four self/cross-attention blocks. Each output slot predicts type logits, presence, a common center, a continuous 6D rotation representation, positive log-scales, complex reflectivity, roughness, attenuation, dynamic probability, and selected log standard deviations. Type-specific interpretation avoids wasting separate decoder populations:</p>
+      <ul>
+        <li><b>Plane:</b> center \(\boldsymbol\mu_g\), normal and tangent axes from \(R_g\), half-extents \((a_g,b_g)\), thickness ignored.</li>
+        <li><b>Surfel:</b> center and covariance \(\Sigma_g=R_g\operatorname{diag}(s_{g1}^2,s_{g2}^2,s_{g3}^2)R_g^\mathsf T\).</li>
+        <li><b>Capsule:</b> center, principal axis from \(R_g\), half-length \(a_g\), radius \(b_g\), reflection and attenuation.</li>
+      </ul>
+      <p>Physical extent and estimation uncertainty are distinct outputs. For example, \(s_{g1:3}\) describe a surfel's actual support, while \(\sigma^{\rm pos}_{g1:3}\) describes uncertainty in its center.</p>
+
+      <table>
+        <caption>Table II. Reference Network Size</caption>
+        <thead><tr><th>Component</th><th>Configuration</th></tr></thead>
+        <tbody>
+          <tr><td>Link CNN</td><td>32/64/96/128 channels</td></tr>
+          <tr><td>Token width / heads</td><td>128 / 4</td></tr>
+          <tr><td>Set encoder</td><td>6 blocks, FFN 512</td></tr>
+          <tr><td>Primitive queries</td><td>48</td></tr>
+          <tr><td>Set decoder</td><td>4 blocks</td></tr>
+          <tr><td>Expected parameters</td><td>approximately 5--8 million</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>VI. UWBRender Forward Model</h2>
+      <h3>A. Standard Pulse Assumption</h3>
+      <p>IEEE 802.15.4 HRP UWB defines a root-raised-cosine reference pulse with roll-off \(\beta=0.5\), while enhanced ranging imposes a precursor-free time-domain requirement [1], [2]. This paper assumes a fixed precursor-free modified square-root-raised-cosine template, denoted MP-SRRC. Because public terminology for the modifier is not uniform, UWBRender does not infer a new normative closed form: it consumes the standard-specified, energy-normalized sampled template \(p_{\rm MP}[r]\) used by the dataset generator and receiver model.</p>
+      <p>For intuition, the unmodified continuous-time SRRC family is proportional to</p>
+      <div class="equation">\[
+        p_{\rm SRRC}(t)=
+        \frac{\sin\!\left(\pi(1-\beta)t/T_p\right)+4\beta(t/T_p)
+        \cos\!\left(\pi(1+\beta)t/T_p\right)}
+        {\pi(t/T_p)\left[1-(4\beta t/T_p)^2\right]},\quad \beta=0.5, \tag{13}
+      \]</div>
+      <p>with limiting values used at removable singularities. The assumed MP-SRRC realization applies the standard's causal precursor-free shaping and time-domain mask to this reference family.</p>
+
+      <p>The DW3110 accumulator is a correlation output. A propagation impulse is therefore not rendered with \(p_{\rm MP}\) directly. If \(p_{\rm tx}\) and \(p_{\rm rx}\) are effective transmit and receive templates, the nominal accumulator kernel is</p>
+      <div class="equation">\[
+        r_p(t)=\int p_{\rm tx}(u)p_{\rm rx}^*(u-t)\,du. \tag{14}
+      \]</div>
+      <p>For a matched receiver, \(p_{\rm tx}=p_{\rm rx}=p_{\rm MP}\). A short calibrated residual FIR \(b_{ij}\) can represent front-end and accumulator distortion, giving \(r_{ij}=r_p*b_{ij}\). This distinction is important: a precursor-free transmitted pulse can still produce a two-sided correlation lobe around a path delay.</p>
+
+      <h3>B. Localized Scatterers</h3>
+      <p>For a surfel centered at \(\boldsymbol\mu_g\), define unit path vectors</p>
+      <div class="equation">\[
+        \mathbf u_{ig}=\frac{\boldsymbol\mu_g-\mathbf p_i}{\|\boldsymbol\mu_g-\mathbf p_i\|_2},\qquad
+        \mathbf u_{jg}=\frac{\boldsymbol\mu_g-\mathbf p_j}{\|\boldsymbol\mu_g-\mathbf p_j\|_2}. \tag{15}
+      \]</div>
+      <p>Linearizing bistatic path length over the Gaussian gives delay variance</p>
+      <div class="equation">\[
+        \sigma^2_{\tau,ijg}=\frac{(\mathbf u_{ig}+\mathbf u_{jg})^\mathsf T
+        \Sigma_g(\mathbf u_{ig}+\mathbf u_{jg})}{c^2}. \tag{16}
+      \]</div>
+      <p>The rendered pulse is the correlation kernel convolved with \(\mathcal N(0,\sigma^2_{\tau,ijg})\). Thus a physically extended surfel broadens only according to its projected bistatic extent; geometric scale is not confused with position uncertainty.</p>
+
+      <h3>C. Finite Plane Reflection</h3>
+      <p>Let a plane have center \(\mathbf c_g\), normal \(\mathbf n_g\), tangent axes \(\mathbf a_g,\mathbf b_g\), and half-extents \(A_g,B_g\). Mirror transmitter \(i\) across the plane:</p>
+      <div class="equation">\[
+        \mathbf p_i'=\mathbf p_i-2\mathbf n_g\mathbf n_g^\mathsf T(\mathbf p_i-\mathbf c_g). \tag{17}
+      \]</div>
+      <p>The image-source line intersects the plane at</p>
+      <div class="equation">\[
+      \begin{aligned}
+        \lambda&=\frac{\mathbf n_g^\mathsf T(\mathbf c_g-\mathbf p_j)}
+        {\mathbf n_g^\mathsf T(\mathbf p_i'-\mathbf p_j)},\\
+        \mathbf x_{ijg}&=\mathbf p_j+\lambda(\mathbf p_i'-\mathbf p_j).
+      \end{aligned} \tag{18}
+      \]</div>
+      <p>A soft finite-patch gate preserves gradients near an edge:</p>
+      <div class="equation">\[
+        v_{ijg}=\sigma\!\left(\frac{A_g-|\mathbf a_g^\mathsf T(\mathbf x_{ijg}-\mathbf c_g)|}{\epsilon_v}\right)
+        \sigma\!\left(\frac{B_g-|\mathbf b_g^\mathsf T(\mathbf x_{ijg}-\mathbf c_g)|}{\epsilon_v}\right). \tag{19}
+      \]</div>
+      <p>The path length is \(\ell_{ijg}=\|\mathbf p_i-\mathbf x_{ijg}\|+\|\mathbf x_{ijg}-\mathbf p_j\|\), equal to \(\|\mathbf p_i'-\mathbf p_j\|\) for a valid infinite plane. This makes one plane efficient across all links even though its specular point changes with the node pair.</p>
+
+      <figure>
+        <svg viewBox="0 0 620 300" role="img" aria-label="Bistatic point and image-source plane paths">
+          <defs><marker id="geom-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#123f67"/></marker></defs>
+          <style>.gb{font:20px 'Times New Roman';fill:#111}.gs{font:16px 'Times New Roman';fill:#333}.gl{stroke:#123f67;stroke-width:2.5;fill:none}.gd{stroke:#777;stroke-width:2;stroke-dasharray:7 5}.gp{fill:#123f67}</style>
+          <line x1="310" y1="25" x2="310" y2="280" stroke="#333" stroke-width="4"/><text class="gb" x="326" y="48">finite plane</text>
+          <circle class="gp" cx="85" cy="220" r="8"/><text class="gb" x="43" y="250">TX i</text>
+          <circle class="gp" cx="530" cy="220" r="8"/><text class="gb" x="506" y="250">RX j</text>
+          <circle cx="310" cy="125" r="7" fill="#b1462f"/><text class="gs" x="324" y="124">specular point</text>
+          <path class="gl" d="M85,220 L310,125 L530,220"/>
+          <circle cx="215" cy="80" r="9" fill="#26734d"/><text class="gs" x="150" y="69">surfel center</text>
+          <path class="gl" d="M85,220 L215,80 L530,220" stroke-dasharray="4 3"/>
+          <circle cx="535" cy="90" r="8" fill="none" stroke="#123f67" stroke-width="2"/><text class="gs" x="473" y="77">mirror TX</text>
+          <path class="gd" d="M85,220 L535,90"/><line class="gd" x1="85" y1="220" x2="535" y2="90"/>
+          <text class="gs" x="330" y="287">image-source construction</text>
+        </svg>
+        <figcaption>Fig. 2. UWBRender path geometry. A localized surfel contributes through its center and projected covariance. A plane uses the image source, so the reflection point varies correctly with transmitter and receiver position.</figcaption>
+      </figure>
+
+      <h3>D. Capsule Reflection and Attenuation</h3>
+      <p>A capsule uses a fixed small quadrature set on its transformed surface. Each point is rendered as a localized scatterer and weighted by area, incidence, and soft visibility. The direct and reflected rays also receive differentiable ray-capsule attenuation based on chord length. This captures the fact that a person may be more observable through path shadowing than through one stable specular return.</p>
+
+      <h3>E. Amplitude, Phase, and Fractional Delay</h3>
+      <p>For candidate path \(r\) associated with primitive \(g\), a compact amplitude model is</p>
+      <div class="equation">\[
+        \alpha_{ijr}=q_g\rho_g\,v_{ijr}\,
+        \frac{D_i(\Omega^{\rm out}_{ijr})D_j(\Omega^{\rm in}_{ijr})
+        B_g(\vartheta^{\rm in}_{ijr},\vartheta^{\rm out}_{ijr})}
+        {(d_{ir}d_{rj})^{\gamma/2}}
+        e^{-\mathrm j2\pi f_c\ell_{ijr}/c}. \tag{20}
+      \]</div>
+      <p>Here \(D_i,D_j\) are low-order antenna patterns, \(B_g\) is a diffuse/specular angular response, \(v\) is soft visibility, and \(\gamma\) is randomized path loss. Because absolute carrier phase may not be coherent across packets, a link nuisance phase \(\psi_{ij}\) and gain \(a_{ij}\) are applied during synthetic generation and marginalized in the loss.</p>
+      <p>Let the LOS-relative delay of path \(r\) be \(\Delta\tau_{ijr}=(\ell_{ijr}-\|\mathbf p_i-\mathbf p_j\|)/c\). The unquantized accumulator is</p>
+      <div class="equation">\[
+        \widehat h_{ij}[n]=a_{ij}e^{\mathrm j\psi_{ij}}
+        \left(\alpha^{\rm LOS}_{ij}r_{ij}(nT_s-\delta^{\rm LOS}_{ij})+
+        \sum_{r\in\mathcal P_{ij}(\mathcal S)}\alpha_{ijr}
+        r_{ij,\sigma_r}(nT_s-\delta^{\rm LOS}_{ij}-\Delta\tau_{ijr})\right)+\eta_{ij}[n]. \tag{21}
+      \]</div>
+      <p>Only a short support of \(W\) samples around each fractional delay is evaluated. During supervised training, quantization is represented by additive uniform noise or a straight-through estimator. Dataset export reproduces the signed 18-bit accumulator, arithmetic shift by two, and \(i16\) encoding exactly.</p>
+
+      <h3>F. Complexity</h3>
+      <p>For \(P\) planes, \(G_s\) surfels, \(C\) capsules with \(K_c\) quadrature points, and pulse support \(W\), the single-bounce cost is</p>
+      <div class="equation">\[
+        O\!\left(LW(P+G_s+K_cC)\right), \tag{22}
+      \]</div>
+      <p>rather than \(O(LK^3)\). With \(L=20\), 48 slots, and \(W=16\), the basic renderer requires only tens of thousands of localized pulse updates per scene. Limited plane-plane double reflections may be added after geometric pruning; unrestricted reflection order is deliberately excluded.</p>
+    </section>
+
+    <section>
+      <h2>VII. Cost Function</h2>
+      <h3>A. Permutation-Invariant Primitive Loss</h3>
+      <p>Predicted slots and ground-truth primitives have no canonical ordering. Hungarian assignment \(\pi^*\) minimizes a detached matching cost combining type, center, extent, and orientation:</p>
+      <div class="equation">\[
+        \pi^*=\arg\min_{\pi}\sum_{g\in\mathcal S^*}
+        C_{\rm match}(z_g^*,\widehat z_{\pi(g)}). \tag{23}
+      \]</div>
+      <p>For matched slots, the supervised loss is</p>
+      <div class="equation">\[
+      \begin{aligned}
+        \mathcal L_{\rm set}={}&\lambda_t\operatorname{CE}(t^*,\widehat t)+
+        \lambda_q\operatorname{BCE}(q^*,\widehat q)\\
+        &+\lambda_x\mathcal L_{\rm NLL}(\boldsymbol\mu^*,\widehat{\boldsymbol\mu},\widehat{\boldsymbol\sigma}_{x})
+        +\lambda_R d_{SO(3)}(R^*,\widehat R)\\
+        &+\lambda_s\|\log\mathbf s^*-\log\widehat{\mathbf s}\|_1
+        +\lambda_\rho\|\rho^*-\widehat\rho\|_1.
+      \end{aligned} \tag{24}
+      \]</div>
+      <p>The Gaussian negative log-likelihood is \(\frac12\sum_d[(e_d/\sigma_d)^2+2\log\sigma_d]\), with bounded log variance. Symmetry-aware rotation distance ignores tangent-axis flips or capsule axial rotations that do not change the represented object.</p>
+
+      <h3>B. CIR Reconstruction Loss</h3>
+      <p>For each valid directed link, phase-invariant complex error analytically removes one nuisance phase:</p>
+      <div class="equation">\[
+      \begin{aligned}
+        \widehat\varphi_{ij}&=\arg\langle\widehat{\mathbf h}_{ij},\mathbf h_{ij}\rangle,\\
+        \mathcal L_{\rm cpx}&=\frac{1}{|\mathcal E_v|S}
+        \sum_{(i,j)\in\mathcal E_v}\sum_n
+        \operatorname{Charb}\!\left(h_{ij}[n]-e^{\mathrm j\widehat\varphi_{ij}}\widehat h_{ij}[n]\right),
+      \end{aligned} \tag{25}
+      \]</div>
+      <p>where \(\operatorname{Charb}(z)=\sqrt{|z|^2+\epsilon^2}\). A log-envelope term emphasizes weak delayed paths:</p>
+      <div class="equation">\[
+        \mathcal L_{\rm env}=\frac{1}{|\mathcal E_v|S}
+        \sum_{ij,n}\left|\log(\epsilon+|h_{ij}[n]|)-
+        \log(\epsilon+|\widehat h_{ij}[n]|)\right|. \tag{26}
+      \]</div>
+      <p>A frequency-domain term over the 64-point DFT regularizes pulse shape and multipath interference. Samples before the first path estimate noise and receive lower scene-reconstruction weight but remain in the likelihood for noise calibration.</p>
+
+      <h3>C. Regularization and Total Objective</h3>
+      <p>Regularizers penalize unnecessary occupied slots, unsupported giant surfels, near-zero thickness instability, plane overlap, and predicted uncertainty inconsistent with empirical errors. For synthetic examples with dense surface labels, an optional type-aware surface Chamfer loss is included. The total objective is</p>
+      <div class="equation">\[
+        \mathcal L=\lambda_{\rm set}\mathcal L_{\rm set}
+        +\lambda_{\rm cpx}\mathcal L_{\rm cpx}
+        +\lambda_{\rm env}\mathcal L_{\rm env}
+        +\lambda_{\rm fft}\mathcal L_{\rm fft}
+        +\lambda_{\rm surf}\mathcal L_{\rm surf}
+        +\lambda_{\rm reg}\mathcal L_{\rm reg}. \tag{27}
+      \]</div>
+      <p>A practical initial weighting is \((1,1,0.5,0.1,0.25,0.01)\), followed by normalization using running gradient norms. These values are starting points, not experimentally established constants.</p>
+    </section>
+
+    <section>
+      <h2>VIII. Synthetic Dataset and Training</h2>
+      <h3>A. Procedural Scene Distribution</h3>
+      <p>Each synthetic example samples a room, a scene, node geometry, and hardware nuisance variables. Rooms contain four to eight finite architectural planes. Furniture is approximated by plane assemblies and anisotropic surfels; people are one or more capsules with randomized attenuation. Material reflectivity and roughness are drawn from broad distributions rather than assigned falsely precise labels. Node layouts are non-coplanar, span multiple heights, and resemble realistic perimeter placement.</p>
+      <p>UWBRender produces both learning inputs and privileged labels: primitive sets, surface samples, path identities, visibility, occupancy, and per-link delays and amplitudes. Multiple node layouts render the same scene so the model must learn bistatic geometry instead of memorizing a fixed delay-to-position mapping.</p>
+
+      <h3>B. Empirical Hardware Randomization</h3>
+      <p>Real Heimdall data should fit distributions for DGC, accumulation count, complex noise covariance, first-path jitter, link gain, pulse residuals, missing links, and false first-path events. One available static hardware capture contains 33,367 unique 64-tap observations over all 20 links. Its median first-path marker is 16.109 taps, median peak offset is 1.69 taps after that marker, median accumulation count is 108, and dominant DGC states are 3--6. Such statistics constrain sensor realism but do not provide scene labels.</p>
+
+      <h3>C. Curriculum</h3>
+      <div class="algorithm">
+        <strong>Algorithm 1: Synthetic-to-Real Training</strong>
+        <ol>
+          <li>Overfit 100 noiseless fixed-geometry scenes containing one to three surfels; verify gradient flow through UWBRender.</li>
+          <li>Add finite planes and train 10,000 fixed-geometry scenes with 1--5 cm node-position jitter.</li>
+          <li>Add capsules, limited occlusion, measured MP-SRRC residual kernels, gain, phase, DGC, noise, and missing-link randomization.</li>
+          <li>Train geometry-conditioned scenes over realistic nondegenerate N=5 layouts; permute node labels every epoch.</li>
+          <li>Fine-tune on controlled real scenes using primitive labels and CIR reconstruction.</li>
+          <li>Adapt on unlabeled operational captures with conservative CIR reconstruction while anchoring the synthetic scene prior.</li>
+        </ol>
+      </div>
+
+      <h3>D. Optimization</h3>
+      <p>AdamW with learning rate \(3\times10^{-4}\), weight decay \(10^{-2}\), 5,000 warm-up steps, cosine decay, gradient clipping at 1.0, and mixed precision is a suitable baseline. Batches should be generated or rendered as tensors over scenes, links, and primitives. A reference run uses batch size 64--256 and 150,000--300,000 optimizer steps. Splits must be by room and scene seed, never by adjacent snapshots from the same room.</p>
+      <p>A 5--8 million parameter model fits easily in 8 GB of GPU memory. A 24 GB RTX 3090 or 4090 permits large renderer batches; GPU utilization, rather than model memory, determines value. Procedural geometry and path enumeration must be vectorized or precomputed to prevent a CPU bottleneck.</p>
+
+      <h3>E. Controlled Real Data</h3>
+      <p>Real transfer requires more than repeated frames from one room. The calibration campaign should measure: open LOS at surveyed distances and orientations; an empty surveyed room; one reflective panel at known poses; a human-sized absorber on a marked grid; one person at known positions; incrementally added furniture; and node rotations/replacements. Per-board antenna delay and phase-center calibration precede claims of metric scene accuracy.</p>
+    </section>
+
+    <section>
+      <h2>IX. Evaluation Protocol</h2>
+      <p>Performance should be reported at three levels:</p>
+      <ol>
+        <li><b>Primitive recovery:</b> type average precision, plane normal and offset error, extent intersection-over-union, surfel center/covariance error, and capsule center/size error.</li>
+        <li><b>Physical consistency:</b> held-out complex and envelope CIR error, path-delay error, residual energy by delay, and cross-link consistency.</li>
+        <li><b>Scene utility:</b> surface Chamfer distance, voxel occupancy intersection-over-union, person localization error, and uncertainty calibration.</li>
+      </ol>
+      <p>Baselines include dense delay-and-sum backprojection, sparse ellipsoid voting, direct per-scene primitive optimization without a neural initializer, and network ablations without geometry, directed-link metadata, uncertainty, or CIR reconstruction. Results should be stratified by node geometry condition, SNR, missing links, path order, and whether the room topology was seen during training.</p>
+      <p>A prediction is not accepted merely because it looks plausible. It must reproduce held-out CIRs and report increased uncertainty for degenerate geometry or out-of-distribution scenes.</p>
+    </section>
+
+    <section>
+      <h2>X. Observability and Limitations</h2>
+      <p><b>Ten geometric baselines.</b> Twenty directed links do not create twenty independent ellipsoid families. Reciprocity approximately reduces geometric diversity to ten baselines; direction remains useful for hardware response and noise averaging.</p>
+      <p><b>Fast-time resolution.</b> One accumulator tap is approximately 30 cm of path. Fractional alignment avoids quantization loss but does not create unlimited bandwidth. Multiple baselines can sharpen localization, but closely spaced paths remain difficult to separate.</p>
+      <p><b>Assembled snapshot.</b> The full N=5 observation spans 35 ms. Static surfaces are effectively simultaneous; a person moving at 1 m/s can move 3.5 cm over the cycle. Observation time is therefore supplied to the network and may later support motion compensation.</p>
+      <p><b>Multipath model mismatch.</b> Image-source planes and single-bounce surfels cannot explain arbitrary diffraction, transmission, diffuse scattering, or long reflection chains. UWBRender should add complexity only when controlled residuals demonstrate a need. Otherwise, additional latent physics can absorb geometry errors and reduce identifiability.</p>
+      <p><b>Learned priors.</b> A network can resolve ambiguity only by applying its training distribution. It may produce a common room arrangement unsupported by the measurement. CIR reconstruction, uncertainty, scene-distribution tests, and controlled real labels reduce but do not eliminate this risk.</p>
+      <p><b>Pulse mismatch.</b> The assumed MP-SRRC template is a simulator contract. The physical DW3110 accumulator includes transmitter, antenna, propagation, receiver, preamble correlation, and implementation effects. Measured link kernels or a tightly regularized residual filter must replace an ideal template before sim-to-real conclusions are drawn.</p>
+    </section>
+
+    <section>
+      <h2>XI. Expected Feasibility</h2>
+      <table>
+        <caption>Table III. Expected Single-Snapshot Feasibility</caption>
+        <thead><tr><th>Target</th><th>Assessment</th></tr></thead>
+        <tbody>
+          <tr><td>One to three dominant reflectors</td><td>Good</td></tr>
+          <tr><td>Major wall planes</td><td>Moderate</td></tr>
+          <tr><td>Person against known static scene</td><td>Moderate--good</td></tr>
+          <tr><td>Coarse occupancy</td><td>Moderate</td></tr>
+          <tr><td>Detailed furniture geometry</td><td>Low</td></tr>
+          <tr><td>Unique arbitrary-room reconstruction</td><td>Low</td></tr>
+        </tbody>
+      </table>
+      <p>The first decisive experiment is intentionally narrow: recover two to four planes and one surfel from the exact 20-by-64 Heimdall tensor under the current fixed geometry, then repeat with small geometry perturbations. Compare against dense backprojection and per-scene gradient optimization. Only after this succeeds should training broaden to arbitrary realistic N=5 layouts and human capsules.</p>
+    </section>
+
+    <section>
+      <h2>XII. Conclusion</h2>
+      <p>This paper specifies a complete neural and physical pipeline for compact 3D reconstruction from multistatic UWB CIR snapshots. The architecture treats directed CIRs as a geometry-conditioned set, predicts a typed set of planes, Gaussian surfels, and capsules, and enforces measurement consistency through differentiable UWBRender. The renderer uses exact bistatic delays, image-source planes, analytic surfel broadening, soft visibility, and the matched-filter correlation of an assumed precursor-free MP-SRRC standard pulse. Computation scales with links and occupied primitives rather than dense volume size. The proposal is practical to train on a single consumer GPU, but its scientific validity depends on calibrated pulse kernels, surveyed real scenes, geometry diversity, and evaluation against measured CIRs rather than visual plausibility.</p>
+    </section>
+
+    <section>
+      <h2>References</h2>
+      <ol class="references">
+        <li>IEEE Standard for Low-Rate Wireless Networks, IEEE Std. 802.15.4-2020, Jul. 2020.</li>
+        <li>IEEE Standard for Low-Rate Wireless Networks--Amendment 1: Enhanced Ultra Wideband (UWB) Physical Layers and Associated Ranging Techniques, IEEE Std. 802.15.4z-2020, Aug. 2020.</li>
+        <li>A. F. Molisch <i>et al.</i>, "IEEE 802.15.4a channel model--final report," IEEE 802.15 Working Group, Tech. Rep. 15-04-0662-02-004a, 2004.</li>
+        <li>J. Lee, Y. Su, and C. Shen, "A comparative study of wireless protocols: Bluetooth, UWB, ZigBee, and Wi-Fi," in <i>Proc. IEEE IECON</i>, 2007, pp. 46--51.</li>
+        <li>J. B. Allen and D. A. Berkley, "Image method for efficiently simulating small-room acoustics," <i>J. Acoust. Soc. Amer.</i>, vol. 65, no. 4, pp. 943--950, 1979.</li>
+        <li>J. M. F. Moura and Y. Jin, "Detection by time reversal: Single antenna," <i>IEEE Trans. Signal Process.</i>, vol. 55, no. 1, pp. 187--201, Jan. 2007.</li>
+        <li>J. Lee <i>et al.</i>, "Set Transformer: A framework for attention-based permutation-invariant neural networks," in <i>Proc. ICML</i>, 2019, pp. 3744--3753.</li>
+        <li>N. Carion <i>et al.</i>, "End-to-end object detection with transformers," in <i>Proc. ECCV</i>, 2020, pp. 213--229.</li>
+        <li>B. Kerbl, G. Kopanas, T. Leimkuehler, and G. Drettakis, "3D Gaussian splatting for real-time radiance field rendering," <i>ACM Trans. Graph.</i>, vol. 42, no. 4, 2023.</li>
+        <li>A. Paszke <i>et al.</i>, "PyTorch: An imperative style, high-performance deep learning library," in <i>Advances in Neural Information Processing Systems</i>, vol. 32, 2019.</li>
+        <li>Heimdall Project, "Beacon protocol v1," <code>contracts/beacon-v1.md</code>, Aug. 2026.</li>
+        <li>Heimdall Project, "Beaconing scheme explained," <code>docs/beacon-protocol-explained.md</code>, Aug. 2026.</li>
+      </ol>
+    </section>
+  </main>
+
+  <p class="footer-note">Design proposal. Numerical model settings and expected feasibility are hypotheses to be validated with controlled synthetic and surveyed hardware experiments.</p>
+</article>
+</body>
+</html>

@@ -96,6 +96,8 @@ export class LiveStore {
   private framePayloads = new Map<string, Record<string, unknown>>();
   private waterfallRows = new Map<string, { width: number; rows: { eventS: number; values: Float32Array }[] }>();
   private waterfallSeconds = 5;
+  private cirHistory = new Map<string, Record<string, unknown>[]>();
+  readonly cirReference = new Map<string, Record<string, unknown>>();
   private processingEpoch: bigint | undefined;
   private configurationEpoch: bigint | undefined;
   constructor(private readonly changed: () => void) {}
@@ -108,6 +110,8 @@ export class LiveStore {
     this.positionSorted.clear();
     this.dirtyFrames.clear();
     this.framePayloads.clear();
+    this.cirHistory.clear();
+    this.cirReference.clear();
     this.currentRound = undefined;
     this.lastError = '';
     this.changed();
@@ -124,6 +128,8 @@ export class LiveStore {
       this.positionSorted.clear();
       this.dirtyFrames.clear();
       this.framePayloads.clear();
+      this.cirHistory.clear();
+      this.cirReference.clear();
     }
     this.processingEpoch = envelope.processingEpoch;
     this.configurationEpoch = envelope.configurationEpoch;
@@ -165,6 +171,12 @@ export class LiveStore {
         const value = number(payload[key]); if (value !== undefined) this.append(`${id}:cfo:${key}`,value);
       });
     }
+    if (topic === 'cir') {
+      const history = this.cirHistory.get(id) ?? [];
+      history.push(payload);
+      if (history.length > 64) history.shift();
+      this.cirHistory.set(id, history);
+    }
     current.updatedAt = Date.now(); current.payloads ??= {}; current.payloads[topic] = payload;
     current.quality = number(payload.quality) ?? number(record(payload.sample).quality) ?? current.quality;
     current.cfoPpm = number(payload.filtered_ppm) ?? number(payload.cfo_ppm) ?? number(record(payload.sample).cfo_ppm) ?? current.cfoPpm;
@@ -199,6 +211,39 @@ export class LiveStore {
   }
 
   setWaterfallSeconds(seconds: number): void { this.waterfallSeconds=Math.max(1,Math.min(30,seconds)); }
+
+  captureCirReference(count = 20): void {
+    for (const [id, history] of this.cirHistory) {
+      if (history.length === 0) continue;
+      const recent = history.slice(-count);
+      const markers = recent
+        .map((item) => number(item.marker_aligned))
+        .filter((value): value is number => value !== undefined);
+      if (markers.length === 0) continue;
+      const sorted = markers.slice().sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)];
+      const tolerance = Math.max(1.0, 0.1 * median + 1.0);
+      const candidates = recent.filter((item) => {
+        const marker = number(item.marker_aligned);
+        const correlation = number(item.correlation);
+        if (marker === undefined || Math.abs(marker - median) > tolerance) return false;
+        if (correlation !== undefined && correlation < 0.5) return false;
+        return true;
+      });
+      const pool = candidates.length ? candidates : recent;
+      const selected = pool.reduce((best, item) => {
+        const marker = number(item.marker_aligned) ?? 0;
+        const correlation = number(item.correlation) ?? 0;
+        const bestMarker = number(best.marker_aligned) ?? 0;
+        const bestCorrelation = number(best.correlation) ?? 0;
+        const score = Math.abs(marker - median) - 2 * correlation;
+        const bestScore = Math.abs(bestMarker - median) - 2 * bestCorrelation;
+        return score < bestScore ? item : best;
+      });
+      this.cirReference.set(id, { ...selected });
+    }
+    this.changed();
+  }
 
   private append(key: string, value: number): Float32Array {
     let history = this.histories.get(key);

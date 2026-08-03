@@ -184,6 +184,8 @@ pub struct DspSettings {
     pub waterfall_fixed_scale_max: f64,
     pub waterfall_tap_min: i8,
     pub waterfall_tap_max: i8,
+    pub dgc_correction_db_per_step: f64,
+    pub cir_nuisance_fit: bool,
 }
 
 impl Default for DspSettings {
@@ -213,6 +215,8 @@ impl Default for DspSettings {
             waterfall_fixed_scale_max: -10.0,
             waterfall_tap_min: -20,
             waterfall_tap_max: 50,
+            dgc_correction_db_per_step: 2.65,
+            cir_nuisance_fit: false,
         }
     }
 }
@@ -523,7 +527,8 @@ impl Pipeline {
                 )
             })
             .collect::<Vec<_>>();
-        let correction_db = (observation.dgc_decision as f64 - 3.0) * 2.65;
+        let correction_db =
+            (observation.dgc_decision as f64 - 3.0) * self.settings.dgc_correction_db_per_step;
         let dgc_linear = 10.0_f64.powf(correction_db / 20.0);
         let (scaled, mut quality) = scale_cir(&raw, dgc_linear, observation.accum_count as u32);
         let marker_raw =
@@ -664,6 +669,13 @@ impl Pipeline {
         }
         let mut payloads = Vec::new();
         if want_cir {
+            let display = if self.settings.cir_nuisance_fit {
+                cir_nuisance_fitted(link, &aligned, observation.observed_k, observation.usb_sequence, 32)
+                    .unwrap_or_else(|| aligned.clone())
+            } else {
+                aligned.clone()
+            };
+            let display_resampled = resample_cir_16x(&display);
             payloads.push((
                 Topic::Cir,
                 json!({
@@ -674,8 +686,8 @@ impl Pipeline {
                     "correlation": correlation, "quality": quality.0,
                     "evidence": evidence_id,
                     "marker_raw": marker_raw, "marker_aligned": marker_aligned,
-                    "magnitude": aligned.iter().map(|value| value.norm() as f32).collect::<Vec<_>>(),
-                    "resampled": &frame.magnitude_16x,
+                    "magnitude": display.iter().map(|value| value.norm() as f32).collect::<Vec<_>>(),
+                    "resampled": display_resampled.iter().map(|value| value.norm() as f32).collect::<Vec<_>>(),
                 }),
             ));
         }
@@ -1590,6 +1602,8 @@ fn validate_settings(settings: &DspSettings) -> Result<()> {
         || !["rectangular", "hann", "hamming", "blackman"].contains(&settings.fft_window.as_str())
         || !["first", "qualified", "adaptive"].contains(&settings.reference_mode.as_str())
         || !["correlation", "first_path"].contains(&settings.cir_alignment_mode.as_str())
+        || !settings.dgc_correction_db_per_step.is_finite()
+        || ![0.0, 2.65, 6.0].contains(&settings.dgc_correction_db_per_step)
     {
         bail!("invalid DSP settings");
     }
@@ -1899,6 +1913,33 @@ fn project_static_nuisance(rows: &[&[Complex64]], target: &mut [Complex64]) {
         target[x].re -= ar * hr - ai * hi + br2 * dr - bi2 * di;
         target[x].im -= ar * hi + ai * hr + br2 * di + bi2 * dr;
     }
+}
+
+fn cir_nuisance_fitted(
+    link: &LinkState,
+    aligned: &[Complex64],
+    round: u32,
+    usb_sequence: u32,
+    count: usize,
+) -> Option<Vec<Complex64>> {
+    if aligned.is_empty() {
+        return None;
+    }
+    let rows: Vec<&[Complex64]> = link
+        .cir
+        .iter()
+        .rev()
+        .filter(|item| item.round != round || item.usb_sequence != usb_sequence)
+        .filter(|item| item.aligned.len() == aligned.len())
+        .take(count)
+        .map(|item| item.aligned.as_slice())
+        .collect();
+    if rows.len() < 3 {
+        return None;
+    }
+    let mut fitted = aligned.to_vec();
+    project_static_nuisance(&rows, &mut fitted);
+    Some(fitted)
 }
 
 fn apply_noise_clip(rows: &mut [Vec<Complex64>], clip_db: f64, x_min: f64, x_max: f64) {
