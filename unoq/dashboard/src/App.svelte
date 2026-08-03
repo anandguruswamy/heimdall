@@ -203,16 +203,19 @@
     void liveRevision;
     const topologyLinks = Array.isArray(live.topology?.links) ? live.topology.links as Record<string,unknown>[] : [];
     const related = topologyLinks.filter((link) => Number(link.from) === node || Number(link.to) === node);
-    const qualities = related.map((link) => Number((link.latest_cir as Record<string,unknown> | undefined)?.quality)).filter(Number.isFinite);
-    return { delivery: qualities.length ? Math.min(100, qualities.filter((value)=>value===0).length / qualities.length * 100) : null, samples: related.reduce((sum,link)=>sum+Number(link.observations ?? 0),0) };
+    const cycleUs=Number((live.topology?.config as Record<string,unknown>|undefined)?.cycle_us),expectedRate=cycleUs>0?1_000_000/cycleUs:0;
+    const rates = related.map((link) => Number(link.rate_hz)).filter(Number.isFinite);
+    const delivery = rates.length && expectedRate ? rates.reduce((sum,rate)=>sum+Math.min(1,rate/expectedRate),0)/rates.length*100 : null;
+    const healthy = expectedRate ? rates.filter((rate)=>rate>=expectedRate*.9).length : 0;
+    return { delivery, healthy, links: related.length, samples: related.reduce((sum,link)=>sum+Number(link.observations ?? 0),0) };
   }
 
   function linkHealth(link: Link) {
     void liveRevision;
     const topologyLinks = Array.isArray(live.topology?.links) ? live.topology.links as Record<string,unknown>[] : [];
     const item = topologyLinks.find((value) => Number(value.from) === link.from && Number(value.to) === link.to);
-    const quality = Number((item?.latest_cir as Record<string,unknown> | undefined)?.quality);
-    return !item ? { label: 'NO DATA', width: 0 } : quality === 0 ? { label: 'OK', width: 100 } : { label: `Q${quality}`, width: 35 };
+    const rate=Number(item?.rate_hz),cycleUs=Number((live.topology?.config as Record<string,unknown>|undefined)?.cycle_us),expectedRate=cycleUs>0?1_000_000/cycleUs:0;
+    return !item || !Number.isFinite(rate) ? { label: 'NO DATA', width: 0 } : { label: `${rate.toFixed(1)} Hz`, width: expectedRate ? Math.min(100,rate/expectedRate*100) : 0 };
   }
 
   function calibrated() {
@@ -460,7 +463,7 @@
   <header class="topbar">
     <div class="identity">
       <div class="mark" aria-hidden="true"><i></i><i></i><i></i></div>
-      <div><strong>HEIMDALL</strong><span>UWB FUSION INSTRUMENT</span></div>
+      <div><strong>HEIMDALL</strong><span>UWB DASHBOARD</span></div>
     </div>
     <div class="header-metrics">
       <div><span>ROUND</span><b>{headerRound()}</b></div>
@@ -518,7 +521,7 @@
       <section class="health-layout">
         <div class="node-strip">
           {#each Array(nodeCount) as _, i}
-            <article class="node-card"><div class="node-id"><span>N{i}</span><i class:offline={status !== 'live' || !nodeHealth(i).samples}></i></div><strong>{nodeHealth(i).delivery === null ? '—' : `${nodeHealth(i).delivery?.toFixed(1)}%`}</strong><small>HEALTHY CIR LINKS</small><dl><dt>SAMPLES</dt><dd>{nodeHealth(i).samples}</dd><dt>SYNC</dt><dd>UNKNOWN</dd><dt>STATE</dt><dd>{status === 'live' ? (nodeHealth(i).samples ? 'LIVE' : 'NO DATA') : 'OFFLINE'}</dd></dl></article>
+            <article class="node-card"><div class="node-id"><span>N{i}</span><i class:offline={status !== 'live' || !nodeHealth(i).samples}></i></div><strong>{nodeHealth(i).delivery === null ? '—' : `${nodeHealth(i).delivery?.toFixed(1)}%`}</strong><small>LINK DELIVERY</small><dl><dt>SAMPLES</dt><dd>{nodeHealth(i).samples}</dd><dt>LINKS</dt><dd>{nodeHealth(i).healthy}/{nodeHealth(i).links}</dd><dt>STATE</dt><dd>{status === 'live' ? (nodeHealth(i).samples ? 'LIVE' : 'NO DATA') : 'OFFLINE'}</dd></dl></article>
           {/each}
         </div>
         <div class="health-lower">

@@ -67,3 +67,13 @@ test('canonical dashboard cameras render +X right and +Y up',()=>{
     assert.ok(Math.abs(y.nx)<1e-12&&y.ny>0);
   }
 });
+
+test('axis camera presets preserve right-handed board orientation',()=>{
+  const center={x:0,y:0,z:0};
+  const fromXy=projectBoardPoint({x:0,y:1,z:0},center,1,-Math.PI/2,0,1);
+  const fromXz=projectBoardPoint({x:0,y:0,z:1},center,1,-Math.PI/2,0,1);
+  assert.ok(fromXy.nx>0&&Math.abs(fromXy.ny)<1e-12&&fromXz.ny>0);
+  const fromYx=projectBoardPoint({x:1,y:0,z:0},center,1,Math.PI,0,1);
+  const fromYz=projectBoardPoint({x:0,y:0,z:1},center,1,Math.PI,0,1);
+  assert.ok(fromYx.nx<0&&Math.abs(fromYx.ny)<1e-12&&fromYz.ny>0);
+});

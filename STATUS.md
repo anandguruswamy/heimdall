@@ -643,6 +643,17 @@ calibration remains before timestamps can be treated as accurate ranges.
   drops and invalid UDP datagrams. Rootless boot remains the existing `@reboot`
   crontab launcher, with the target in
   `/home/arduino/.config/heimdall-agent.env`.
+- A dedicated routerless Ethernet mode was deployed on 2026-08-02. The laptop
+  USB GbE interface uses `192.168.250.1/30`; the UNO Q USB Ethernet interface
+  uses the persistent NetworkManager profile `Heimdall Direct Ethernet` at
+  `192.168.250.2/30`. Neither side installs a gateway or DNS server. The UNO Q
+  launcher prefers Ethernet target `192.168.250.1:7878` while carrier is
+  present, then falls back automatically to the active `Ullas` or `Brahmand`
+  Wi-Fi mapping. Hardware verification measured 1 ms RTT with zero ping loss;
+  Windows received 1,324 UDP records in three seconds with all 20 directed
+  links, advancing rounds, zero queue drops, and zero expired/invalid UDP
+  records. Repeatable setup is in `configure-direct-ethernet.sh` and
+  `enable-direct-ethernet.ps1`.
 - Remaining UNO Q transport work is deliberately deferred: periodically replay
   HELLO so a Windows restart does not require restarting the agent, and add a
   clocked transport timestamp before claiming measured cross-machine latency.

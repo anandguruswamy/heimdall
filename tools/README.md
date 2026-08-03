@@ -78,6 +78,8 @@ tracked wrappers under `unoq/tools/` use Rust
 | `unoq/tools/build-windows-server.ps1` | Finite optimized native Windows server build. |
 | `unoq/tools/install-windows-server-task.ps1` | Stops, atomically deploys, and starts the direct executable as a Windows logon task. |
 | `unoq/tools/install-windows-firewall.ps1` | Creates elevated TCP/UDP rules for all hotspot firewall profiles. |
+| `unoq/tools/ensure-wireguard-endpoint-route.ps1` | Pins the current WireGuard endpoint through the physical Wi-Fi gateway so Mobile Hotspot cannot capture the tunnel transport. |
+| `unoq/tools/enable-direct-ethernet.ps1` | Assigns the laptop side of the dedicated UNO Q Ethernet link to `192.168.250.1/30` without a gateway or DNS. |
 | `unoq/tools/run-windows-server.ps1` | Runs an already-built server in the foreground for diagnostics. |
 
 The Rust target `aarch64-unknown-linux-gnu` must be installed for the pinned

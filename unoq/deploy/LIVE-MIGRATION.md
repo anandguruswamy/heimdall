@@ -40,6 +40,40 @@ systemd unit, put the same line in `/home/arduino/.config/heimdall-agent.env`.
 Then install/restart `heimdall.service`, or restart the rootless launcher. The agent health dashboard remains at
 `http://<uno-q-address>:8080/`; its JSON snapshot is at `/api/health`.
 
+The rootless launcher monitors NetworkManager and automatically restarts the
+agent with the matching server target when the active UNO Q Wi-Fi profile
+changes. Its defaults are:
+
+```text
+Ullas     -> 192.168.8.101:7878
+Brahmand  -> 192.168.137.1:7878
+```
+
+When the dedicated peer Ethernet link has carrier and the UNO Q owns
+`192.168.250.2/30`, it takes precedence over Wi-Fi and targets
+`192.168.250.1:7878`. Configure the UNO Q once with:
+
+```sh
+./configure-direct-ethernet.sh
+```
+
+Configure the laptop from elevated PowerShell whenever Windows returns that
+adapter to DHCP:
+
+```powershell
+.\tools\enable-direct-ethernet.ps1
+```
+
+Neither endpoint receives a gateway or DNS server on this link, so corporate,
+home, hotspot, and WireGuard default routes remain unchanged. Disconnecting the
+Ethernet cable makes the launcher fall back to the active Wi-Fi profile.
+
+Override them without editing the launcher by setting
+`HEIMDALL_SERVER_ULLAS` or `HEIMDALL_SERVER_BRAHMAND` in
+`/home/arduino/.config/heimdall-agent.env`. `HEIMDALL_SERVER` remains the
+fallback for any other connection profile. Override the wired target with
+`HEIMDALL_SERVER_ETHERNET`.
+
 ### Current portable-demo network
 
 As of 2026-07-30, the Windows Mobile Hotspot gateway is `192.168.137.1` and
@@ -74,6 +108,21 @@ p95 with recurring 190-210 ms pauses. Browser, WebSocket, server queue, USB,
 and power-management checks isolated those pauses to the hotspot network path.
 Use infrastructure Wi-Fi, a travel router, or a separate access-point adapter
 when smooth live plots are required.
+
+When a full-tunnel WireGuard connection and Windows Mobile Hotspot must run at
+the same time, use half-default tunnel routes (`0.0.0.0/1` and
+`128.0.0.0/1`) instead of `0.0.0.0/0`, then run this from elevated PowerShell:
+
+```powershell
+.\tools\ensure-wireguard-endpoint-route.ps1
+```
+
+The helper reads the current WireGuard endpoint and non-tunnel default gateway,
+then creates an `ActiveStore` `/32` route for the endpoint. This prevents
+Mobile Hotspot startup from capturing the tunnel's own transport. The route is
+temporary and should be rerun after the endpoint, corporate network, or gateway
+changes. Use `-TunnelName` or `-PhysicalInterfaceAlias` when their defaults do
+not select the intended interfaces.
 
 ## UDP contract
 
