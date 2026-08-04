@@ -85,12 +85,13 @@ struct LinkActivity {
 
 #[derive(Clone)]
 struct CirFrame {
+    processing_epoch: u64,
     event_tick: i64,
     event_s: f64,
     round: u32,
     usb_sequence: u32,
     aligned: Vec<Complex64>,
-    magnitude_16x: Vec<f32>,
+    display: Vec<Complex64>,
     waterfall: Vec<Complex64>,
     waterfall_x_min: f64,
     waterfall_x_max: f64,
@@ -618,7 +619,12 @@ impl Pipeline {
         let mut display_phase = phase;
         let mut display_correlation = correlation;
         let mut fit_diagnostics = None;
-        if fit_algorithm == "robust_grid" && topics & Topic::Cir.bit() != 0 {
+        let want_cir = topics & Topic::Cir.bit() != 0;
+        let want_waterfall = topics & Topic::Waterfall.bit() != 0;
+        let want_fast = topics & Topic::FastFft.bit() != 0;
+        let want_slow = topics & Topic::SlowFft.bit() != 0;
+        if fit_algorithm == "robust_grid" && (want_cir || want_waterfall || want_fast || want_slow)
+        {
             let requested = self.settings.cir_grid_reference_mode.as_str();
             let (grid_reference, effective) = if requested == "frozen" {
                 if self.board_frozen {
@@ -703,22 +709,22 @@ impl Pipeline {
                 }));
             }
         }
+        let display = if fit_algorithm == "linear_ls" {
+            cir_nuisance_fitted(
+                link,
+                &aligned,
+                observation.observed_k,
+                observation.usb_sequence,
+                32,
+            )
+            .unwrap_or_else(|| aligned.clone())
+        } else {
+            robust_display.unwrap_or_else(|| aligned.clone())
+        };
         let marker_aligned = marker_raw - delay_samples;
         let evidence_id = (observation.usb_sequence as u64) << 32 | observation.observed_k as u64;
-        let want_cir = topics & Topic::Cir.bit() != 0;
-        let want_waterfall = topics & Topic::Waterfall.bit() != 0;
-        let want_fast = topics & Topic::FastFft.bit() != 0;
-        let want_slow = topics & Topic::SlowFft.bit() != 0;
         let resampled = if want_waterfall || want_cir {
-            resample_cir_16x(&aligned)
-        } else {
-            Vec::new()
-        };
-        let magnitude_16x = if want_cir {
-            resampled
-                .iter()
-                .map(|value| value.norm() as f32)
-                .collect::<Vec<_>>()
+            resample_cir_16x(&display)
         } else {
             Vec::new()
         };
@@ -739,12 +745,13 @@ impl Pipeline {
             (Vec::new(), 0.0, 0.0)
         };
         let frame = CirFrame {
+            processing_epoch: self.processing_epoch,
             event_tick,
             event_s,
             round: observation.observed_k,
             usb_sequence: observation.usb_sequence,
             aligned: aligned.clone(),
-            magnitude_16x: magnitude_16x.clone(),
+            display: display.clone(),
             waterfall,
             waterfall_x_min,
             waterfall_x_max,
@@ -793,19 +800,6 @@ impl Pipeline {
         }
         let mut payloads = Vec::new();
         if want_cir {
-            let display = if fit_algorithm == "linear_ls" {
-                cir_nuisance_fitted(
-                    link,
-                    &aligned,
-                    observation.observed_k,
-                    observation.usb_sequence,
-                    32,
-                )
-                .unwrap_or_else(|| aligned.clone())
-            } else {
-                robust_display.unwrap_or_else(|| aligned.clone())
-            };
-            let display_resampled = resample_cir_16x(&display);
             let mut cir_payload = json!({
                 "from": key.0, "to": key.1, "round": observation.observed_k,
                 "event_s": event_s, "dgc_decision": observation.dgc_decision,
@@ -816,7 +810,7 @@ impl Pipeline {
                 "marker_raw": marker_raw, "marker_aligned": marker_raw - display_delay_samples,
                 "fit_algorithm": fit_algorithm,
                 "magnitude": display.iter().map(|value| value.norm() as f32).collect::<Vec<_>>(),
-                "resampled": display_resampled.iter().map(|value| value.norm() as f32).collect::<Vec<_>>(),
+                "resampled": resampled.iter().map(|value| value.norm() as f32).collect::<Vec<_>>(),
             });
             if let (Some(payload), Some(diagnostics)) = (
                 cir_payload.as_object_mut(),
@@ -844,7 +838,7 @@ impl Pipeline {
         }
         if want_fast {
             let fast = fast_fft_complex(
-                &aligned,
+                &display,
                 self.settings.fast_time_sample_rate_hz,
                 fft_window(&self.settings.fft_window),
                 quality,
@@ -1947,10 +1941,12 @@ fn slow_fft_payload(
     let history_samples = (settings.slow_fft_history_s * sample_rate_hz)
         .round()
         .clamp(2.0, MAX_CIR_FRAMES as f64) as usize;
+    let current_epoch = link.cir.last()?.processing_epoch;
     let frames = link
         .cir
         .iter()
         .rev()
+        .filter(|frame| frame.processing_epoch == current_epoch)
         .take(history_samples)
         .cloned()
         .collect::<Vec<_>>();
@@ -1966,7 +1962,7 @@ fn slow_fft_payload(
     let start = last - (count as i64 - 1) * step;
     let taps = frames
         .iter()
-        .map(|frame| frame.aligned.len())
+        .map(|frame| frame.display.len())
         .min()?
         .min(SLOW_FFT_TAPS);
     let mut gap_mask = Vec::with_capacity(count);
@@ -1984,7 +1980,7 @@ fn slow_fft_payload(
     for tap in 0..taps {
         let samples = slots
             .iter()
-            .map(|frame| frame.map(|frame| frame.aligned[tap].norm()))
+            .map(|frame| frame.map(|frame| frame.display[tap].norm()))
             .collect::<Vec<_>>();
         let Some((samples, quality)) = interpolate_short_gaps(&samples, settings.slow_fft_max_gap)
         else {
@@ -2133,7 +2129,9 @@ fn waterfall_processed_row(
         .cir
         .iter()
         .rev()
-        .filter(|item| !item.waterfall.is_empty())
+        .filter(|item| {
+            item.processing_epoch == frame.processing_epoch && !item.waterfall.is_empty()
+        })
         .take(32)
         .map(|item| item.waterfall.as_slice())
         .collect::<Vec<_>>();
@@ -2449,12 +2447,13 @@ mod tests {
 
     fn cir_frame(round: u32, aligned: Vec<Complex64>) -> CirFrame {
         CirFrame {
+            processing_epoch: 0,
             event_tick: round as i64,
             event_s: round as f64,
             round,
             usb_sequence: round,
+            display: aligned.clone(),
             aligned,
-            magnitude_16x: Vec::new(),
             waterfall: Vec::new(),
             waterfall_x_min: 0.0,
             waterfall_x_max: 0.0,
@@ -2653,12 +2652,13 @@ mod tests {
     #[test]
     fn waterfall_emits_the_processed_current_row() {
         let make_frame = |round, sequence| CirFrame {
+            processing_epoch: 0,
             event_tick: round as i64,
             event_s: round as f64,
             round,
             usb_sequence: sequence,
             aligned: Vec::new(),
-            magnitude_16x: Vec::new(),
+            display: Vec::new(),
             waterfall: vec![Complex64::new(2.0, 0.0), Complex64::new(4.0, 0.0)],
             waterfall_x_min: -1.0,
             waterfall_x_max: 1.0,
@@ -2830,22 +2830,105 @@ mod tests {
             pipeline.links[&(0, 1)].cir[1].aligned,
             base.links[&(0, 1)].cir[1].aligned
         );
+        assert_ne!(
+            pipeline.links[&(0, 1)].cir[1].display,
+            pipeline.links[&(0, 1)].cir[1].aligned
+        );
         assert_eq!(
             pipeline.links[&(0, 1)].cir[1].quality,
             base.links[&(0, 1)].cir[1].quality
         );
-        assert_eq!(
+        assert_ne!(
             pipeline.links[&(0, 1)].cir[1].waterfall,
             base.links[&(0, 1)].cir[1].waterfall
         );
-        assert_eq!(
+        assert_ne!(
             pipeline.links[&(0, 1)].latest_fast_fft,
             base.links[&(0, 1)].latest_fast_fft
         );
-        assert_eq!(
-            pipeline.links[&(0, 1)].latest_slow_fft,
-            base.links[&(0, 1)].latest_slow_fft
+    }
+
+    #[test]
+    fn derived_cir_topics_apply_the_selected_fit_without_a_cir_subscriber() {
+        let mut pipeline = Pipeline::new();
+        pipeline.configure(&hello_record());
+        pipeline
+            .update_settings(&json!({
+                "cir_fit_algorithm": "robust_grid",
+                "cir_grid_reference_mode": "rolling_mean",
+                "cir_grid_reference_window": 3,
+                "cir_grid_gain_min_db": -1.0,
+                "cir_grid_gain_max_db": 1.0,
+                "cir_grid_delay_range_samples": 0.0,
+                "cir_grid_resampling_factor": 1,
+                "slow_fft_cadence_s": 0.001
+            }))
+            .unwrap();
+        let topics = Topic::Waterfall.bit() | Topic::FastFft.bit() | Topic::SlowFft.bit();
+        pipeline.consume_canonical_inner(observation(0, 1, 10, 0, 100, 1), topics);
+        let messages = pipeline.consume_canonical_inner(observation(0, 1, 12, 200, 300, 2), topics);
+
+        assert!(
+            messages
+                .iter()
+                .all(|message| crate::telemetry::envelope_topic(message) != Some(Topic::Cir))
         );
+        for topic in [Topic::Waterfall, Topic::FastFft, Topic::SlowFft] {
+            assert!(
+                messages
+                    .iter()
+                    .any(|message| crate::telemetry::envelope_topic(message) == Some(topic)),
+                "missing {topic:?}"
+            );
+        }
+        let frame = pipeline.links[&(0, 1)].cir.last().unwrap();
+        assert_ne!(frame.display, frame.aligned);
+    }
+
+    #[test]
+    fn slow_fft_uses_the_stored_display_signal() {
+        let mut pipeline = Pipeline::new();
+        pipeline.configure(&hello_record());
+        let make_link = |use_display: bool| {
+            let cir = (0..4)
+                .map(|index| {
+                    let mut frame = cir_frame(index * 2, vec![Complex64::new(1.0, 0.0); 2]);
+                    if use_display {
+                        frame.display = vec![Complex64::new(index as f64 + 1.0, 0.0); 2];
+                    }
+                    frame
+                })
+                .collect();
+            LinkState {
+                reference: CirReference::new(ReferenceMode::First),
+                reference_marker_raw: None,
+                cir,
+                last_slow_fft_s: None,
+                cfo_history: Vec::new(),
+                latest_fast_fft: None,
+                latest_slow_fft: None,
+                waterfall_pending_spike: false,
+                waterfall_persistent_change: false,
+                rolling_reference_cache: None,
+            }
+        };
+
+        let fitted = slow_fft_payload(
+            (0, 1),
+            &make_link(true),
+            &pipeline.settings,
+            pipeline.config.as_ref(),
+        )
+        .unwrap();
+        let base = slow_fft_payload(
+            (0, 1),
+            &make_link(false),
+            &pipeline.settings,
+            pipeline.config.as_ref(),
+        )
+        .unwrap();
+
+        assert_ne!(fitted["values"], base["values"]);
     }
 
     #[test]
@@ -3044,12 +3127,13 @@ mod tests {
             .map(|value| Complex64::new(value, 0.0))
             .collect::<Vec<_>>();
         let make_frame = |round| CirFrame {
+            processing_epoch: 0,
             event_tick: round as i64,
             event_s: round as f64,
             round,
             usb_sequence: round,
             aligned: baseline.clone(),
-            magnitude_16x: Vec::new(),
+            display: baseline.clone(),
             waterfall: Vec::new(),
             waterfall_x_min: -1.0,
             waterfall_x_max: 1.0,

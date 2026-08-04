@@ -253,5 +253,10 @@ a_normalized = a_raw * 10^((-10 - 20 log10(11.2)) / 20)
 
 and `a_normalized = 1` is `0 dB`. With `LOCK Y SCALE` enabled every link uses
 fixed common limits: `0..1` in linear mode and `-60..0 dB` in dB mode. Unlocked
-plots auto-range in the same normalized units. Waterfall and FFT units are not
-changed by this display conversion.
+plots auto-range in the same normalized units.
+
+The selected Live CIR fit is also the complex-signal source for CIR Waterfall,
+Slow-Time FFT, and Fast-Time FFT. Those products do not repeat gain or phase
+fitting: `Off` supplies the base-aligned CIR, while `Linear LS` or `Robust Grid`
+supplies that mode's fitted CIR. Their existing product-specific processing and
+units remain unchanged; they do not apply the Live CIR display normalization.
