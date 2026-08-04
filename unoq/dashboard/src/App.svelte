@@ -16,9 +16,10 @@
   let phaseMode = $state(false);
   let periodogramMode = $state(false);
   let dbMode = $state(false);
-  let distanceMode: 'ss'|'ds'|'both' = $state('both');
+  let distanceMode: 'ss'|'ds'|'both' = $state('ds');
   let distanceSmoothed = $state(true);
   let distanceCensorNegative = $state(false);
+  let distanceShowBridged = $state(true);
   let distanceHalfRangeCm = $state(10);
   let waterfallFixedScale = $state(true);
   let waterfallScaleMin = $state(-60);
@@ -516,6 +517,7 @@
           <div class="segmented" aria-label="Ranging series"><button class:active={distanceMode === 'ss'} onclick={() => distanceMode = 'ss'}>SS-TWR</button><button class:active={distanceMode === 'ds'} onclick={() => distanceMode = 'ds'}>DS-TWR</button><button class:active={distanceMode === 'both'} onclick={() => distanceMode = 'both'}>Both</button></div>
           <label class="display-toggle"><input type="checkbox" bind:checked={distanceSmoothed} />SMOOTHED LINES</label>
           <label class="display-toggle"><input type="checkbox" bind:checked={distanceCensorNegative} />CENSOR NEGATIVE</label>
+          <label class="display-toggle"><input type="checkbox" bind:checked={distanceShowBridged} onchange={() => live.setShowBridgedDs(distanceShowBridged)} />SHOW BRIDGED</label>
           <label class="display-toggle">Y RANGE<select aria-label="Distance y-axis range" bind:value={distanceHalfRangeCm}>{#each [10,20,50,100,200] as value}<option value={value}>+/- {value} cm</option>{/each}</select></label>
         {:else if active === 'Live CIR'}
           <label class="display-toggle"><input type="checkbox" bind:checked={cirLockScale} />LOCK Y SCALE</label>

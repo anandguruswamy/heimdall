@@ -1,7 +1,7 @@
 # Heimdall
 
-Heimdall is the serious execution project for a room-scale, multi-node UWB
-sensing system.
+Heimdall is a room-scale, multi-node UWB sensing and scene-reconstruction
+system built around DWM3001 radios and an Arduino UNO Q gateway.
 
 ## Goal
 
@@ -11,17 +11,28 @@ One node is attached to an Arduino UNO Q over USB CDC. The UNO Q acts as the
 fusion hub: it receives the UWB backhaul, validates and archives observations,
 estimates geometry, and runs the sensing pipeline.
 
-## Current scope
+## Current status
 
-1. Prove one gateway and one peer exchange a stable beacon stream.
-2. Forward decoded observations over native USB CDC to the UNO Q.
-3. Add capture/replay so the fusion pipeline is testable without radios.
-4. Implement the fixed-slot multi-node beacon schedule.
-5. Add range/CIR fusion, geometry calibration, and sensing outputs.
+- The N=5/M=2 radio profile is hardware-qualified with all five nodes active.
+  Each 35 ms cycle provides 20 directed links at 28.571 Hz with 64 complex CIR
+  taps per observation.
+- The gateway exports the full roster over native USB CDC without steady-state
+  loss at the modeled 187,200 B/s load while keeping radio timing independent
+  of USB backpressure.
+- The Rust service validates, archives, and replays observations and serves the
+  live DSP dashboard. The deployed split path can forward validated records
+  from the UNO Q agent to the server over direct Ethernet or Wi-Fi.
+- Range/CIR processing, board-geometry estimation, and experimental 3D
+  multistatic backprojection are implemented. Compact neural scene
+  reconstruction is specified as a research direction, not yet a validated
+  sensing result.
+- Per-board antenna-delay and phase-center calibration remain outstanding, so
+  current timestamps must not be presented as accurate metric ranges.
 
-The first implementation uses the open Zephyr + DW3000 driver path. The closed
-FiRa/BLE experiments remain useful for lessons and fixtures, but BLE is not the
-Heimdall data plane.
+Radio firmware uses the open Zephyr + DW3000 driver path. The closed FiRa/BLE
+experiments remain useful for lessons and fixtures, but BLE is not the Heimdall
+data plane. See [STATUS.md](STATUS.md) for detailed build, deployment, and
+hardware-validation records.
 
 ## Read first
 
@@ -44,3 +55,4 @@ Heimdall data plane.
 ## Technical papers
 
 - [Offset-Free Joint Time-of-Flight, Clock-Rate, and Clock-Drift Estimation](docs/papers/joint-tof-clock-estimation.html)
+- [Geometry-Conditioned Neural 3D Scene Reconstruction from Multistatic UWB Channel Impulse Responses](docs/papers/neural-uwb-scene-reconstruction.html)

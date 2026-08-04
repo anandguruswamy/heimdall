@@ -1,7 +1,21 @@
 import type { Envelope, LinkLiveData, PlotFrame, PositionRange, TopicKey } from './types';
+import type { PositionSolution } from './positions';
 
 const colors = { amber: '#f4bd62', teal: '#45e0c1', violet: '#b995ff', blue: '#57a9ff' };
 const MAX_LIVE_HISTORY = 160;
+const BOARD_FREEZE_STORAGE_KEY = 'heimdall-board-freeze-v1';
+export type BoardFreezeState = {
+  ranges: PositionRange[];
+  cirReferences: Record<string, Record<string, unknown>>;
+  source: 'raw'|'smoothed'|'ultra';
+  origin: number;
+  xAxis: number;
+  xyPlane: number;
+  above: number;
+  nodeCount: number;
+  configurationRevision: number;
+  solution: PositionSolution;
+};
 const lowerBound = (values: number[], value: number) => { let lo=0,hi=values.length;while(lo<hi){const mid=(lo+hi)>>1;if(values[mid]<value)lo=mid+1;else hi=mid;}return lo; };
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' ? value as Record<string, unknown> : {};
 const number = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? value : undefined;
@@ -37,7 +51,7 @@ function lineFrame(topic: TopicKey, payload: Record<string, unknown>): PlotFrame
     const smoothDs = centimetres(['smoothed_ds_cm','ds_smoothed_cm'], ['smoothed_ds','ds_smoothed']);
     if (!rawSs && !smoothSs && !rawDs && !smoothDs) return undefined;
     const [min,max] = extrema([rawSs,smoothSs,rawDs,smoothDs],[0,1000]);
-    return { series: [smoothSs && { data: smoothSs, color: colors.amber, width: 2, ranging: 'ss' as const, smoothed: true }, rawSs && { data: rawSs, color: colors.amber, points: true, ranging: 'ss' as const }, smoothDs && { data: smoothDs, color: colors.violet, width: 2, ranging: 'ds' as const, smoothed: true }, rawDs && { data: rawDs, color: colors.violet, points: true, ranging: 'ds' as const }].filter(Boolean) as NonNullable<PlotFrame['series']>, min, max, xLabel:'history sample', yLabel:'cm' };
+    return { series: [smoothSs && { data: smoothSs, color: colors.amber, width: 2, ranging: 'ss' as const, smoothed: true }, rawSs && { data: rawSs, color: colors.amber, points: true, pointSize: 4, ranging: 'ss' as const }, smoothDs && { data: smoothDs, color: colors.violet, width: 2, ranging: 'ds' as const, smoothed: true }, rawDs && { data: rawDs, color: colors.violet, points: true, pointSize: 4, ranging: 'ds' as const }].filter(Boolean) as NonNullable<PlotFrame['series']>, min, max, xLabel:'history sample', yLabel:'cm' };
   }
   if (topic === 'fast-fft') {
     const magnitude = firstArray(payload, ['magnitude', 'magnitudes', 'db']);
@@ -98,9 +112,13 @@ export class LiveStore {
   private waterfallSeconds = 5;
   private cirHistory = new Map<string, Record<string, unknown>[]>();
   readonly cirReference = new Map<string, Record<string, unknown>>();
+  boardFreeze: BoardFreezeState | null = null;
+  showBridgedDs = true;
   private processingEpoch: bigint | undefined;
   private configurationEpoch: bigint | undefined;
-  constructor(private readonly changed: () => void) {}
+  constructor(private readonly changed: () => void) {
+    this.restoreBoardFreeze();
+  }
 
   resetStream(): void {
     this.links.clear();
@@ -111,7 +129,7 @@ export class LiveStore {
     this.dirtyFrames.clear();
     this.framePayloads.clear();
     this.cirHistory.clear();
-    this.cirReference.clear();
+    if (!this.boardFreeze) this.cirReference.clear();
     this.currentRound = undefined;
     this.lastError = '';
     this.changed();
@@ -129,7 +147,7 @@ export class LiveStore {
       this.dirtyFrames.clear();
       this.framePayloads.clear();
       this.cirHistory.clear();
-      this.cirReference.clear();
+      if (!this.boardFreeze) this.cirReference.clear();
     }
     this.processingEpoch = envelope.processingEpoch;
     this.configurationEpoch = envelope.configurationEpoch;
@@ -146,11 +164,15 @@ export class LiveStore {
     const id = `${from}>${to}`;
     const current = this.links.get(id) ?? { payloads: {} };
     if (topic === 'distance') {
+      const sample=record(payload.sample),kind=String(sample.kind ?? (number(payload.raw_ds) !== undefined ? 'ds' : ''));
+      if (kind === 'ds' && Boolean(sample.bridged) && !this.showBridgedDs) {
+        this.changed();
+        return;
+      }
       const keys=['raw_ss_cm','smoothed_ss_cm','raw_ds_cm','smoothed_ds_cm','raw_ss','smoothed_ss','raw_ds','smoothed_ds'];
       keys.forEach((key) => {
         const value = number(payload[key]); if (value !== undefined) { this.append(`${id}:distance:${key}`,value); if(!key.endsWith('_cm'))this.append(`${id}:distance:${key}_cm`,value*100); }
       });
-      const sample=record(payload.sample),kind=String(sample.kind ?? (number(payload.raw_ds) !== undefined ? 'ds' : ''));
       if (kind === 'ds') {
         const sf=number(sample.from) ?? from,st=number(sample.to) ?? to,a=Math.min(sf,st),b=Math.max(sf,st),key=`${a}>${b}`;
         const raw=number(payload.raw_ds) ?? number(sample.raw_m),smoothed=number(payload.smoothed_ds) ?? number(sample.moving_average_m),eventS=number(sample.event_s) ?? number(payload.event_s) ?? 0,round=number(sample.round) ?? number(payload.round) ?? 0;
@@ -212,7 +234,44 @@ export class LiveStore {
 
   setWaterfallSeconds(seconds: number): void { this.waterfallSeconds=Math.max(1,Math.min(30,seconds)); }
 
+  setShowBridgedDs(value: boolean): void {
+    if (this.showBridgedDs === value) return;
+    this.showBridgedDs = value;
+    if (!value) {
+      const suffix = ['raw_ds_cm','smoothed_ds_cm','raw_ds','smoothed_ds'].map((name) => `:distance:${name}`);
+      for (const key of Array.from(this.histories.keys())) {
+        if (suffix.some((item) => key.endsWith(item))) this.histories.delete(key);
+      }
+    }
+    this.changed();
+  }
+
+  freezeBoard(
+    ranges: PositionRange[],
+    options: Omit<BoardFreezeState, 'ranges'|'cirReferences'>,
+    cirCount = 20,
+  ): void {
+    this.captureCirReference(cirCount);
+    this.boardFreeze = {
+      ...options,
+      ranges: ranges.map((item) => ({ ...item, window: item.window.slice() })),
+      cirReferences: Object.fromEntries(
+        Array.from(this.cirReference, ([id, value]) => [id, structuredClone(value)]),
+      ),
+    };
+    this.persistBoardFreeze();
+    this.changed();
+  }
+
+  unfreezeBoard(): void {
+    this.boardFreeze = null;
+    this.cirReference.clear();
+    try { localStorage.removeItem(BOARD_FREEZE_STORAGE_KEY); } catch {}
+    this.changed();
+  }
+
   captureCirReference(count = 20): void {
+    this.cirReference.clear();
     for (const [id, history] of this.cirHistory) {
       if (history.length === 0) continue;
       const recent = history.slice(-count);
@@ -243,6 +302,26 @@ export class LiveStore {
       this.cirReference.set(id, { ...selected });
     }
     this.changed();
+  }
+
+  private restoreBoardFreeze(): void {
+    try {
+      const raw = localStorage.getItem(BOARD_FREEZE_STORAGE_KEY);
+      if (!raw) return;
+      const value = JSON.parse(raw) as BoardFreezeState;
+      if (!Array.isArray(value.ranges)
+        || !value.ranges.every((item) => Number.isInteger(item.a) && Number.isInteger(item.b) && Array.isArray(item.window))
+        || !value.cirReferences || typeof value.cirReferences !== 'object'
+        || !['raw','smoothed','ultra'].includes(value.source)
+        || !Array.isArray(value.solution?.positions) || !Array.isArray(value.solution?.edges)
+        || ![value.origin,value.xAxis,value.xyPlane,value.above,value.nodeCount,value.configurationRevision].every(Number.isInteger)) return;
+      this.boardFreeze = value;
+      for (const [id, reference] of Object.entries(value.cirReferences)) this.cirReference.set(id, reference);
+    } catch {}
+  }
+
+  private persistBoardFreeze(): void {
+    try { localStorage.setItem(BOARD_FREEZE_STORAGE_KEY, JSON.stringify(this.boardFreeze)); } catch {}
   }
 
   private append(key: string, value: number): Float32Array {

@@ -670,8 +670,14 @@ impl Pipeline {
         let mut payloads = Vec::new();
         if want_cir {
             let display = if self.settings.cir_nuisance_fit {
-                cir_nuisance_fitted(link, &aligned, observation.observed_k, observation.usb_sequence, 32)
-                    .unwrap_or_else(|| aligned.clone())
+                cir_nuisance_fitted(
+                    link,
+                    &aligned,
+                    observation.observed_k,
+                    observation.usb_sequence,
+                    32,
+                )
+                .unwrap_or_else(|| aligned.clone())
             } else {
                 aligned.clone()
             };
@@ -1050,6 +1056,7 @@ impl Pipeline {
     }
 
     pub fn update_settings(&mut self, value: &Value) -> Result<DspSettings> {
+        let previous = self.settings.clone();
         let mut merged = serde_json::to_value(&self.settings)?;
         let Some(update) = value.as_object() else {
             bail!("settings must be a JSON object");
@@ -1065,13 +1072,20 @@ impl Pipeline {
         }
         let next: DspSettings = serde_json::from_value(merged)?;
         validate_settings(&next)?;
+        let preserve_cir_history = {
+            let mut comparable = previous;
+            comparable.cir_nuisance_fit = next.cir_nuisance_fit;
+            comparable == next
+        };
         self.settings = next;
         self.processing_epoch += 1;
         self.cfo = DirectionalCfoIntegrator::new(self.settings.cfo_half_life_s);
         for link in self.links.values_mut() {
-            link.reference = CirReference::new(reference_mode(&self.settings));
-            link.reference_marker_raw = None;
-            link.cir.clear();
+            if !preserve_cir_history {
+                link.reference = CirReference::new(reference_mode(&self.settings));
+                link.reference_marker_raw = None;
+                link.cir.clear();
+            }
             link.last_slow_fft_s = None;
             link.latest_fast_fft = None;
             link.latest_slow_fft = None;
@@ -1862,7 +1876,19 @@ fn project_static_nuisance(rows: &[&[Complex64]], target: &mut [Complex64]) {
     if rows.len() < 3 {
         return subtract_complex_mean(rows, target);
     }
+    let Some(model) = static_nuisance_model(rows, target) else {
+        return subtract_complex_mean(rows, target);
+    };
+    for (value, fitted) in target.iter_mut().zip(model) {
+        *value -= fitted;
+    }
+}
+
+fn static_nuisance_model(rows: &[&[Complex64]], target: &[Complex64]) -> Option<Vec<Complex64>> {
     let n = target.len();
+    if n == 0 || rows.is_empty() || rows.iter().any(|row| row.len() != n) {
+        return None;
+    }
     let h: Vec<_> = (0..n)
         .map(|x| {
             let (mut re, mut im) = (0.0, 0.0);
@@ -1891,9 +1917,6 @@ fn project_static_nuisance(rows: &[&[Complex64]], target: &mut [Complex64]) {
         bi += hr * di - hi * dr;
     }
     let det = a * c - br * br - bi * bi;
-    if !(det > 1e-18 * a * c) {
-        return subtract_complex_mean(rows, target);
-    }
     let (mut pr, mut pi, mut qr, mut qi) = (0.0, 0.0, 0.0, 0.0);
     for x in 0..n {
         let (hr, hi) = h[x];
@@ -1903,16 +1926,30 @@ fn project_static_nuisance(rows: &[&[Complex64]], target: &mut [Complex64]) {
         qr += dr * target[x].re + di * target[x].im;
         qi += dr * target[x].im - di * target[x].re;
     }
-    let ar = (c * pr - (br * qr - bi * qi)) / det;
-    let ai = (c * pi - (br * qi + bi * qr)) / det;
-    let br2 = (-(br * pr + bi * pi) + a * qr) / det;
-    let bi2 = (-(br * pi - bi * pr) + a * qi) / det;
-    for x in 0..n {
-        let (hr, hi) = h[x];
-        let (dr, di) = d[x];
-        target[x].re -= ar * hr - ai * hi + br2 * dr - bi2 * di;
-        target[x].im -= ar * hi + ai * hr + br2 * di + bi2 * dr;
-    }
+    let (ar, ai, br2, bi2) = if det > 1e-18 * a * c {
+        (
+            (c * pr - (br * qr - bi * qi)) / det,
+            (c * pi - (br * qi + bi * qr)) / det,
+            (-(br * pr + bi * pi) + a * qr) / det,
+            (-(br * pi - bi * pr) + a * qi) / det,
+        )
+    } else if a > 1e-30 {
+        (pr / a, pi / a, 0.0, 0.0)
+    } else {
+        return None;
+    };
+    Some(
+        (0..n)
+            .map(|x| {
+                let (hr, hi) = h[x];
+                let (dr, di) = d[x];
+                Complex64::new(
+                    ar * hr - ai * hi + br2 * dr - bi2 * di,
+                    ar * hi + ai * hr + br2 * di + bi2 * dr,
+                )
+            })
+            .collect(),
+    )
 }
 
 fn cir_nuisance_fitted(
@@ -1937,9 +1974,7 @@ fn cir_nuisance_fitted(
     if rows.len() < 3 {
         return None;
     }
-    let mut fitted = aligned.to_vec();
-    project_static_nuisance(&rows, &mut fitted);
-    Some(fitted)
+    static_nuisance_model(&rows, aligned)
 }
 
 fn apply_noise_clip(rows: &mut [Vec<Complex64>], clip_db: f64, x_min: f64, x_max: f64) {
@@ -2416,6 +2451,74 @@ mod tests {
             .unwrap();
         assert_eq!(settings.cfo_half_life_s, 5.0);
         assert_eq!(pipeline.processing_epoch, epoch + 1);
+    }
+
+    #[test]
+    fn cir_nuisance_fit_change_preserves_fit_history() {
+        let mut pipeline = Pipeline::new();
+        pipeline.configure(&hello_record());
+        for sequence in 1..=4 {
+            pipeline.consume_canonical_inner(
+                observation(0, 1, 10 + sequence, 0, 100, sequence),
+                Topic::Cir.bit(),
+            );
+        }
+        let history_len = pipeline.links[&(0, 1)].cir.len();
+        assert!(history_len >= 3);
+
+        pipeline
+            .update_settings(&json!({"cir_nuisance_fit": true}))
+            .unwrap();
+
+        assert_eq!(pipeline.links[&(0, 1)].cir.len(), history_len);
+    }
+
+    #[test]
+    fn cir_nuisance_fit_returns_the_fitted_model_not_the_residual() {
+        let baseline = vec![0.0, 1.0, 3.0, 2.0, 0.5]
+            .into_iter()
+            .map(|value| Complex64::new(value, 0.0))
+            .collect::<Vec<_>>();
+        let make_frame = |round| CirFrame {
+            event_tick: round as i64,
+            event_s: round as f64,
+            round,
+            usb_sequence: round,
+            aligned: baseline.clone(),
+            magnitude_16x: Vec::new(),
+            waterfall: Vec::new(),
+            waterfall_x_min: -1.0,
+            waterfall_x_max: 1.0,
+            marker_raw: 0.0,
+            marker_aligned: 0.0,
+            correlation: 1.0,
+            quality: 0,
+        };
+        let link = LinkState {
+            reference: CirReference::new(ReferenceMode::First),
+            reference_marker_raw: None,
+            cir: vec![make_frame(1), make_frame(2), make_frame(3)],
+            last_slow_fft_s: None,
+            cfo_history: Vec::new(),
+            latest_fast_fft: None,
+            latest_slow_fft: None,
+            waterfall_pending_spike: false,
+            waterfall_persistent_change: false,
+        };
+        let gain_phase = Complex64::new(1.5, 0.75);
+        let target = baseline
+            .iter()
+            .map(|value| gain_phase * value)
+            .collect::<Vec<_>>();
+
+        let fitted = cir_nuisance_fitted(&link, &target, 99, 99, 32).unwrap();
+
+        assert!(
+            fitted
+                .iter()
+                .zip(target)
+                .all(|(actual, expected)| (*actual - expected).norm() < 1e-9)
+        );
     }
 
     #[test]

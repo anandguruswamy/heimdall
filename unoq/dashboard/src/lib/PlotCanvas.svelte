@@ -82,7 +82,7 @@
       for (const s of f.series ?? []) {
         ctx.strokeStyle = s.color; ctx.fillStyle = s.color; ctx.lineWidth = (s.width ?? 1) * devicePixelRatio;
         if (s.points) {
-          const size = 5 * devicePixelRatio;
+          const size = (s.pointSize ?? 5) * devicePixelRatio;
           for (let i = 0; i < s.data.length; i++) { const v = s.data[i]; if (!Number.isFinite(v)) continue; const x = (s.data.length < 2 ? 0.5 : i / (s.data.length - 1)) * w; const y = h - (v - (f.min ?? 0)) / Math.max(Number.EPSILON,(f.max ?? 1) - (f.min ?? 0)) * h; ctx.fillRect(x - size / 2, y - size / 2, size, size); }
         } else {
           ctx.beginPath();
@@ -104,7 +104,7 @@
       }
       for (const s of f.series ?? []) {
         const c=rgb(s.color),vertex=(value:number,index:number)=>[index/Math.max(1,s.data.length-1)*2-1,(value-(f.min??0))/Math.max(Number.EPSILON,(f.max??1)-(f.min??0))*2-1,...c];
-        gl.uniform1f(pointSize, s.points ? 8*devicePixelRatio : 4*devicePixelRatio);
+        gl.uniform1f(pointSize, (s.pointSize ?? (s.points ? 8 : 4)) * devicePixelRatio);
         if (s.points) {
           const vertices=Array.from(s.data).flatMap((value,index)=>Number.isFinite(value)?vertex(value,index):[]);
           gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(vertices),gl.STREAM_DRAW);gl.drawArrays(gl.POINTS,0,vertices.length/5);
