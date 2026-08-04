@@ -9,7 +9,7 @@ use heimdall_dsp::{
     FftWindow, PairCalibrationObservation, QualityFlags, ReferenceMode, SsTwrInput,
     TimeMovingAverage, align_cir_hierarchical, asymmetric_ds_twr, calibrate_offsets, common_phase,
     fast_fft, fast_fft_complex, fractional_align_non_circular, hampel, interpolate_short_gaps,
-    normalized_correlation_delay, resample_cir_16x, resampled_cir_peak, scale_cir, ss_twr,
+    normalized_correlation_delay, resample_cir_16x, scale_cir, ss_twr,
 };
 use heimdall_protocol::{
     CanonicalObservation, CanonicalProcessor, DecodedRecord, HelloRecord, ParserStats,
@@ -656,10 +656,8 @@ impl Pipeline {
                     requested,
                 )
             };
-            if let Some((result, reference_peak)) = grid_reference.as_ref().and_then(|reference| {
-                let peak = resampled_cir_peak(reference, self.settings.cir_grid_resampling_factor)?;
+            if let Some(result) = grid_reference.as_ref().and_then(|reference| {
                 align_cir_hierarchical(reference, &scaled, cir_alignment_config(&self.settings))
-                    .map(|result| (result, peak))
             }) {
                 display_delay_samples = result.delay_samples;
                 display_phase = result.phase_radians;
@@ -670,7 +668,7 @@ impl Pipeline {
                 };
                 let target_peak =
                     11.2 * 10.0_f64.powf((self.settings.cir_grid_reference_peak_db + 10.0) / 20.0);
-                let level_gain = target_peak / reference_peak;
+                let level_gain = target_peak / result.reference_peak;
                 let total_gain_db = 20.0 * level_gain.log10() - result.gain_db;
                 let corrected = result
                     .corrected

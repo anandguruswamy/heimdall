@@ -191,6 +191,7 @@ pub struct CirAlignmentResult {
     pub gain_db: f64,
     pub phase_radians: f64,
     pub phase_degrees: f64,
+    pub reference_peak: f64,
     pub score: f64,
     pub matched_count: usize,
     pub eligible_count: usize,
@@ -215,6 +216,13 @@ struct CorrectionCandidate {
     re: f64,
     im: f64,
     norm_sqr: f64,
+}
+
+#[derive(Clone, Copy)]
+struct EligibleSample {
+    position: i64,
+    conjugate: Complex64,
+    inverse_norm_sqr: f64,
 }
 
 fn finite_complex(value: Complex64) -> bool {
@@ -269,7 +277,7 @@ fn delay_grid(minimum: f64, maximum: f64, factor: usize, step: f64) -> Vec<i64> 
 
 fn search_alignment_grid(
     current: &[Complex64],
-    eligible_samples: &[(i64, Complex64)],
+    eligible_samples: &[EligibleSample],
     config: CirAlignmentConfig,
     interpolation_factor: usize,
     delays: &[i64],
@@ -318,13 +326,13 @@ fn search_alignment_grid(
         .par_iter()
         .map(|&delay_units| {
             let mut samples = Vec::with_capacity(eligible_samples.len());
-            for &(reference_position, x) in eligible_samples {
-                let position = reference_position + delay_units;
+            for sample in eligible_samples {
+                let position = sample.position + delay_units;
                 if position < 0 || position > (current.len() - 1) as i64 * factor {
                     continue;
                 }
                 let value = interpolate_runtime(current, position, interpolation_factor, true)?;
-                let ratio = value * x.conj() / x.norm_sqr();
+                let ratio = value * sample.conjugate * sample.inverse_norm_sqr;
                 samples.push((ratio.re, ratio.im, ratio.norm_sqr()));
             }
             if samples.is_empty() {
@@ -476,13 +484,21 @@ pub fn align_cir_hierarchical(
     // Delay hypotheses are representable on the configured resampling grid.
     // At P=1 the nominal half-tap coarse spacing therefore becomes one tap.
     let search_factor = config.resampling_factor;
-    let eligible_samples = (0..=(reference.len() - 1) * search_factor)
-        .filter_map(|position| {
-            let value = interpolate_runtime(reference, position as i64, search_factor, true)?;
-            (value.norm() >= threshold && value.norm_sqr() > 0.0)
-                .then_some((position as i64, value))
-        })
-        .collect::<Vec<_>>();
+    let mut eligible_samples = Vec::new();
+    let mut reference_peak = 0.0_f64;
+    for position in 0..=(reference.len() - 1) * search_factor {
+        let value = interpolate_runtime(reference, position as i64, search_factor, true)?;
+        let norm_sqr = value.norm_sqr();
+        let norm = value.norm();
+        reference_peak = reference_peak.max(norm);
+        if norm >= threshold && norm_sqr > 0.0 {
+            eligible_samples.push(EligibleSample {
+                position: position as i64,
+                conjugate: value.conj(),
+                inverse_norm_sqr: norm_sqr.recip(),
+            });
+        }
+    }
     if eligible_samples.is_empty() {
         return None;
     }
@@ -552,6 +568,7 @@ pub fn align_cir_hierarchical(
         gain_db: best.gain_db,
         phase_radians,
         phase_degrees: best.phase_degrees,
+        reference_peak,
         score: best.score,
         matched_count: best.matched_count,
         eligible_count: best.eligible_count,
@@ -849,6 +866,9 @@ mod tests {
                 result.phase_degrees
             );
             assert!((result.phase_radians - result.phase_degrees.to_radians()).abs() < 1e-12);
+            assert!(
+                (result.reference_peak - resampled_cir_peak(&reference, 16).unwrap()).abs() < 1e-12
+            );
             assert!(result.matched_count * 2 > result.eligible_count);
             assert!(result.matched_count < result.eligible_count);
             assert_eq!(result.corrected.len(), current.len());
