@@ -221,6 +221,25 @@ fn finite_complex(value: Complex64) -> bool {
     value.re.is_finite() && value.im.is_finite()
 }
 
+// Maximum error is below one 5-degree coarse cell. Candidate pruning adds a
+// full guard cell; retained candidates are still scored with exact arithmetic.
+fn approximate_phase_degrees(imaginary: f64, real: f64) -> f64 {
+    let abs_imaginary = imaginary.abs() + f64::MIN_POSITIVE;
+    let (ratio, angle) = if real >= 0.0 {
+        (
+            (real - abs_imaginary) / (real + abs_imaginary),
+            std::f64::consts::FRAC_PI_4,
+        )
+    } else {
+        (
+            (real + abs_imaginary) / (abs_imaginary - real),
+            3.0 * std::f64::consts::FRAC_PI_4,
+        )
+    };
+    let angle = angle - std::f64::consts::FRAC_PI_4 * ratio;
+    if imaginary < 0.0 { -angle } else { angle }.to_degrees()
+}
+
 fn inclusive_grid(minimum: f64, maximum: f64, step: f64) -> Vec<f64> {
     let count = ((maximum - minimum) / step).floor() as usize;
     let mut values = (0..=count)
@@ -290,6 +309,11 @@ fn search_alignment_grid(
     } else {
         None
     };
+    let maximum_phase_error = if config.eta < 1.0 {
+        config.eta.asin().to_degrees()
+    } else {
+        180.0
+    };
     let per_delay = delays
         .par_iter()
         .map(|&delay_units| {
@@ -313,16 +337,13 @@ fn search_alignment_grid(
                 if ratio_norm <= 0.0 {
                     continue;
                 }
-                let ratio_phase = ratio_im.atan2(ratio_re).to_degrees();
+                let ratio_phase =
+                    full_phase_step.map(|_| approximate_phase_degrees(ratio_im, ratio_re));
                 for (gain_index, &(_, inverse_gain)) in gains.iter().enumerate() {
                     let corrected_norm = inverse_gain * ratio_norm;
                     if (corrected_norm - 1.0).abs() >= config.eta {
                         continue;
                     }
-                    let cosine_limit = ((corrected_norm * corrected_norm + 1.0 - eta_sqr)
-                        / (2.0 * corrected_norm))
-                        .clamp(-1.0, 1.0);
-                    let max_phase_error = cosine_limit.acos().to_degrees();
                     let mut score_phase = |phase_index: usize| {
                         let candidate_index = gain_index * phases.len() + phase_index;
                         let correction = &corrections[candidate_index];
@@ -337,9 +358,9 @@ fn search_alignment_grid(
                     };
                     if let Some(step) = full_phase_step {
                         let count = phases.len() as isize;
-                        let wrapped = (ratio_phase + 180.0).rem_euclid(360.0) - 180.0;
+                        let wrapped = (ratio_phase.unwrap() + 180.0).rem_euclid(360.0) - 180.0;
                         let center = ((wrapped - phases_degrees[0]) / step).round() as isize;
-                        let radius = (max_phase_error / step).ceil() as isize + 1;
+                        let radius = (maximum_phase_error / step).ceil() as isize + 1;
                         if radius * 2 + 1 >= count {
                             for phase_index in 0..phases.len() {
                                 score_phase(phase_index);
@@ -843,6 +864,16 @@ mod tests {
             align_cir_hierarchical(&reference, &current, CirAlignmentConfig::default()).unwrap();
         let phase_error = (result.phase_degrees - 179.0 + 180.0).rem_euclid(360.0) - 180.0;
         assert!(phase_error.abs() <= 5.0, "phase={}", result.phase_degrees);
+    }
+
+    #[test]
+    fn approximate_phase_stays_within_coarse_guard_cell() {
+        for degrees in -180..180 {
+            let value = Complex64::from_polar(1.0, (degrees as f64).to_radians());
+            let approximate = approximate_phase_degrees(value.im, value.re);
+            let error = (approximate - degrees as f64 + 180.0).rem_euclid(360.0) - 180.0;
+            assert!(error.abs() < 5.0, "degrees={degrees}, error={error}");
+        }
     }
 
     #[test]

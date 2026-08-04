@@ -70,6 +70,8 @@ The rolling reference window is configurable and defaults to 32 frames. The
 service may constrain the accepted range to protect memory and frame latency.
 Reference construction retains real and imaginary components. Averaging CIR
 magnitudes is not equivalent and is not used.
+Rolling mean and medoid references are refreshed every eight link frames; the
+complete robust grid still runs on every incoming CIR.
 
 ### Noise gate
 

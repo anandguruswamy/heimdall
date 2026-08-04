@@ -65,6 +65,14 @@ struct LinkState {
     latest_slow_fft: Option<Value>,
     waterfall_pending_spike: bool,
     waterfall_persistent_change: bool,
+    rolling_reference_cache: Option<RollingReferenceCache>,
+}
+
+struct RollingReferenceCache {
+    mode: String,
+    window: usize,
+    remaining_frames: usize,
+    reference: Vec<Complex64>,
 }
 
 #[derive(Default)]
@@ -572,6 +580,7 @@ impl Pipeline {
             latest_slow_fft: None,
             waterfall_pending_spike: false,
             waterfall_persistent_change: false,
+            rolling_reference_cache: None,
         });
         let reference = link
             .reference
@@ -619,8 +628,8 @@ impl Pipeline {
                         (Some(reference), "frozen")
                     } else {
                         (
-                            rolling_cir_reference(
-                                &link.cir,
+                            rolling_cir_reference_cached(
+                                link,
                                 self.settings.cir_grid_reference_window,
                                 "rolling_medoid",
                             ),
@@ -629,8 +638,8 @@ impl Pipeline {
                     }
                 } else {
                     (
-                        rolling_cir_reference(
-                            &link.cir,
+                        rolling_cir_reference_cached(
+                            link,
                             self.settings.cir_grid_reference_window,
                             "rolling_medoid",
                         ),
@@ -639,8 +648,8 @@ impl Pipeline {
                 }
             } else {
                 (
-                    rolling_cir_reference(
-                        &link.cir,
+                    rolling_cir_reference_cached(
+                        link,
                         self.settings.cir_grid_reference_window,
                         requested,
                     ),
@@ -1260,6 +1269,7 @@ impl Pipeline {
                 link.reference = CirReference::new(reference_mode(&self.settings));
                 link.reference_marker_raw = None;
                 link.cir.clear();
+                link.rolling_reference_cache = None;
             }
             link.last_slow_fft_s = None;
             link.latest_fast_fft = None;
@@ -1803,28 +1813,52 @@ fn rolling_cir_reference(frames: &[CirFrame], window: usize, mode: &str) -> Opti
         return compatible_cir(&mean, taps).then_some(mean);
     }
 
-    let mut best = (f64::INFINITY, 0);
-    for (index, candidate) in candidates.iter().enumerate() {
-        let distance = candidates
-            .iter()
-            .map(|other| normalized_cir_distance(candidate, other))
-            .sum::<f64>();
-        if distance < best.0 {
-            best = (distance, index);
+    let energies = candidates
+        .iter()
+        .map(|candidate| candidate.iter().map(|value| value.norm_sqr()).sum::<f64>())
+        .collect::<Vec<_>>();
+    let mut distances = vec![0.0; candidates.len()];
+    for left in 0..candidates.len() {
+        for right in left + 1..candidates.len() {
+            let difference = candidates[left]
+                .iter()
+                .zip(candidates[right])
+                .map(|(a, b)| (*a - *b).norm_sqr())
+                .sum::<f64>();
+            let distance = difference / (energies[left] + energies[right]).max(f64::MIN_POSITIVE);
+            distances[left] += distance;
+            distances[right] += distance;
         }
     }
-    Some(candidates[best.1].to_vec())
+    let best = distances
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map(|(index, _)| index)?;
+    Some(candidates[best].to_vec())
 }
 
-fn normalized_cir_distance(a: &[Complex64], b: &[Complex64]) -> f64 {
-    let difference = a
-        .iter()
-        .zip(b)
-        .map(|(a, b)| (*a - *b).norm_sqr())
-        .sum::<f64>();
-    let energy = a.iter().map(|value| value.norm_sqr()).sum::<f64>()
-        + b.iter().map(|value| value.norm_sqr()).sum::<f64>();
-    difference / energy.max(f64::MIN_POSITIVE)
+fn rolling_cir_reference_cached(
+    link: &mut LinkState,
+    window: usize,
+    mode: &str,
+) -> Option<Vec<Complex64>> {
+    if let Some(cache) = &mut link.rolling_reference_cache
+        && cache.mode == mode
+        && cache.window == window
+        && cache.remaining_frames > 0
+    {
+        cache.remaining_frames -= 1;
+        return Some(cache.reference.clone());
+    }
+    let reference = rolling_cir_reference(&link.cir, window, mode)?;
+    link.rolling_reference_cache = Some(RollingReferenceCache {
+        mode: mode.to_owned(),
+        window,
+        remaining_frames: 7,
+        reference: reference.clone(),
+    });
+    Some(reference)
 }
 
 fn reference_mode(settings: &DspSettings) -> ReferenceMode {
@@ -2646,6 +2680,7 @@ mod tests {
             latest_slow_fft: None,
             waterfall_pending_spike: false,
             waterfall_persistent_change: false,
+            rolling_reference_cache: None,
         };
         let settings = DspSettings {
             waterfall_clutter: true,
@@ -3035,6 +3070,7 @@ mod tests {
             latest_slow_fft: None,
             waterfall_pending_spike: false,
             waterfall_persistent_change: false,
+            rolling_reference_cache: None,
         };
         let gain_phase = Complex64::new(1.5, 0.75);
         let target = baseline
