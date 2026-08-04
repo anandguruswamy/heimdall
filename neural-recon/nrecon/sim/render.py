@@ -270,8 +270,13 @@ def chord_attenuation(a: torch.Tensor, b: torch.Tensor, scene: SceneTensors,
 
 def render_scene(scene: SceneTensors, nodes: torch.Tensor, kernel: torch.Tensor,
                  nuis_gain: torch.Tensor = None, nuis_phase: torch.Tensor = None,
-                 noise_std: float = 0.0, gamma: float = GAMMA) -> torch.Tensor:
-    """Assemble Eq. (21): all slots -> complex CIR [L, S_TAPS]."""
+                 noise_std: float = 0.0, gamma: float = GAMMA,
+                 noise_seed: int = 0) -> torch.Tensor:
+    """Assemble Eq. (21): all slots -> complex CIR [L, S_TAPS].
+
+    `noise_std` is a scalar or broadcastable to [L]; the per-link complex
+    AWGN is reproducible for a given `noise_seed` (CPU).
+    """
     links = directed_links(nodes.shape[0])
     p_tx, p_rx = _link_endpoints(nodes, links)
     los = torch.linalg.vector_norm(p_tx - p_rx, dim=-1)
@@ -309,10 +314,15 @@ def render_scene(scene: SceneTensors, nodes: torch.Tensor, kernel: torch.Tensor,
         h = h * nuis_gain[:, None]
     if nuis_phase is not None:
         h = h * torch.exp(1j * nuis_phase)[:, None]
-    if noise_std > 0.0:
+    if noise_std is not None and float(torch.as_tensor(noise_std).abs().max()) > 0.0:
         rng = torch.Generator(device=nodes.device) if nodes.is_cuda else torch.Generator()
-        rng.manual_seed(0)
+        rng.manual_seed(noise_seed)
         real = torch.randn(h.shape, generator=rng, dtype=nodes.dtype, device=nodes.device)
         imag = torch.randn(h.shape, generator=rng, dtype=nodes.dtype, device=nodes.device)
-        h = h + (noise_std / 2.0**0.5) * (real + 1j * imag)
+        std = torch.as_tensor(noise_std, dtype=nodes.dtype, device=nodes.device)
+        if std.ndim == 0:
+            std_t = std
+        else:
+            std_t = std.reshape(-1, 1)
+        h = h + (std_t / 2.0**0.5) * (real + 1j * imag)
     return h

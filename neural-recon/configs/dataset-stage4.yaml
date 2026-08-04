@@ -1,0 +1,30 @@
+# Stage 4 (Algorithm 1 step 4): randomized non-degenerate N=5 layouts,
+# two layouts per scene (same objects, different node geometry); full
+# nuisance like stage 3.
+stage: 4
+scenes: 10000
+base_seed: 300000
+node_mode: random
+jitter_m: 0.0
+layouts_per_scene: 2
+room:
+  x_range: [3, 8]
+  y_range: [3, 8]
+  z_max: [2.2, 3.2]
+  partitions: [0, 2]
+  planes: true
+surfels: {count: [1, 4]}
+furniture: {count: [0, 3]}
+people: {count: [0, 2], height: [1.5, 1.95], radius: [0.12, 0.22]}
+hw:
+  gain_db: [0.0, 1.5]
+  phase: true
+  noise_std: [0.002, 0.6]
+  dgc: [3, 6]
+  accum: [40, 200]
+  cfo_ppm: [0.0, 10.0]
+  fp_jitter: 0.15
+  peak_offset: [1.69, 0.2]
+  resid: 0.05
+  missing_link_p: 0.02
+  false_fp_p: 0.005

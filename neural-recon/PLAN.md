@@ -22,7 +22,7 @@ observed command result.
 - [x] **N0** Environment pinned, `nrecon` package imports, empty test suite passes.
 - [x] **N1** Pulse template and correlation kernel frozen with hashed manifest; fractional delay verified to <0.01 tap; differentiable.
 - [x] **N2** UWBRender renders LOS + surfels + planes + capsules; analytic geometry tests pass; autograd matches finite differences (<1e-3 rel, float64); full 48-slot/20-link render completes on CPU.
-- [ ] **N3** Stage 1-4 dataset builders deterministic and schema-validated; re-render-from-labels reproduces stored CIRs bit-exactly; splits are disjoint by scene seed.
+- [x] **N3** Stage 1-4 dataset builders deterministic and schema-validated; re-render-from-labels reproduces stored CIRs bit-exactly; splits are disjoint by scene seed.
 - [ ] **N4** Per-scene optimizer recovers a noiseless surfel from random init; the 2-4 plane + 1 surfel fixed-geometry experiment is run and its verdict (including failure modes) is written to `reports/N4-observability.md`.
 - [ ] **N5** Network builds at 5-8M params; node-relabel/link-permutation invariance verified; missing-link masking verified.
 - [ ] **N6** Curriculum runs 1-4 complete with logged metrics; run 1 overfits to near-zero loss proving end-to-end gradient flow; compute-host decision recorded.

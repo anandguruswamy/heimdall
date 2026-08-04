@@ -1,0 +1,32 @@
+# Stage 3 (Algorithm 1 step 3): stage 2 plus capsules, occlusion, residual
+# kernels, gain/phase/DGC/noise/CFO/missing-link/false-first-path
+# randomization. Nuisance defaults anchored to real statistics
+# (paper Sec. VIII-B: marker ~16.1 taps, peak offset ~1.7 taps,
+# accumulation median 108, DGC 3-6).
+stage: 3
+scenes: 10000
+base_seed: 200000
+node_mode: fixed_live
+jitter_m: 0.03
+layouts_per_scene: 1
+room:
+  x_range: [3, 8]
+  y_range: [3, 8]
+  z_max: [2.2, 3.2]
+  partitions: [0, 2]
+  planes: true
+surfels: {count: [1, 4]}
+furniture: {count: [0, 3]}
+people: {count: [0, 2], height: [1.5, 1.95], radius: [0.12, 0.22]}
+hw:
+  gain_db: [0.0, 1.5]
+  phase: true
+  noise_std: [0.002, 0.6]
+  dgc: [3, 6]
+  accum: [40, 200]
+  cfo_ppm: [0.0, 10.0]
+  fp_jitter: 0.15
+  peak_offset: [1.69, 0.2]
+  resid: 0.05
+  missing_link_p: 0.02
+  false_fp_p: 0.005

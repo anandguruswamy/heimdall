@@ -1,0 +1,18 @@
+# Stage 2 (Algorithm 1 step 2): 10,000 fixed-geometry scenes with 1-5 cm
+# node jitter; rooms with finite planes + surfels; noiseless.
+stage: 2
+scenes: 10000
+base_seed: 100000
+node_mode: fixed_live
+jitter_m: 0.03
+layouts_per_scene: 1
+room:
+  x_range: [3, 8]
+  y_range: [3, 8]
+  z_max: [2.2, 3.2]
+  partitions: [0, 2]
+  planes: true
+surfels: {count: [1, 4]}
+furniture: {count: [0, 3]}
+people: {count: [0, 0]}
+hw: {}

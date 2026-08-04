@@ -105,3 +105,30 @@ Append dated entries. Never rewrite history; supersede with a new entry.
   `artifacts/demo/`. Note: the live node layout places nodes 0-2 on the
   floor plane (z = 0), which is exactly the degenerate image-source case
   exercised above.
+
+## 2026-08-04 Phase 3 dataset schema and semantics
+
+- Shard schema extends the plan's array list with `fp_aligned [B,L] f32`,
+  the total alignment shift (marker + hardware peak offset) actually
+  applied to each CIR. Without it the bit-exact re-render consistency
+  check cannot reproduce the stored CIRs (the stored `fp_q10_6` may be
+  corrupted by false-first-path injection).
+- False-first-path injection (the ~72-sample CIA anomaly) corrupts the
+  recorded `fp_q10_6`/first-path metadata only; the CIR window remains
+  aligned to the true first path. Modeling choice, v1.
+- `layouts_per_scene > 1` (stage 4) renders the same sampled scene under
+  several node layouts: objects are drawn from `PCG64(seed)` and the
+  layout from a dedicated layout RNG, so objects are bit-identical across
+  layouts and the room seed (and therefore the train/val/test split) is
+  shared.
+- Per-link complex AWGN is reproducible: `render_scene` now takes a
+  `noise_seed` and an optional per-link `noise_std` tensor; the record
+  pipeline uses the scene seed, so rebuild-by-seed and re-render-from-
+  labels are both bit-exact on CPU.
+- Split assignment is by hash of the room seed (80/10/10), so stage 4
+  holds out entire room families from test. `cir_start = round(f) - 16`
+  per Table I; `fp_q10_6 = round((f_recorded + cir_start) * 64)` per
+  Eq. (3).
+- Full stage 1 build (100 scenes): measured 29.5 scenes/s, built and
+  validated (schema/manifest/determinism/consistency/splits all PASSED).
+  Stages 2-4 (10k scenes) are deferred to Phase 6 per the plan.
