@@ -102,6 +102,21 @@ keeps its required numerical dependency small.
 The validated wheel is cached under `windows-x86_64/`. Zarr export is optional
 and is not yet a pinned deployment dependency.
 
+## Neural-recon host tooling
+
+The `neural-recon/` subfolder runs on the same validated CPython 3.10 Windows
+x86-64 interpreter as radar-map (under ARM64 emulation). Exact pins are in
+`neural-recon/requirements.lock`; torch is the CPU-only PyPI Windows build
+(CUDA training host is a Phase 6 decision point).
+
+| Tool | Required version | Host asset | Purpose | Download |
+|---|---|---|---|---|
+| NumPy | 2.2.6 | CPython 3.10 Windows x86-64 wheel (cached, same asset as radar-map) | Array numerics | [official wheel](https://files.pythonhosted.org/packages/a3/dd/4b822569d6b96c39d1215dbae0582fd99954dcbcf0c1a13c61783feaca3f/numpy-2.2.6-cp310-cp310-win_amd64.whl) |
+| SciPy | 1.15.3 | CPython 3.10 Windows x86-64 wheel | Hungarian assignment, signal processing | [PyPI](https://pypi.org/project/scipy/1.15.3/) |
+| PyTorch | 2.13.0 (CPU) | CPython 3.10 Windows x86-64 wheel | Differentiable renderer and network | [PyPI](https://pypi.org/project/torch/2.13.0/) |
+| PyYAML | 6.0.3 | CPython 3.10 Windows x86-64 wheel (cached, same asset as west setup) | Config files | [PyPI](https://pypi.org/project/PyYAML/6.0.3/) |
+| pytest | 9.1.1 | pure-Python wheel | Test entry | [PyPI](https://pypi.org/project/pytest/9.1.1/) |
+
 ## Zephyr SDK asset names
 
 For SDK 0.17.4 on Windows, the known assets are:
@@ -145,6 +160,9 @@ add the installer files themselves to Git.
 | `windows-x86_64/zadig-2.9.exe` | 2.9 | Windows x86-64 | `4ECAA95DF3DA3621486A043AEF8B3050B8BAFE7C901402871E816229EF82039B` | WinUSB workaround; use only for J-Link MI_02 |
 | `linux-arm64/JLink_Linux_V962_arm64.deb` | 9.62 | Linux ARM64 | `F4BD3F3DC7EAD379EB9BC7BDF858CF8B1296FB82573B5A04B5A7248AA8877F74` | UNO Q J-Link package |
 | `linux-arm64/rustup-init-aarch64-unknown-linux-gnu` | current rustup bootstrap, fetched 2026-07-27 | Linux ARM64 | `9732D6C5E2A098D3521FCA8145D826AE0AAA067EF2385EAD08E6FEAC88FA5792` | Official Rust bootstrap; install pinned Rust 1.93.1 |
+| `common-python/torch-2.13.0-cp310-cp310-win_amd64.whl` | 2.13.0 | CPython 3.10 Windows x86-64 | `2BD30B6B730D987FA386CE3898933762C5CB8CC82EB0535211D787CC3CE2DFEB` | Neural-recon CPU-only torch |
+| `common-python/scipy-1.15.3-cp310-cp310-win_amd64.whl` | 1.15.3 | CPython 3.10 Windows x86-64 | `9D61E97B186A57350F6D6FD72640F9E99D5A4A2B8FBF4B9EE9A841EAB327DC13` | Neural-recon scipy |
+| `common-python/pytest-9.1.1-py3-none-any.whl` | 9.1.1 | Python | `37A86B45EFB9A47A61A36449063E8E18D0CAB3161329FC099EB21783169C4F0C` | Neural-recon test entry |
 | `linux-arm64/zig-aarch64-linux-0.15.2.tar.xz` | 0.15.2 | Linux ARM64 | `958ED7D1E00D0EA76590D27666EFBF7A932281B3D7BA0C6B01B0FF26498F667F` | Native compiler/linker without root installation |
 
 On PowerShell, calculate a checksum with:

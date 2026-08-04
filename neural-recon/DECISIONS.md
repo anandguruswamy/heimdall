@@ -33,3 +33,18 @@ Append dated entries. Never rewrite history; supersede with a new entry.
   on the actual host, then added to `tools/README.md` per the workspace
   tooling rule. CPU-only development locally; CUDA training host is a Phase 6
   decision point.
+
+## 2026-08-04 Phase 0 environment resolved
+
+- Interpreter: CPython 3.10.6 x86-64 (AMD64) at
+  `C:\Program Files\Python310\python.exe`, the same validated interpreter
+  used by `host-tools/radar-map` (runs under Windows ARM64 emulation).
+- Resolved pins (see `requirements.lock`): numpy 2.2.6 (cached wheel,
+  checksum verified), scipy 1.15.3, torch 2.13.0+cpu (PyPI Windows CPU
+  build), PyYAML 6.0.3 (cached wheel, checksum verified), pytest 9.1.1.
+  Wheel provenance and SHA-256 added to `tools/README.md`; torch/scipy/
+  pytest wheels retained under `tools/installers/common-python/`.
+- `requirements.lock` is `pip freeze` output with the two locally installed
+  wheels normalized from `numpy @ file:///...` absolute paths to plain
+  version pins, so the lock is portable to another machine; the wheel
+  checksums in `tools/README.md` pin integrity instead.

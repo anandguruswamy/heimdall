@@ -19,7 +19,7 @@ observed command result.
 
 ## Gate checklist
 
-- [ ] **N0** Environment pinned, `nrecon` package imports, empty test suite passes.
+- [x] **N0** Environment pinned, `nrecon` package imports, empty test suite passes.
 - [ ] **N1** Pulse template and correlation kernel frozen with hashed manifest; fractional delay verified to <0.01 tap; differentiable.
 - [ ] **N2** UWBRender renders LOS + surfels + planes + capsules; analytic geometry tests pass; autograd matches finite differences (<1e-3 rel, float64); full 48-slot/20-link render completes on CPU.
 - [ ] **N3** Stage 1-4 dataset builders deterministic and schema-validated; re-render-from-labels reproduces stored CIRs bit-exactly; splits are disjoint by scene seed.
