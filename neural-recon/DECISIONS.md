@@ -48,3 +48,29 @@ Append dated entries. Never rewrite history; supersede with a new entry.
   wheels normalized from `numpy @ file:///...` absolute paths to plain
   version pins, so the lock is portable to another machine; the wheel
   checksums in `tools/README.md` pin integrity instead.
+
+## 2026-08-04 Template v1 -10 dB bandwidth band corrected
+
+- PROVISIONAL sanity band in `plan/phase-1-pulse-kernel.md` step 4 was
+  [400, 620] MHz two-sided at -10 dB. Measured template v1 full width is
+  639.6 MHz; the ideal untapered beta=0.5 SRRC (Tp = 1/499.2 MHz) crosses
+  -10 dB at |f| ~= 323 MHz analytically (full width ~646 MHz), so the cap
+  of 620 MHz was a hypothesis falsified by the physics, not a bug.
+- Band amended (user-approved 2026-08-04) to full-width -10 dB in
+  [500, 700] MHz; test asserts the widened band.
+
+## 2026-08-04 Phase 1 fractional-delay operator details
+
+- The Kaiser window in `fractional_shift` follows the delay argument
+  (`w(k - delta)`, standard variable-delay windowed-sinc): windowing
+  `w(k)` instead produced reconstruction error ~0.1 at delta = 3 taps on
+  an otherwise perfectly bandlimited kernel; with the window tracking the
+  delay the same case is exact to ~1e-15.
+- Delay recovery correlates against the stored kernel referenced to its
+  peak (`sample_kernel(kernel, u - n + peak_tap)`); without centering, the
+  correlation peak sits at u = 24 + delta instead of delta.
+- `sample_kernel` is piecewise-linear and has derivative kinks at integer
+  fine-grid offsets; gradcheck therefore uses non-grid-aligned offsets.
+- Measured delay-recovery accuracy over [-3, 3] taps: max error 0.0 tap
+  (all deltas recovered exactly on the parabolic-refined 1/16-tap grid),
+  comfortably under the <0.01 tap gate.

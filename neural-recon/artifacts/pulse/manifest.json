@@ -1,0 +1,22 @@
+{
+  "format": "neural-recon-pulse-manifest",
+  "version": 1,
+  "generator": "nrecon.sim.pulse",
+  "generator_git_rev": "9a1727a3b5a13242bfe30c2543183a04ad078a81",
+  "fine_grid_step_ns": 0.06260016025641026,
+  "beta": 0.5,
+  "tp_ns": 2.003205128205128,
+  "trunc_half_ns": 4.0,
+  "taper_half_ns": 0.5,
+  "taper_samples": 8,
+  "template_samples": 129,
+  "template_t0_index": 64,
+  "template_sha256": "612bc7eab7061ba9994acb2656aa4aae2ba129beae5c7f4492876c82db31ce6e",
+  "kernel_samples": 257,
+  "kernel_peak_index": 128,
+  "kernel_tx_rx_version": [
+    1,
+    1
+  ],
+  "kernel_sha256": "cca902c5442fcc420076c3b9519f7da17de59dedf3b360c44d2e49cdda561891"
+}
