@@ -33,11 +33,54 @@ paths:
       responses:
         "200":
           description: Current persisted processing settings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  value:
+                    $ref: "#/components/schemas/DspSettings"
     put:
       operationId: updateSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DspSettings"
       responses:
         "200":
           description: New processing epoch
+  /board:
+    get:
+      operationId: getBoardFreezeStatus
+      responses:
+        "200":
+          description: Current board reference freeze status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardFreezeStatus"
+  /board/freeze:
+    post:
+      operationId: freezeBoardReferences
+      responses:
+        "200":
+          description: Board mode frozen with references snapshotted from available link histories
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardFreezeStatus"
+  /board/unfreeze:
+    post:
+      operationId: unfreezeBoardReferences
+      responses:
+        "200":
+          description: Board mode unfrozen and all frozen link references cleared
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoardFreezeStatus"
   /clips:
     get:
       operationId: listClips
@@ -118,6 +161,80 @@ paths:
           description: Versioned FlatBuffers WebSocket stream
 components:
   schemas:
+    DspSettings:
+      type: object
+      additionalProperties: true
+      properties:
+        cir_nuisance_fit:
+          type: boolean
+          deprecated: true
+        cir_fit_algorithm:
+          type: string
+          enum: [off, linear_ls, robust_grid]
+          default: off
+        cir_grid_reference_mode:
+          type: string
+          enum: [frozen, rolling_medoid, rolling_mean]
+          default: frozen
+        cir_grid_reference_window:
+          type: integer
+          minimum: 3
+          maximum: 64
+          default: 32
+        cir_grid_score_mode:
+          type: string
+          enum: [soft, count]
+          default: soft
+        cir_grid_gain_min_db:
+          type: number
+          minimum: -40
+          maximum: 40
+          default: -10
+        cir_grid_gain_max_db:
+          type: number
+          minimum: -40
+          maximum: 40
+          default: 10
+        cir_grid_delay_range_samples:
+          type: number
+          minimum: 0
+          maximum: 8
+          default: 2
+        cir_grid_resampling_factor:
+          type: integer
+          enum: [1, 2, 4, 8, 16]
+          default: 16
+        cir_grid_eta:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 4
+          default: 0.25
+    BoardFreezeStatus:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - board_frozen
+        - reference_count
+        - configuration_epoch
+        - processing_epoch
+      properties:
+        status:
+          type: string
+          enum: [current, frozen, unfrozen]
+        board_frozen:
+          type: boolean
+        reference_count:
+          type: integer
+          minimum: 0
+        configuration_epoch:
+          type: integer
+          format: int64
+          minimum: 0
+        processing_epoch:
+          type: integer
+          format: int64
+          minimum: 0
     CreateClip:
       type: object
       properties:

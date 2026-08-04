@@ -7,4 +7,5 @@ rust-version.workspace = true
 
 [dependencies]
 num-complex.workspace = true
+rayon.workspace = true
 rustfft.workspace = true

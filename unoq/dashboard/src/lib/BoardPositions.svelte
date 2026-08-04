@@ -1,12 +1,13 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import BoardScene from './BoardScene.svelte';
+  import type { HeimdallApi } from './api';
   import type { LiveStore } from './live';
   import type { PositionRange } from './types';
   import { PositionSolver, selectedRanges, type RangeSource } from './positions';
-  let { live, nodeCount, revision }: { live:LiveStore; nodeCount:number; revision:number }=$props();
+  let { live, api, nodeCount, revision }: { live:LiveStore; api:HeimdallApi; nodeCount:number; revision:number }=$props();
   const initialFreeze=untrack(()=>live.boardFreeze);
-  let frozen=$state(Boolean(initialFreeze)),freeze=$state.raw(initialFreeze),source:RangeSource=$state(initialFreeze?.source ?? 'smoothed'),edgeMode:'residual'|'neutral'|'hidden'=$state('residual'),origin=$state(initialFreeze?.origin ?? 0),xAxis=$state(initialFreeze?.xAxis ?? 1),xyPlane=$state(initialFreeze?.xyPlane ?? 2),above=$state(initialFreeze?.above ?? 3);
+  let frozen=$state(Boolean(initialFreeze)),freeze=$state.raw(initialFreeze),freezeBusy=$state(false),freezeError=$state(''),source:RangeSource=$state(initialFreeze?.source ?? 'smoothed'),edgeMode:'residual'|'neutral'|'hidden'=$state('residual'),origin=$state(initialFreeze?.origin ?? 0),xAxis=$state(initialFreeze?.xAxis ?? 1),xyPlane=$state(initialFreeze?.xyPlane ?? 2),above=$state(initialFreeze?.above ?? 3);
   const positionSolver=new PositionSolver();
   const liveRanges=$derived.by(()=>{void revision;return Array.from(live.positionRanges.values()).map((item)=>({...item,window:item.window.slice()}));});
   const effectiveNodeCount=$derived(freeze?.nodeCount ?? nodeCount);
@@ -17,17 +18,32 @@
   const solution=$derived(freeze?.solution ?? positionSolver.solve(effectiveNodeCount,ranges,[origin,xAxis,xyPlane],above));
   const age=(a:number,b:number)=>{const value=rangeState.find((item)=>item.a===Math.min(a,b)&&item.b===Math.max(a,b));return value?Math.max(0,newestRangeEvent-value.eventS):undefined};
   const geometryDocument=$derived.by(()=>({schema:'heimdall-geometry/1',units:'m',revision:`dashboard-${frozen?'frozen':'live'}-${Math.round(newestRangeEvent*1000)}`,frame:{name:'dashboard-range-derived',origin:`N${origin} antenna phase centre`,axes:`+X toward N${xAxis}, +Y side selected by N${xyPlane}, +Z side selected by N${above}`},provenance:{source:'UNO Q Board Positions',range_source:source,configuration_revision:freeze?.configurationRevision ?? revision,newest_event_s:newestRangeEvent,fit_rmse_m:solution.rmse,fit_rank:solution.rank,fit_degrees_of_freedom:solution.degreesOfFreedom,fit_iterations:solution.iterations,fit_converged:solution.converged,pairs:solution.edges.map((edge)=>({a:edge.a,b:edge.b,distance_m:edge.measured,age_s:age(edge.a,edge.b)})),calibration_status:'antenna-delay-not-independently-verified'},nodes:solution.positions.map((point,node_id)=>({node_id,position_m:[point.x,point.y,point.z]}))}));
-  function toggleFreeze(){
-    if(frozen){live.unfreezeBoard();freeze=null;frozen=false;return}
-    live.freezeBoard(liveRanges,{source,origin,xAxis,xyPlane,above,nodeCount,configurationRevision:revision,solution});
-    freeze=live.boardFreeze;frozen=true;
+  async function toggleFreeze(){
+    freezeBusy=true;freezeError='';
+    try {
+      if(frozen){await api.unfreezeBoard();live.unfreezeBoard();freeze=null;frozen=false;return}
+      await api.freezeBoard();
+      live.freezeBoard(liveRanges,{source,origin,xAxis,xyPlane,above,nodeCount,configurationRevision:revision,solution});
+      freeze=live.boardFreeze;frozen=true;
+    } catch { freezeError='BACKEND FREEZE FAILED'; }
+    finally { freezeBusy=false; }
   }
+  onMount(()=>{
+    const reconcile=async()=>{
+      try {
+        const status=await api.boardStatus() as Record<string,unknown>,backendFrozen=Boolean(status.board_frozen);
+        if(frozen&&!backendFrozen){live.unfreezeBoard();freeze=null;frozen=false;freezeError='BACKEND FREEZE LOST - FREEZE AGAIN';}
+        else if(!frozen&&backendFrozen){freezeError='BACKEND REFERENCE IS FROZEN';}
+      } catch {}
+    };
+    void reconcile();const timer=setInterval(reconcile,2000);return()=>clearInterval(timer);
+  });
   const pct=(value:number)=>`${Math.round(value*100)}%`;
   function exportGeometry(){const blob=new Blob([`${JSON.stringify(geometryDocument,null,2)}\n`],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=`heimdall-geometry-${geometryDocument.revision}.json`;link.click();URL.revokeObjectURL(url)}
 </script>
 <section class="positions-layout" data-geometry={JSON.stringify(geometryDocument)}>
   <div class="position-controls panel">
-    <div class="control-row"><button class="capture" onclick={toggleFreeze}>{frozen ? 'UNFREEZE' : 'FREEZE'}</button></div><button class="export" onclick={exportGeometry}>EXPORT GEOMETRY</button>    <label>RANGE SOURCE<select bind:value={source} disabled={frozen}><option value="raw">DS-TWR raw</option><option value="smoothed">DS-TWR smoothed</option><option value="ultra">DS-TWR ultra smoothed</option></select></label>
+    <div class="control-row"><button class="capture" onclick={toggleFreeze} disabled={freezeBusy}>{freezeBusy?'WORKING':frozen ? 'UNFREEZE' : 'FREEZE'}</button></div>{#if freezeError}<p class="freeze-error">{freezeError}</p>{/if}<button class="export" onclick={exportGeometry}>EXPORT GEOMETRY</button>    <label>RANGE SOURCE<select bind:value={source} disabled={frozen}><option value="raw">DS-TWR raw</option><option value="smoothed">DS-TWR smoothed</option><option value="ultra">DS-TWR ultra smoothed</option></select></label>
     <fieldset><legend>COORDINATE FRAME</legend><label>ORIGIN<select bind:value={origin} disabled={frozen}>{#each nodes as node}<option value={node} disabled={node===xAxis||node===xyPlane||node===above}>N{node}</option>{/each}</select></label><label>+X REFERENCE<select bind:value={xAxis} disabled={frozen}>{#each nodes as node}<option value={node} disabled={node===origin||node===xyPlane||node===above}>N{node}</option>{/each}</select></label><label>+Y SIDE REFERENCE<select bind:value={xyPlane} disabled={frozen}>{#each nodes as node}<option value={node} disabled={node===origin||node===xAxis||node===above}>N{node}</option>{/each}</select></label><label>ABOVE PLANE (+Z)<select bind:value={above} disabled={frozen}>{#each nodes as node}<option value={node} disabled={node===origin||node===xAxis||node===xyPlane}>N{node}</option>{/each}</select></label></fieldset>
     <fieldset><legend>EDGES</legend><div class="segmented edge-mode"><button class:active={edgeMode==='residual'} onclick={()=>edgeMode='residual'}>RESIDUAL</button><button class:active={edgeMode==='neutral'} onclick={()=>edgeMode='neutral'}>NEUTRAL</button><button class:active={edgeMode==='hidden'} onclick={()=>edgeMode='hidden'}>HIDDEN</button></div></fieldset>
   </div>
@@ -39,4 +55,5 @@
   @media(min-width:901px){.diagnostics{display:grid;grid-template-rows:36px auto minmax(0,1fr)}.edge-list{height:auto;min-height:0}}
   .edge-list small{margin-left:5px;color:#61757b;font:7px DM Mono,monospace}
   .export{width:100%;margin-bottom:8px;border:1px solid #385056;background:#0b1215;color:#9fb0b4;padding:6px;font:8px DM Mono,monospace}.position-list{padding:6px 10px;border-bottom:1px solid #233138}.position-list div{display:flex;justify-content:space-between;padding:3px 0;font:8px DM Mono,monospace}.position-list b{color:#45e0c1}.position-list span{color:#9fb0b4}
+  .freeze-error{margin:0 0 8px;color:#f4bd62;font:8px DM Mono,monospace}
 </style>

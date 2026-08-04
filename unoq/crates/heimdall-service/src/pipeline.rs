@@ -5,11 +5,11 @@ use std::{
 
 use anyhow::{Result, bail};
 use heimdall_dsp::{
-    CirReference, DirectionalCfoIntegrator, DsTwrInput, FftWindow, PairCalibrationObservation,
-    QualityFlags, ReferenceMode, SsTwrInput, TimeMovingAverage, asymmetric_ds_twr,
-    calibrate_offsets, common_phase, fast_fft, fast_fft_complex, fractional_align_non_circular,
-    hampel, interpolate_short_gaps, normalized_correlation_delay, resample_cir_16x, scale_cir,
-    ss_twr,
+    CirAlignmentConfig, CirAlignmentScoreMode, CirReference, DirectionalCfoIntegrator, DsTwrInput,
+    FftWindow, PairCalibrationObservation, QualityFlags, ReferenceMode, SsTwrInput,
+    TimeMovingAverage, align_cir_hierarchical, asymmetric_ds_twr, calibrate_offsets, common_phase,
+    fast_fft, fast_fft_complex, fractional_align_non_circular, hampel, interpolate_short_gaps,
+    normalized_correlation_delay, resample_cir_16x, scale_cir, ss_twr,
 };
 use heimdall_protocol::{
     CanonicalObservation, CanonicalProcessor, DecodedRecord, HelloRecord, ParserStats,
@@ -41,6 +41,8 @@ pub struct Pipeline {
     clock: RoundClock,
     config: Option<ConfigInfo>,
     settings: DspSettings,
+    board_frozen: bool,
+    board_frozen_references: BTreeMap<(u8, u8), Vec<Complex64>>,
     calibration: Option<CalibrationCollection>,
     host_offsets: BTreeMap<u8, f64>,
     offset_history: Vec<BTreeMap<u8, f64>>,
@@ -186,6 +188,15 @@ pub struct DspSettings {
     pub waterfall_tap_max: i8,
     pub dgc_correction_db_per_step: f64,
     pub cir_nuisance_fit: bool,
+    pub cir_fit_algorithm: String,
+    pub cir_grid_reference_mode: String,
+    pub cir_grid_reference_window: usize,
+    pub cir_grid_score_mode: String,
+    pub cir_grid_gain_min_db: f64,
+    pub cir_grid_gain_max_db: f64,
+    pub cir_grid_delay_range_samples: f64,
+    pub cir_grid_resampling_factor: usize,
+    pub cir_grid_eta: f64,
 }
 
 impl Default for DspSettings {
@@ -217,6 +228,15 @@ impl Default for DspSettings {
             waterfall_tap_max: 50,
             dgc_correction_db_per_step: 2.65,
             cir_nuisance_fit: false,
+            cir_fit_algorithm: "off".to_owned(),
+            cir_grid_reference_mode: "frozen".to_owned(),
+            cir_grid_reference_window: 32,
+            cir_grid_score_mode: "soft".to_owned(),
+            cir_grid_gain_min_db: -10.0,
+            cir_grid_gain_max_db: 10.0,
+            cir_grid_delay_range_samples: 2.0,
+            cir_grid_resampling_factor: 16,
+            cir_grid_eta: 0.25,
         }
     }
 }
@@ -335,6 +355,8 @@ impl Pipeline {
             clock: RoundClock::default(),
             config: None,
             settings,
+            board_frozen: false,
+            board_frozen_references: BTreeMap::new(),
             calibration: None,
             host_offsets: BTreeMap::new(),
             offset_history: Vec::new(),
@@ -357,6 +379,7 @@ impl Pipeline {
         self.canonical = CanonicalProcessor::new();
         self.config = None;
         self.links.clear();
+        self.clear_board_freeze();
         self.link_activity.clear();
         self.pairs.clear();
         self.cfo = DirectionalCfoIntegrator::new(self.settings.cfo_half_life_s);
@@ -426,6 +449,7 @@ impl Pipeline {
         });
         self.configuration_epoch += 1;
         self.links.clear();
+        self.clear_board_freeze();
         self.link_activity.clear();
         self.pairs.clear();
         self.cfo = DirectionalCfoIntegrator::new(self.settings.cfo_half_life_s);
@@ -533,7 +557,9 @@ impl Pipeline {
         let (scaled, mut quality) = scale_cir(&raw, dgc_linear, observation.accum_count as u32);
         let marker_raw =
             observation.fp_index_q10_6 as f64 / 64.0 - observation.cir_start_offset as f64;
+        let fit_algorithm = effective_cir_fit_algorithm(&self.settings);
         let reference_mode = reference_mode(&self.settings);
+        let frozen_reference = self.board_frozen_references.get(&key).cloned();
         let link = self.links.entry(key).or_insert_with(|| LinkState {
             reference: CirReference::new(reference_mode),
             reference_marker_raw: None,
@@ -574,6 +600,89 @@ impl Pipeline {
         for value in &mut aligned {
             *value *= rotation;
         }
+
+        let mut robust_display = None;
+        let mut display_quality = quality;
+        let mut display_delay_samples = delay_samples;
+        let mut display_phase = phase;
+        let mut display_correlation = correlation;
+        let mut fit_diagnostics = None;
+        if fit_algorithm == "robust_grid" && topics & Topic::Cir.bit() != 0 {
+            let requested = self.settings.cir_grid_reference_mode.as_str();
+            let (grid_reference, effective) = if requested == "frozen" {
+                if self.board_frozen {
+                    if let Some(reference) =
+                        frozen_reference.filter(|reference| compatible_cir(reference, scaled.len()))
+                    {
+                        (Some(reference), "frozen")
+                    } else {
+                        (
+                            rolling_cir_reference(
+                                &link.cir,
+                                self.settings.cir_grid_reference_window,
+                                "rolling_medoid",
+                            ),
+                            "rolling_medoid",
+                        )
+                    }
+                } else {
+                    (
+                        rolling_cir_reference(
+                            &link.cir,
+                            self.settings.cir_grid_reference_window,
+                            "rolling_medoid",
+                        ),
+                        "rolling_medoid",
+                    )
+                }
+            } else {
+                (
+                    rolling_cir_reference(
+                        &link.cir,
+                        self.settings.cir_grid_reference_window,
+                        requested,
+                    ),
+                    requested,
+                )
+            };
+            if let Some(result) = grid_reference.as_ref().and_then(|reference| {
+                align_cir_hierarchical(reference, &scaled, cir_alignment_config(&self.settings))
+            }) {
+                display_delay_samples = result.delay_samples;
+                display_phase = result.phase_radians;
+                display_correlation = if result.eligible_count == 0 {
+                    0.0
+                } else {
+                    result.score / result.eligible_count as f64
+                };
+                fit_diagnostics = Some(json!({
+                    "fit_reference": requested,
+                    "fit_reference_effective": effective,
+                    "fit_delay_samples": result.delay_samples,
+                    "fit_gain_db": result.gain_db,
+                    "fit_phase_rad": result.phase_radians,
+                    "fit_score": result.score,
+                    "fit_matched_count": result.matched_count,
+                    "fit_eligible_count": result.eligible_count,
+                }));
+                robust_display = Some(result.corrected);
+            } else {
+                display_quality.insert(QualityFlags::LOW_CORRELATION);
+                display_delay_samples = 0.0;
+                display_phase = 0.0;
+                display_correlation = 0.0;
+                fit_diagnostics = Some(json!({
+                    "fit_reference": requested,
+                    "fit_reference_effective": effective,
+                    "fit_delay_samples": 0.0,
+                    "fit_gain_db": 0.0,
+                    "fit_phase_rad": 0.0,
+                    "fit_score": 0.0,
+                    "fit_matched_count": 0,
+                    "fit_eligible_count": 0,
+                }));
+            }
+        }
         let marker_aligned = marker_raw - delay_samples;
         let evidence_id = (observation.usb_sequence as u64) << 32 | observation.observed_k as u64;
         let want_cir = topics & Topic::Cir.bit() != 0;
@@ -593,16 +702,11 @@ impl Pipeline {
         } else {
             Vec::new()
         };
-        let reference_peak_16x = reference
-            .as_ref()
-            .map(|reference| resample_cir_16x(reference))
-            .and_then(|values| {
-                values
-                    .iter()
-                    .enumerate()
-                    .max_by(|(_, a), (_, b)| a.norm_sqr().total_cmp(&b.norm_sqr()))
-                    .map(|(index, _)| index as i64)
-            })
+        let reference_peak_16x = resample_cir_16x(reference.as_deref().unwrap_or(&aligned))
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.norm_sqr().total_cmp(&b.norm_sqr()))
+            .map(|(index, _)| index as i64)
             .unwrap_or(0);
         let (waterfall, waterfall_x_min, waterfall_x_max) = if want_waterfall {
             waterfall_grid(
@@ -669,7 +773,7 @@ impl Pipeline {
         }
         let mut payloads = Vec::new();
         if want_cir {
-            let display = if self.settings.cir_nuisance_fit {
+            let display = if fit_algorithm == "linear_ls" {
                 cir_nuisance_fitted(
                     link,
                     &aligned,
@@ -679,23 +783,28 @@ impl Pipeline {
                 )
                 .unwrap_or_else(|| aligned.clone())
             } else {
-                aligned.clone()
+                robust_display.unwrap_or_else(|| aligned.clone())
             };
             let display_resampled = resample_cir_16x(&display);
-            payloads.push((
-                Topic::Cir,
-                json!({
-                    "from": key.0, "to": key.1, "round": observation.observed_k,
-                    "event_s": event_s, "dgc_decision": observation.dgc_decision,
-                    "dgc_correction_db": correction_db, "accum_count": observation.accum_count,
-                    "delay_samples": delay_samples, "common_phase_rad": phase,
-                    "correlation": correlation, "quality": quality.0,
-                    "evidence": evidence_id,
-                    "marker_raw": marker_raw, "marker_aligned": marker_aligned,
-                    "magnitude": display.iter().map(|value| value.norm() as f32).collect::<Vec<_>>(),
-                    "resampled": display_resampled.iter().map(|value| value.norm() as f32).collect::<Vec<_>>(),
-                }),
-            ));
+            let mut cir_payload = json!({
+                "from": key.0, "to": key.1, "round": observation.observed_k,
+                "event_s": event_s, "dgc_decision": observation.dgc_decision,
+                "dgc_correction_db": correction_db, "accum_count": observation.accum_count,
+                "delay_samples": display_delay_samples, "common_phase_rad": display_phase,
+                "correlation": display_correlation, "quality": display_quality.0,
+                "evidence": evidence_id,
+                "marker_raw": marker_raw, "marker_aligned": marker_raw - display_delay_samples,
+                "fit_algorithm": fit_algorithm,
+                "magnitude": display.iter().map(|value| value.norm() as f32).collect::<Vec<_>>(),
+                "resampled": display_resampled.iter().map(|value| value.norm() as f32).collect::<Vec<_>>(),
+            });
+            if let (Some(payload), Some(diagnostics)) = (
+                cir_payload.as_object_mut(),
+                fit_diagnostics.as_ref().and_then(Value::as_object),
+            ) {
+                payload.extend(diagnostics.clone());
+            }
+            payloads.push((Topic::Cir, cir_payload));
         }
         if want_waterfall {
             if let Some(row) = waterfall_processed_row(link, &frame, &self.settings) {
@@ -1055,6 +1164,45 @@ impl Pipeline {
         self.settings.clone()
     }
 
+    pub fn freeze_board_references(&mut self) -> Value {
+        self.board_frozen_references = self
+            .links
+            .iter()
+            .filter_map(|(&key, link)| {
+                rolling_cir_reference(
+                    &link.cir,
+                    self.settings.cir_grid_reference_window,
+                    "rolling_medoid",
+                )
+                .map(|reference| (key, reference))
+            })
+            .collect();
+        self.board_frozen = true;
+        self.processing_epoch += 1;
+        self.board_freeze_status("frozen")
+    }
+
+    pub fn unfreeze_board_references(&mut self) -> Value {
+        self.clear_board_freeze();
+        self.processing_epoch += 1;
+        self.board_freeze_status("unfrozen")
+    }
+
+    fn clear_board_freeze(&mut self) {
+        self.board_frozen = false;
+        self.board_frozen_references.clear();
+    }
+
+    pub fn board_freeze_status(&self, status: &str) -> Value {
+        json!({
+            "status": status,
+            "board_frozen": self.board_frozen,
+            "reference_count": self.board_frozen_references.len(),
+            "configuration_epoch": self.configuration_epoch,
+            "processing_epoch": self.processing_epoch,
+        })
+    }
+
     pub fn update_settings(&mut self, value: &Value) -> Result<DspSettings> {
         let previous = self.settings.clone();
         let mut merged = serde_json::to_value(&self.settings)?;
@@ -1070,18 +1218,32 @@ impl Pipeline {
             }
             target.insert(key.clone(), value.clone());
         }
-        let next: DspSettings = serde_json::from_value(merged)?;
+        let mut next: DspSettings = serde_json::from_value(merged)?;
+        if update.contains_key("cir_fit_algorithm") {
+            next.cir_nuisance_fit = false;
+        }
         validate_settings(&next)?;
-        let preserve_cir_history = {
-            let mut comparable = previous;
-            comparable.cir_nuisance_fit = next.cir_nuisance_fit;
-            comparable == next
-        };
+        let base_cir_changed = previous.dgc_correction_db_per_step
+            != next.dgc_correction_db_per_step
+            || previous.reference_mode != next.reference_mode
+            || previous.reference_minimum_energy != next.reference_minimum_energy
+            || previous.reference_half_life_s != next.reference_half_life_s
+            || previous.cir_alignment_mode != next.cir_alignment_mode
+            || previous.cir_max_lag != next.cir_max_lag;
+        let waterfall_grid_changed = previous.waterfall_tap_min != next.waterfall_tap_min
+            || previous.waterfall_tap_max != next.waterfall_tap_max;
+        let reset_cir_history = base_cir_changed || waterfall_grid_changed;
+        let reset_cfo = previous.cfo_half_life_s != next.cfo_half_life_s;
         self.settings = next;
         self.processing_epoch += 1;
-        self.cfo = DirectionalCfoIntegrator::new(self.settings.cfo_half_life_s);
+        if reset_cfo {
+            self.cfo = DirectionalCfoIntegrator::new(self.settings.cfo_half_life_s);
+        }
+        if base_cir_changed {
+            self.clear_board_freeze();
+        }
         for link in self.links.values_mut() {
-            if !preserve_cir_history {
+            if reset_cir_history {
                 link.reference = CirReference::new(reference_mode(&self.settings));
                 link.reference_marker_raw = None;
                 link.cir.clear();
@@ -1566,6 +1728,92 @@ fn distance_series_key(sample: &DistanceSample) -> (&'static str, u8, u8) {
     }
 }
 
+fn effective_cir_fit_algorithm(settings: &DspSettings) -> &str {
+    if settings.cir_fit_algorithm == "off" && settings.cir_nuisance_fit {
+        "linear_ls"
+    } else {
+        &settings.cir_fit_algorithm
+    }
+}
+
+fn cir_alignment_config(settings: &DspSettings) -> CirAlignmentConfig {
+    CirAlignmentConfig {
+        gain_min_db: settings.cir_grid_gain_min_db,
+        gain_max_db: settings.cir_grid_gain_max_db,
+        delay_range_samples: settings.cir_grid_delay_range_samples,
+        resampling_factor: settings.cir_grid_resampling_factor,
+        eta: settings.cir_grid_eta,
+        score_mode: if settings.cir_grid_score_mode == "count" {
+            CirAlignmentScoreMode::Count
+        } else {
+            CirAlignmentScoreMode::Soft
+        },
+    }
+}
+
+fn compatible_cir(values: &[Complex64], taps: usize) -> bool {
+    values.len() == taps
+        && !values.is_empty()
+        && values
+            .iter()
+            .all(|value| value.re.is_finite() && value.im.is_finite())
+        && values.iter().any(|value| value.norm_sqr() > 0.0)
+}
+
+fn rolling_cir_reference(frames: &[CirFrame], window: usize, mode: &str) -> Option<Vec<Complex64>> {
+    let taps = frames
+        .iter()
+        .rev()
+        .find(|frame| compatible_cir(&frame.aligned, frame.aligned.len()))?
+        .aligned
+        .len();
+    let candidates = frames
+        .iter()
+        .rev()
+        .filter(|frame| compatible_cir(&frame.aligned, taps))
+        .take(window.min(64))
+        .map(|frame| frame.aligned.as_slice())
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return None;
+    }
+    if mode == "rolling_mean" {
+        let mut mean = vec![Complex64::new(0.0, 0.0); taps];
+        for candidate in &candidates {
+            for (target, value) in mean.iter_mut().zip(*candidate) {
+                *target += *value;
+            }
+        }
+        for value in &mut mean {
+            *value /= candidates.len() as f64;
+        }
+        return compatible_cir(&mean, taps).then_some(mean);
+    }
+
+    let mut best = (f64::INFINITY, 0);
+    for (index, candidate) in candidates.iter().enumerate() {
+        let distance = candidates
+            .iter()
+            .map(|other| normalized_cir_distance(candidate, other))
+            .sum::<f64>();
+        if distance < best.0 {
+            best = (distance, index);
+        }
+    }
+    Some(candidates[best.1].to_vec())
+}
+
+fn normalized_cir_distance(a: &[Complex64], b: &[Complex64]) -> f64 {
+    let difference = a
+        .iter()
+        .zip(b)
+        .map(|(a, b)| (*a - *b).norm_sqr())
+        .sum::<f64>();
+    let energy = a.iter().map(|value| value.norm_sqr()).sum::<f64>()
+        + b.iter().map(|value| value.norm_sqr()).sum::<f64>();
+    difference / energy.max(f64::MIN_POSITIVE)
+}
+
 fn reference_mode(settings: &DspSettings) -> ReferenceMode {
     match settings.reference_mode.as_str() {
         "first" => ReferenceMode::First,
@@ -1618,6 +1866,22 @@ fn validate_settings(settings: &DspSettings) -> Result<()> {
         || !["correlation", "first_path"].contains(&settings.cir_alignment_mode.as_str())
         || !settings.dgc_correction_db_per_step.is_finite()
         || ![0.0, 2.65, 6.0].contains(&settings.dgc_correction_db_per_step)
+        || !["off", "linear_ls", "robust_grid"].contains(&settings.cir_fit_algorithm.as_str())
+        || !["frozen", "rolling_medoid", "rolling_mean"]
+            .contains(&settings.cir_grid_reference_mode.as_str())
+        || !(3..=64).contains(&settings.cir_grid_reference_window)
+        || !["soft", "count"].contains(&settings.cir_grid_score_mode.as_str())
+        || !settings.cir_grid_gain_min_db.is_finite()
+        || !settings.cir_grid_gain_max_db.is_finite()
+        || !(-40.0..=40.0).contains(&settings.cir_grid_gain_min_db)
+        || !(-40.0..=40.0).contains(&settings.cir_grid_gain_max_db)
+        || settings.cir_grid_gain_min_db >= settings.cir_grid_gain_max_db
+        || !settings.cir_grid_delay_range_samples.is_finite()
+        || !(0.0..=8.0).contains(&settings.cir_grid_delay_range_samples)
+        || ![1, 2, 4, 8, 16].contains(&settings.cir_grid_resampling_factor)
+        || !settings.cir_grid_eta.is_finite()
+        || settings.cir_grid_eta <= 0.0
+        || settings.cir_grid_eta > 4.0
     {
         bail!("invalid DSP settings");
     }
@@ -2135,6 +2399,24 @@ mod tests {
         serde_json::from_slice(&message[vector + 4..vector + 4 + length]).unwrap()
     }
 
+    fn cir_frame(round: u32, aligned: Vec<Complex64>) -> CirFrame {
+        CirFrame {
+            event_tick: round as i64,
+            event_s: round as f64,
+            round,
+            usb_sequence: round,
+            aligned,
+            magnitude_16x: Vec::new(),
+            waterfall: Vec::new(),
+            waterfall_x_min: 0.0,
+            waterfall_x_max: 0.0,
+            marker_raw: 0.0,
+            marker_aligned: 0.0,
+            correlation: 1.0,
+            quality: 0,
+        }
+    }
+
     #[test]
     fn chunk_boundaries_are_equivalent() {
         let data = hello_bytes();
@@ -2387,6 +2669,170 @@ mod tests {
     }
 
     #[test]
+    fn cir_grid_settings_are_validated_and_legacy_selector_is_compatible() {
+        let mut pipeline = Pipeline::new();
+        assert!(
+            pipeline
+                .update_settings(&json!({"cir_grid_reference_window": 2}))
+                .is_err()
+        );
+        assert!(
+            pipeline
+                .update_settings(&json!({"cir_grid_gain_min_db": 10.0}))
+                .is_err()
+        );
+        assert!(
+            pipeline
+                .update_settings(&json!({"cir_grid_resampling_factor": 3}))
+                .is_err()
+        );
+        assert!(
+            pipeline
+                .update_settings(&json!({"cir_grid_eta": 0.0}))
+                .is_err()
+        );
+
+        pipeline
+            .update_settings(&json!({"cir_nuisance_fit": true}))
+            .unwrap();
+        assert_eq!(effective_cir_fit_algorithm(&pipeline.settings), "linear_ls");
+        let settings = pipeline
+            .update_settings(&json!({"cir_fit_algorithm": "off"}))
+            .unwrap();
+        assert!(!settings.cir_nuisance_fit);
+        assert_eq!(effective_cir_fit_algorithm(&settings), "off");
+    }
+
+    #[test]
+    fn rolling_cir_mean_and_medoid_use_compatible_recent_frames() {
+        let frames = vec![
+            cir_frame(1, vec![Complex64::new(1.0, 0.0); 2]),
+            cir_frame(2, vec![Complex64::new(1.1, 0.0); 2]),
+            cir_frame(3, vec![Complex64::new(10.0, 0.0); 2]),
+            cir_frame(4, vec![Complex64::new(99.0, 0.0); 3]),
+        ];
+        let mean = rolling_cir_reference(&frames, 3, "rolling_mean").unwrap();
+        assert_eq!(mean, vec![Complex64::new(99.0, 0.0); 3]);
+
+        let mean = rolling_cir_reference(&frames[..3], 3, "rolling_mean").unwrap();
+        assert!((mean[0].re - 4.033333333333333).abs() < 1e-12);
+        let medoid = rolling_cir_reference(&frames[..3], 3, "rolling_medoid").unwrap();
+        assert_eq!(medoid, vec![Complex64::new(1.1, 0.0); 2]);
+    }
+
+    #[test]
+    fn robust_grid_emits_fit_diagnostics_without_changing_base_history() {
+        let mut pipeline = Pipeline::new();
+        pipeline.configure(&hello_record());
+        pipeline
+            .update_settings(&json!({
+                "cir_fit_algorithm": "robust_grid",
+                "cir_grid_reference_mode": "rolling_mean",
+                "cir_grid_reference_window": 3,
+                "cir_grid_gain_min_db": -1.0,
+                "cir_grid_gain_max_db": 1.0,
+                "cir_grid_delay_range_samples": 0.0,
+                "cir_grid_resampling_factor": 1,
+                "slow_fft_cadence_s": 0.001
+            }))
+            .unwrap();
+        pipeline.consume_canonical(observation(0, 1, 10, 0, 100, 1));
+        let messages = pipeline.consume_canonical(observation(0, 1, 12, 200, 300, 2));
+        let cir = messages
+            .iter()
+            .find(|message| crate::telemetry::envelope_topic(message) == Some(Topic::Cir))
+            .map(|message| payload(message))
+            .unwrap();
+        assert_eq!(cir["fit_algorithm"], "robust_grid");
+        assert_eq!(cir["fit_reference"], "rolling_mean");
+        assert_eq!(cir["fit_reference_effective"], "rolling_mean");
+        assert!(cir["fit_delay_samples"].is_number());
+        assert_eq!(pipeline.links[&(0, 1)].cir.len(), 2);
+
+        let mut base = Pipeline::new();
+        base.configure(&hello_record());
+        base.update_settings(&json!({"slow_fft_cadence_s": 0.001}))
+            .unwrap();
+        base.consume_canonical(observation(0, 1, 10, 0, 100, 1));
+        base.consume_canonical(observation(0, 1, 12, 200, 300, 2));
+        assert_eq!(
+            pipeline.links[&(0, 1)].cir[1].aligned,
+            base.links[&(0, 1)].cir[1].aligned
+        );
+        assert_eq!(
+            pipeline.links[&(0, 1)].cir[1].quality,
+            base.links[&(0, 1)].cir[1].quality
+        );
+        assert_eq!(
+            pipeline.links[&(0, 1)].cir[1].waterfall,
+            base.links[&(0, 1)].cir[1].waterfall
+        );
+        assert_eq!(
+            pipeline.links[&(0, 1)].latest_fast_fft,
+            base.links[&(0, 1)].latest_fast_fft
+        );
+        assert_eq!(
+            pipeline.links[&(0, 1)].latest_slow_fft,
+            base.links[&(0, 1)].latest_slow_fft
+        );
+    }
+
+    #[test]
+    fn robust_grid_failure_quality_is_local_to_live_cir() {
+        let mut pipeline = Pipeline::new();
+        pipeline.configure(&hello_record());
+        pipeline
+            .update_settings(&json!({"cir_fit_algorithm": "robust_grid"}))
+            .unwrap();
+
+        let messages =
+            pipeline.consume_canonical_inner(observation(0, 1, 10, 0, 100, 1), Topic::Cir.bit());
+        let cir = messages
+            .iter()
+            .find(|message| crate::telemetry::envelope_topic(message) == Some(Topic::Cir))
+            .map(|message| payload(message))
+            .unwrap();
+        let low_correlation = QualityFlags::LOW_CORRELATION.0 as u64;
+
+        assert_ne!(cir["quality"].as_u64().unwrap() & low_correlation, 0);
+        assert_eq!(cir["fit_eligible_count"], 0);
+        assert_eq!(
+            pipeline.links[&(0, 1)].cir[0].quality as u64 & low_correlation,
+            0
+        );
+        assert_eq!(
+            cir["magnitude"],
+            json!(
+                pipeline.links[&(0, 1)].cir[0]
+                    .aligned
+                    .iter()
+                    .map(|value| value.norm() as f32)
+                    .collect::<Vec<_>>()
+            )
+        );
+    }
+
+    #[test]
+    fn board_freeze_snapshots_links_and_resets_on_reconfigure() {
+        let mut pipeline = Pipeline::new();
+        pipeline.configure(&hello_record());
+        pipeline.consume_canonical_inner(observation(0, 1, 10, 0, 100, 1), Topic::Cir.bit());
+        let frozen = pipeline.freeze_board_references();
+        assert_eq!(frozen["board_frozen"], true);
+        assert_eq!(frozen["reference_count"], 1);
+        assert!(pipeline.board_frozen_references.contains_key(&(0, 1)));
+
+        let unfrozen = pipeline.unfreeze_board_references();
+        assert_eq!(unfrozen["board_frozen"], false);
+        assert!(pipeline.board_frozen_references.is_empty());
+
+        pipeline.freeze_board_references();
+        pipeline.configure(&hello_record());
+        assert!(!pipeline.board_frozen);
+        assert!(pipeline.board_frozen_references.is_empty());
+    }
+
+    #[test]
     fn n5_ss_uses_source_ownership_gap() {
         let mut pipeline = Pipeline::new();
         pipeline.configure(&hello_for_nodes(5));
@@ -2471,6 +2917,53 @@ mod tests {
             .unwrap();
 
         assert_eq!(pipeline.links[&(0, 1)].cir.len(), history_len);
+    }
+
+    #[test]
+    fn display_settings_and_complete_put_preserve_history_and_freeze() {
+        let mut pipeline = Pipeline::new();
+        pipeline.configure(&hello_record());
+        for sequence in 1..=4 {
+            pipeline.consume_canonical_inner(
+                observation(0, 1, 10 + sequence, 0, 100, sequence),
+                Topic::Cir.bit(),
+            );
+        }
+        pipeline.freeze_board_references();
+        let history_len = pipeline.links[&(0, 1)].cir.len();
+
+        let mut complete = serde_json::to_value(pipeline.settings()).unwrap();
+        complete["cir_fit_algorithm"] = json!("robust_grid");
+        complete["cir_grid_reference_window"] = json!(3);
+        complete["cfo_half_life_s"] = json!(5.0);
+        pipeline.update_settings(&complete).unwrap();
+
+        assert_eq!(pipeline.links[&(0, 1)].cir.len(), history_len);
+        assert!(pipeline.board_frozen);
+        assert_eq!(pipeline.board_frozen_references.len(), 1);
+
+        pipeline
+            .update_settings(&json!({"waterfall_tap_min": -19}))
+            .unwrap();
+        assert!(pipeline.links[&(0, 1)].cir.is_empty());
+        assert!(pipeline.board_frozen);
+        assert_eq!(pipeline.board_frozen_references.len(), 1);
+    }
+
+    #[test]
+    fn base_alignment_setting_change_clears_history_and_freeze() {
+        let mut pipeline = Pipeline::new();
+        pipeline.configure(&hello_record());
+        pipeline.consume_canonical_inner(observation(0, 1, 10, 0, 100, 1), Topic::Cir.bit());
+        pipeline.freeze_board_references();
+
+        pipeline
+            .update_settings(&json!({"cir_max_lag": 7}))
+            .unwrap();
+
+        assert!(pipeline.links[&(0, 1)].cir.is_empty());
+        assert!(!pipeline.board_frozen);
+        assert!(pipeline.board_frozen_references.is_empty());
     }
 
     #[test]

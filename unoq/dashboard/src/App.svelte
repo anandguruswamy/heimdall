@@ -38,7 +38,15 @@
   let alignmentMode = $state('correlation');
   let dgcCorrectionDb = $state(2.65);
   let cirLockScale = $state(false);
-  let cirNuisanceFit = $state(false);
+  let cirFitAlgorithm: 'off'|'linear_ls'|'robust_grid' = $state('off');
+  let cirGridReferenceMode = $state('frozen');
+  let cirGridReferenceWindow = $state(32);
+  let cirGridScoreMode = $state('soft');
+  let cirGridGainMinDb = $state(-10);
+  let cirGridGainMaxDb = $state(10);
+  let cirGridDelayRange = $state(2);
+  let cirGridResamplingFactor = $state(16);
+  let cirGridEta = $state(0.25);
   let calibrationPair = $state('0>1');
   let referencesM = $state<Record<string, string>>({});
   let calibrationSolution = $state<Record<string, unknown> | null>(null);
@@ -378,6 +386,11 @@
     settingsTimer = setTimeout(async () => { try { live.settings = await api.putSettings((live.settings as Record<string,unknown>).value) as Record<string,unknown>; backendMessage = 'Settings applied'; } catch { backendMessage = 'Backend unavailable · setting not applied'; } liveRevision++; }, 250);
   }
 
+  function setCirFitAlgorithm(value: 'off'|'linear_ls'|'robust_grid') {
+    cirFitAlgorithm=value;
+    settingChanged('cir_fit_algorithm',value);
+  }
+
   function waterfallScaleChanged(bound: 'min'|'max', value: number) {
     if (!Number.isFinite(value)) return;
     if (bound === 'min') {
@@ -462,7 +475,7 @@
       if (data.health) live.health = data.health as Record<string,unknown>;
       if (data.topology) { live.loadTopology(data.topology); const config=(data.topology as Record<string,unknown>).config as Record<string,unknown>|undefined; const count = Number(config?.n_nodes); if (count >= 2 && count <= 8) chooseNodeCount(count); }
       if (data.distanceHistory) live.loadDistanceHistory(data.distanceHistory);
-      if (data.settings) { live.settings = data.settings as Record<string,unknown>; const value=(live.settings.value ?? {}) as Record<string,unknown>; halfLife=Number(value.cfo_half_life_s ?? 2); smoothing=Number(value.distance_smoothing_s ?? 1); range=Number(value.reference_half_life_s ?? 4); alignmentMode=String(value.cir_alignment_mode ?? 'correlation'); slowFftSeconds=Number(value.slow_fft_history_s ?? 2); waterfallClutter=Boolean(value.waterfall_clutter); waterfallMagnitudeClutter=value.waterfall_magnitude_clutter !== false; waterfallNuisanceFit=value.waterfall_nuisance_fit !== false; waterfallRejectSpikes=value.waterfall_reject_spikes !== false; waterfallPathLoss=Boolean(value.waterfall_path_loss); waterfallNoiseClipDb=Number(value.waterfall_noise_clip_db ?? 12); waterfallTapMin=Number(value.waterfall_tap_min ?? -20); waterfallTapMax=Number(value.waterfall_tap_max ?? 50); waterfallScaleMin=Number(value.waterfall_fixed_scale_min ?? -60); waterfallScaleMax=Number(value.waterfall_fixed_scale_max ?? -10); dgcCorrectionDb=Number(value.dgc_correction_db_per_step ?? 2.65); cirNuisanceFit=Boolean(value.cir_nuisance_fit); }
+      if (data.settings) { live.settings = data.settings as Record<string,unknown>; const value=(live.settings.value ?? {}) as Record<string,unknown>; halfLife=Number(value.cfo_half_life_s ?? 2); smoothing=Number(value.distance_smoothing_s ?? 1); range=Number(value.reference_half_life_s ?? 4); alignmentMode=String(value.cir_alignment_mode ?? 'correlation'); slowFftSeconds=Number(value.slow_fft_history_s ?? 2); waterfallClutter=Boolean(value.waterfall_clutter); waterfallMagnitudeClutter=value.waterfall_magnitude_clutter !== false; waterfallNuisanceFit=value.waterfall_nuisance_fit !== false; waterfallRejectSpikes=value.waterfall_reject_spikes !== false; waterfallPathLoss=Boolean(value.waterfall_path_loss); waterfallNoiseClipDb=Number(value.waterfall_noise_clip_db ?? 12); waterfallTapMin=Number(value.waterfall_tap_min ?? -20); waterfallTapMax=Number(value.waterfall_tap_max ?? 50); waterfallScaleMin=Number(value.waterfall_fixed_scale_min ?? -60); waterfallScaleMax=Number(value.waterfall_fixed_scale_max ?? -10); dgcCorrectionDb=Number(value.dgc_correction_db_per_step ?? 2.65); const configured=String(value.cir_fit_algorithm ?? 'off'); cirFitAlgorithm=(configured==='off'&&Boolean(value.cir_nuisance_fit)?'linear_ls':configured) as typeof cirFitAlgorithm; cirGridReferenceMode=String(value.cir_grid_reference_mode ?? 'frozen'); cirGridReferenceWindow=Number(value.cir_grid_reference_window ?? 32); cirGridScoreMode=String(value.cir_grid_score_mode ?? 'soft'); cirGridGainMinDb=Number(value.cir_grid_gain_min_db ?? -10); cirGridGainMaxDb=Number(value.cir_grid_gain_max_db ?? 10); cirGridDelayRange=Number(value.cir_grid_delay_range_samples ?? 2); cirGridResamplingFactor=Number(value.cir_grid_resampling_factor ?? 16); cirGridEta=Number(value.cir_grid_eta ?? .25); }
       if (data.calibration) {
         live.calibration = data.calibration as Record<string,unknown>;
         const calibration=data.calibration as Record<string,unknown>, liveState=calibration.live as Record<string,unknown>|undefined, applied=calibration.applied as Record<string,unknown>|undefined, stored=applied?.value as Record<string,unknown>|undefined;
@@ -521,7 +534,7 @@
           <label class="display-toggle">Y RANGE<select aria-label="Distance y-axis range" bind:value={distanceHalfRangeCm}>{#each [10,20,50,100,200] as value}<option value={value}>+/- {value} cm</option>{/each}</select></label>
         {:else if active === 'Live CIR'}
           <label class="display-toggle"><input type="checkbox" bind:checked={cirLockScale} />LOCK Y SCALE</label>
-          <label class="display-toggle"><input type="checkbox" bind:checked={cirNuisanceFit} onchange={() => settingChanged('cir_nuisance_fit', cirNuisanceFit)} />FIT GAIN/PHASE/DELAY</label>
+          <div class="segmented" aria-label="Live CIR fitting algorithm"><button class:active={cirFitAlgorithm==='off'} onclick={()=>setCirFitAlgorithm('off')}>OFF</button><button class:active={cirFitAlgorithm==='linear_ls'} onclick={()=>setCirFitAlgorithm('linear_ls')}>LINEAR LS</button><button class:active={cirFitAlgorithm==='robust_grid'} onclick={()=>setCirFitAlgorithm('robust_grid')}>ROBUST GRID</button></div>
         {:else if active === 'Fast-Time FFT'}
           <div class="segmented" aria-label="FFT display"><button class:active={!phaseMode && !periodogramMode} onclick={() => { phaseMode = false; periodogramMode = false; }}>Magnitude</button><button class:active={!periodogramMode && phaseMode} onclick={() => { phaseMode = true; periodogramMode = false; }}>Phase</button><button class:active={periodogramMode} onclick={() => { phaseMode = false; periodogramMode = true; }}>Periodogram</button></div>
         {:else if active === 'CFO'}
@@ -545,7 +558,7 @@
     </section>
 
     {#if active === 'Board Positions'}
-      <BoardPositions {live} {nodeCount} revision={liveRevision} />
+      <BoardPositions {live} {api} {nodeCount} revision={liveRevision} />
     {:else if active === 'Network Health'}
       <section class="health-layout">
         <div class="node-strip">
@@ -609,6 +622,7 @@
   <div class="settings-body">
     <fieldset><legend>Acquisition</legend><label>Slow FFT cadence<select onchange={(e)=>settingChanged('slow_fft_cadence_s',+e.currentTarget.value)}><option value="1">1.0 s</option><option value="0.5">0.5 s</option><option value="2">2.0 s</option></select></label><label>Reference half-life<output>{range.toFixed(1)} s</output><input type="range" min="0.1" max="30" step="0.1" value={range} oninput={(e)=>{range=+e.currentTarget.value;settingChanged('reference_half_life_s',range);}} /></label></fieldset>
     <fieldset><legend>Signal processing</legend><label>CIR alignment<select value={alignmentMode} onchange={(e)=>{alignmentMode=e.currentTarget.value;settingChanged('cir_alignment_mode',alignmentMode);}}><option value="correlation">Reference correlation</option><option value="first_path">DW3000 first path</option></select></label><label>DGC correction<select value={dgcCorrectionDb} onchange={(e)=>{dgcCorrectionDb=+e.currentTarget.value;settingChanged('dgc_correction_db_per_step',dgcCorrectionDb);}}><option value={2.65}>2.65 dB/step (current)</option><option value={6}>6 dB/step (Qorvo RSL)</option><option value={0}>Disabled</option></select></label><label>Distance smoothing<output>{smoothing.toFixed(1)} s</output><input type="range" min="1" max="30" step="0.1" value={smoothing} oninput={(e)=>{smoothing=+e.currentTarget.value;settingChanged('distance_smoothing_s',smoothing);}} /></label><label>Hampel radius<input type="number" min="0" max="64" value="5" onchange={(e)=>settingChanged('hampel_radius',+e.currentTarget.value)} /></label><label>FFT window<select onchange={(e)=>settingChanged('fft_window',e.currentTarget.value)}><option value="hann">Hann</option><option value="hamming">Hamming</option><option value="blackman">Blackman</option><option value="rectangular">Rectangular</option></select></label></fieldset>
+    <fieldset><legend>Live CIR robust grid</legend><label>Reference<select value={cirGridReferenceMode} onchange={(e)=>{cirGridReferenceMode=e.currentTarget.value;settingChanged('cir_grid_reference_mode',cirGridReferenceMode);}}><option value="frozen">Frozen board</option><option value="rolling_medoid">Rolling medoid</option><option value="rolling_mean">Rolling mean</option></select></label><label>Reference window<input type="number" min="3" max="64" step="1" value={cirGridReferenceWindow} onchange={(e)=>{cirGridReferenceWindow=+e.currentTarget.value;settingChanged('cir_grid_reference_window',cirGridReferenceWindow);}} /></label><label>Score<select value={cirGridScoreMode} onchange={(e)=>{cirGridScoreMode=e.currentTarget.value;settingChanged('cir_grid_score_mode',cirGridScoreMode);}}><option value="soft">Soft weights</option><option value="count">Match count</option></select></label><label>Gain min dB<input type="number" min="-40" max={cirGridGainMaxDb-.5} step=".5" value={cirGridGainMinDb} onchange={(e)=>{cirGridGainMinDb=+e.currentTarget.value;settingChanged('cir_grid_gain_min_db',cirGridGainMinDb);}} /></label><label>Gain max dB<input type="number" min={cirGridGainMinDb+.5} max="40" step=".5" value={cirGridGainMaxDb} onchange={(e)=>{cirGridGainMaxDb=+e.currentTarget.value;settingChanged('cir_grid_gain_max_db',cirGridGainMaxDb);}} /></label><label>Delay +/- taps<input type="number" min="0" max="8" step=".25" value={cirGridDelayRange} onchange={(e)=>{cirGridDelayRange=+e.currentTarget.value;settingChanged('cir_grid_delay_range_samples',cirGridDelayRange);}} /></label><label>Resample P<select value={cirGridResamplingFactor} onchange={(e)=>{cirGridResamplingFactor=+e.currentTarget.value;settingChanged('cir_grid_resampling_factor',cirGridResamplingFactor);}}>{#each [1,2,4,8,16] as factor}<option value={factor}>{factor}x</option>{/each}</select></label><label>Eta<input type="number" min=".01" max="4" step=".01" value={cirGridEta} onchange={(e)=>{cirGridEta=+e.currentTarget.value;settingChanged('cir_grid_eta',cirGridEta);}} /></label></fieldset>
     <fieldset><legend>Display</legend><label><span>Peak markers</span><input type="checkbox" checked /></label><label><span>30 FPS plots</span><input type="checkbox" checked disabled /></label></fieldset>
     <fieldset><legend>Protected clips</legend><label>Name<input maxlength="120" bind:value={clipName} placeholder="Optional label" /></label><label>Note<input maxlength="2000" bind:value={clipNote} placeholder="Optional context" /></label><button class="snapshot" onclick={saveClip} disabled={clipState === 'capturing'}>SAVE 10 SECOND CLIP</button><div class="capture-progress"><i style={`width:${clipProgress}%`}></i></div>{#each clips as clip}<p>{String((clip.value as Record<string,unknown>)?.status ?? 'unknown').toUpperCase()} · CLIP {String(clip.id)} {String((clip.value as Record<string,unknown>)?.name ?? '')} {#if (clip.value as Record<string,unknown>)?.status === 'complete'}<a href={api?.clipDownload(Number(clip.id))}>DOWNLOAD ZIP</a>{/if} <button class="text-button" onclick={()=>deleteClip(Number(clip.id))} disabled={(clip.value as Record<string,unknown>)?.status === 'collecting'}>DELETE</button></p>{/each}</fieldset>
     <fieldset><legend>Backend</legend><label>REST base<input value="/api" readonly /></label><p>{backendMessage}. Binary HMT1 WebSocket follows the active analysis topic and reconnects with exponential backoff.</p></fieldset>

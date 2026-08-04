@@ -1,5 +1,6 @@
 use crate::QualityFlags;
 use num_complex::Complex64;
+use rayon::prelude::*;
 use std::{f64::consts::PI, sync::OnceLock};
 
 pub const CIR_INTERPOLATION: usize = 16;
@@ -41,6 +42,56 @@ fn interpolation_weights() -> &'static [[f64; 17]; CIR_INTERPOLATION] {
     })
 }
 
+fn runtime_interpolation_weights(factor: usize) -> Option<&'static [[f64; 17]]> {
+    static P1: OnceLock<Vec<[f64; 17]>> = OnceLock::new();
+    static P2: OnceLock<Vec<[f64; 17]>> = OnceLock::new();
+    static P4: OnceLock<Vec<[f64; 17]>> = OnceLock::new();
+    static P8: OnceLock<Vec<[f64; 17]>> = OnceLock::new();
+
+    if factor == CIR_INTERPOLATION {
+        return Some(interpolation_weights());
+    }
+    let cache = match factor {
+        1 => &P1,
+        2 => &P2,
+        4 => &P4,
+        8 => &P8,
+        _ => return None,
+    };
+    Some(cache.get_or_init(|| {
+        (0..factor)
+            .map(|phase| {
+                let fraction = phase as f64 / factor as f64;
+                std::array::from_fn(|index| kernel(fraction - (index as f64 - 8.0), 8.0, 8.6))
+            })
+            .collect()
+    }))
+}
+
+fn interpolate_runtime(
+    input: &[Complex64],
+    position: i64,
+    factor: usize,
+    normalize: bool,
+) -> Option<Complex64> {
+    let weights = runtime_interpolation_weights(factor)?;
+    let base = position.div_euclid(factor as i64);
+    let phase = position.rem_euclid(factor as i64) as usize;
+    let mut value = Complex64::new(0.0, 0.0);
+    let mut norm = 0.0;
+    for (index, weight) in weights[phase].iter().enumerate() {
+        let source = base + index as i64 - 8;
+        if source >= 0 && (source as usize) < input.len() {
+            value += input[source as usize] * *weight;
+            norm += weight;
+        }
+    }
+    if normalize && norm.abs() > 1e-12 {
+        value /= norm;
+    }
+    Some(value)
+}
+
 fn interpolate_16x(input: &[Complex64], position: i64, normalize: bool) -> Complex64 {
     let base = position.div_euclid(CIR_INTERPOLATION as i64);
     let phase = position.rem_euclid(CIR_INTERPOLATION as i64) as usize;
@@ -77,6 +128,348 @@ pub fn fractional_align_non_circular(input: &[Complex64], shift_samples: f64) ->
     (0..input.len())
         .map(|k| interpolate_16x(input, k as i64 * CIR_INTERPOLATION as i64 + shift, false))
         .collect()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CirAlignmentScoreMode {
+    Count,
+    Soft,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CirAlignmentConfig {
+    pub gain_min_db: f64,
+    pub gain_max_db: f64,
+    pub delay_range_samples: f64,
+    pub resampling_factor: usize,
+    pub eta: f64,
+    pub score_mode: CirAlignmentScoreMode,
+}
+
+impl Default for CirAlignmentConfig {
+    fn default() -> Self {
+        Self {
+            gain_min_db: -10.0,
+            gain_max_db: 10.0,
+            delay_range_samples: 2.0,
+            resampling_factor: 16,
+            eta: 0.25,
+            score_mode: CirAlignmentScoreMode::Soft,
+        }
+    }
+}
+
+impl CirAlignmentConfig {
+    fn is_valid(self) -> bool {
+        self.gain_min_db.is_finite()
+            && self.gain_max_db.is_finite()
+            && self.gain_min_db <= self.gain_max_db
+            && self.delay_range_samples.is_finite()
+            && self.delay_range_samples >= 0.0
+            && matches!(self.resampling_factor, 1 | 2 | 4 | 8 | 16)
+            && self.eta.is_finite()
+            && self.eta > 0.0
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CirAlignmentResult {
+    pub delay_samples: f64,
+    pub gain_db: f64,
+    pub phase_radians: f64,
+    pub phase_degrees: f64,
+    pub score: f64,
+    pub matched_count: usize,
+    pub eligible_count: usize,
+    pub corrected: Vec<Complex64>,
+}
+
+#[derive(Clone, Copy)]
+struct AlignmentCandidate {
+    delay_units: i64,
+    gain_db: f64,
+    phase_degrees: f64,
+    score: f64,
+    tie_score: f64,
+    matched_count: usize,
+    eligible_count: usize,
+}
+
+#[derive(Clone, Copy)]
+struct CorrectionCandidate {
+    gain_db: f64,
+    phase_degrees: f64,
+    re: f64,
+    im: f64,
+    norm_sqr: f64,
+}
+
+fn finite_complex(value: Complex64) -> bool {
+    value.re.is_finite() && value.im.is_finite()
+}
+
+fn inclusive_grid(minimum: f64, maximum: f64, step: f64) -> Vec<f64> {
+    let count = ((maximum - minimum) / step).floor() as usize;
+    let mut values = (0..=count)
+        .map(|index| minimum + index as f64 * step)
+        .collect::<Vec<_>>();
+    if values.last().is_none_or(|last| maximum - last > 1e-10) {
+        values.push(maximum);
+    }
+    values
+}
+
+fn delay_grid(minimum: f64, maximum: f64, factor: usize, step: f64) -> Vec<i64> {
+    let minimum_units = (minimum * factor as f64).ceil() as i64;
+    let maximum_units = (maximum * factor as f64).floor() as i64;
+    let step_units = (step * factor as f64).round().max(1.0) as i64;
+    let mut values = Vec::new();
+    let mut value = minimum_units;
+    while value <= maximum_units {
+        values.push(value);
+        value += step_units;
+    }
+    if values.last().is_none_or(|last| *last != maximum_units) {
+        values.push(maximum_units);
+    }
+    values
+}
+
+fn search_alignment_grid(
+    current: &[Complex64],
+    eligible_samples: &[(i64, Complex64)],
+    config: CirAlignmentConfig,
+    interpolation_factor: usize,
+    delays: &[i64],
+    gains_db: &[f64],
+    phases_degrees: &[f64],
+) -> Option<AlignmentCandidate> {
+    let factor = interpolation_factor as i64;
+    let corrections = gains_db
+        .iter()
+        .flat_map(|&gain_db| {
+            phases_degrees.iter().map(move |&phase_degrees| {
+                let value =
+                    Complex64::from_polar(10f64.powf(-gain_db / 20.0), -phase_degrees.to_radians());
+                CorrectionCandidate {
+                    gain_db,
+                    phase_degrees,
+                    re: value.re,
+                    im: value.im,
+                    norm_sqr: value.norm_sqr(),
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let eta_sqr = config.eta * config.eta;
+    let per_delay = delays
+        .par_iter()
+        .map(|&delay_units| {
+            let mut samples = Vec::with_capacity(eligible_samples.len());
+            for &(reference_position, x) in eligible_samples {
+                let position = reference_position + delay_units;
+                if position < 0 || position > (current.len() - 1) as i64 * factor {
+                    continue;
+                }
+                let value = interpolate_runtime(current, position, interpolation_factor, true)?;
+                let ratio = value * x.conj() / x.norm_sqr();
+                samples.push((ratio.re, ratio.im, ratio.norm_sqr()));
+            }
+            if samples.is_empty() {
+                return None;
+            }
+            let mut best = None;
+            for correction in &corrections {
+                let mut score = 0.0;
+                let mut tie_score = 0.0;
+                let mut matched_count = 0;
+                for &(ratio_re, ratio_im, ratio_norm_sqr) in &samples {
+                    let error_sqr = correction.norm_sqr * ratio_norm_sqr
+                        - 2.0 * (correction.re * ratio_re - correction.im * ratio_im)
+                        + 1.0;
+                    if error_sqr < eta_sqr {
+                        matched_count += 1;
+                        let soft_score = 1.0 - error_sqr.max(0.0).sqrt() / config.eta;
+                        tie_score += soft_score;
+                        score += match config.score_mode {
+                            CirAlignmentScoreMode::Count => 1.0,
+                            CirAlignmentScoreMode::Soft => soft_score,
+                        };
+                    }
+                }
+                if best.is_none_or(|candidate: AlignmentCandidate| {
+                    score > candidate.score
+                        || (score == candidate.score && tie_score > candidate.tie_score)
+                }) {
+                    best = Some(AlignmentCandidate {
+                        delay_units,
+                        gain_db: correction.gain_db,
+                        phase_degrees: correction.phase_degrees,
+                        score,
+                        tie_score,
+                        matched_count,
+                        eligible_count: samples.len(),
+                    });
+                }
+            }
+            best
+        })
+        .collect::<Vec<_>>();
+    per_delay
+        .into_iter()
+        .flatten()
+        .fold(None, |best, candidate| {
+            if best.is_none_or(|current: AlignmentCandidate| {
+                candidate.score > current.score
+                    || (candidate.score == current.score && candidate.tie_score > current.tie_score)
+            }) {
+                Some(candidate)
+            } else {
+                best
+            }
+        })
+}
+
+/// Applies `yhat[n] = y[n + tau] / g * exp(-j theta)` without circular wrapping.
+pub fn correct_cir_non_circular(
+    current: &[Complex64],
+    delay_samples: f64,
+    gain_db: f64,
+    phase_radians: f64,
+    resampling_factor: usize,
+) -> Option<Vec<Complex64>> {
+    if current.is_empty()
+        || !delay_samples.is_finite()
+        || !gain_db.is_finite()
+        || !phase_radians.is_finite()
+        || !current.iter().copied().all(finite_complex)
+    {
+        return None;
+    }
+    runtime_interpolation_weights(resampling_factor)?;
+    let delay_units = (delay_samples * resampling_factor as f64).round() as i64;
+    let correction = Complex64::from_polar(10f64.powf(-gain_db / 20.0), -phase_radians);
+    (0..current.len())
+        .map(|index| {
+            interpolate_runtime(
+                current,
+                index as i64 * resampling_factor as i64 + delay_units,
+                resampling_factor,
+                false,
+            )
+            .map(|value| value * correction)
+        })
+        .collect()
+}
+
+/// Robust full-hierarchy delay, gain, and common-phase alignment of two CIRs.
+pub fn align_cir_hierarchical(
+    reference: &[Complex64],
+    current: &[Complex64],
+    config: CirAlignmentConfig,
+) -> Option<CirAlignmentResult> {
+    if reference.is_empty()
+        || current.is_empty()
+        || !config.is_valid()
+        || !reference.iter().copied().all(finite_complex)
+        || !current.iter().copied().all(finite_complex)
+    {
+        return None;
+    }
+
+    let noise_taps = &reference[..reference.len().min(14)];
+    let noise_mean = noise_taps.iter().sum::<Complex64>() / noise_taps.len() as f64;
+    let noise_sigma = (noise_taps
+        .iter()
+        .map(|value| (*value - noise_mean).norm_sqr())
+        .sum::<f64>()
+        / noise_taps.len() as f64)
+        .sqrt();
+    let threshold = 3.0 * noise_sigma;
+    // Delay hypotheses are representable on the configured resampling grid.
+    // At P=1 the nominal half-tap coarse spacing therefore becomes one tap.
+    let search_factor = config.resampling_factor;
+    let eligible_samples = (0..=(reference.len() - 1) * search_factor)
+        .filter_map(|position| {
+            let value = interpolate_runtime(reference, position as i64, search_factor, true)?;
+            (value.norm() >= threshold && value.norm_sqr() > 0.0)
+                .then_some((position as i64, value))
+        })
+        .collect::<Vec<_>>();
+    if eligible_samples.is_empty() {
+        return None;
+    }
+
+    let coarse_delays = delay_grid(
+        -config.delay_range_samples,
+        config.delay_range_samples,
+        search_factor,
+        0.5,
+    );
+    let coarse_gains = inclusive_grid(config.gain_min_db, config.gain_max_db, 2.0);
+    let coarse_phases = inclusive_grid(-180.0, 175.0, 5.0);
+    let coarse = search_alignment_grid(
+        current,
+        &eligible_samples,
+        config,
+        search_factor,
+        &coarse_delays,
+        &coarse_gains,
+        &coarse_phases,
+    )?;
+
+    let coarse_delay = coarse.delay_units as f64 / search_factor as f64;
+    let fine_delays = delay_grid(
+        (coarse_delay - 0.25).max(-config.delay_range_samples),
+        (coarse_delay + 0.25).min(config.delay_range_samples),
+        search_factor,
+        1.0 / config.resampling_factor as f64,
+    );
+    let fine_gains = inclusive_grid(
+        (coarse.gain_db - 1.0).max(config.gain_min_db),
+        (coarse.gain_db + 1.0).min(config.gain_max_db),
+        0.5,
+    );
+    let fine_phases = (-2..=2)
+        .map(|offset| {
+            let phase = coarse.phase_degrees + offset as f64;
+            if phase >= 180.0 {
+                phase - 360.0
+            } else if phase < -180.0 {
+                phase + 360.0
+            } else {
+                phase
+            }
+        })
+        .collect::<Vec<_>>();
+    let best = search_alignment_grid(
+        current,
+        &eligible_samples,
+        config,
+        search_factor,
+        &fine_delays,
+        &fine_gains,
+        &fine_phases,
+    )?;
+    let delay_samples = best.delay_units as f64 / search_factor as f64;
+    let phase_radians = best.phase_degrees.to_radians();
+    let corrected = correct_cir_non_circular(
+        current,
+        delay_samples,
+        best.gain_db,
+        phase_radians,
+        config.resampling_factor,
+    )?;
+    Some(CirAlignmentResult {
+        delay_samples,
+        gain_db: best.gain_db,
+        phase_radians,
+        phase_degrees: best.phase_degrees,
+        score: best.score,
+        matched_count: best.matched_count,
+        eligible_count: best.eligible_count,
+        corrected,
+    })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -285,5 +678,165 @@ mod tests {
         let (v, q) = scale_cir(&[Complex64::new(10., 0.)], 2., 10);
         assert_eq!(v[0].re, 2.);
         assert!(q.contains(QualityFlags::LOW_ACCUMULATION));
+    }
+
+    fn synthetic_signal(t: f64) -> Complex64 {
+        Complex64::from_polar(1.0, 0.30 * t)
+            + Complex64::from_polar(0.7, 0.75 * t + 0.4)
+            + Complex64::from_polar(0.4, 1.10 * t - 0.2)
+    }
+
+    fn synthetic_reference() -> Vec<Complex64> {
+        (0..64)
+            .map(|index| {
+                if index < 14 {
+                    let real = ((index * 17 % 11) as f64 - 5.0) * 0.001;
+                    let imag = ((index * 7 % 9) as f64 - 4.0) * 0.001;
+                    Complex64::new(real, imag)
+                } else {
+                    synthetic_signal(index as f64)
+                }
+            })
+            .collect()
+    }
+
+    fn transformed_current(
+        reference: &[Complex64],
+        delay: f64,
+        gain_db: f64,
+        phase: f64,
+    ) -> Vec<Complex64> {
+        let gain_phase = Complex64::from_polar(10f64.powf(gain_db / 20.0), phase);
+        (0..reference.len())
+            .map(|index| {
+                let source = index as f64 - delay;
+                let value = if source >= 14.0 {
+                    synthetic_signal(source)
+                } else {
+                    interpolate_runtime(reference, (source * 16.0).round() as i64, 16, false)
+                        .unwrap()
+                };
+                value * gain_phase
+            })
+            .collect()
+    }
+
+    #[test]
+    fn robust_hierarchical_alignment_handles_changed_taps_in_both_modes() {
+        let reference = synthetic_reference();
+        let mut current = transformed_current(&reference, 1.25, 3.0, 27f64.to_radians());
+        current[27] += Complex64::new(0.8, -0.6);
+        current[40] += Complex64::new(-1.0, 0.4);
+        current[52] += Complex64::new(0.6, 0.8);
+
+        for score_mode in [CirAlignmentScoreMode::Count, CirAlignmentScoreMode::Soft] {
+            let result = align_cir_hierarchical(
+                &reference,
+                &current,
+                CirAlignmentConfig {
+                    score_mode,
+                    ..CirAlignmentConfig::default()
+                },
+            )
+            .unwrap();
+            let delay_tolerance = match score_mode {
+                CirAlignmentScoreMode::Count => 0.25,
+                CirAlignmentScoreMode::Soft => 0.25,
+            };
+            assert!(
+                (result.delay_samples - 1.25).abs() <= delay_tolerance,
+                "{score_mode:?}: delay={}, gain={}, phase={}",
+                result.delay_samples,
+                result.gain_db,
+                result.phase_degrees
+            );
+            assert!((result.gain_db - 3.0).abs() <= 0.5);
+            // Robust scores are non-convex and may select an adjacent coarse
+            // cell before local refinement.
+            let phase_tolerance = 5.0;
+            assert!(
+                (result.phase_degrees - 27.0).abs() <= phase_tolerance,
+                "{score_mode:?}: delay={}, gain={}, phase={}",
+                result.delay_samples,
+                result.gain_db,
+                result.phase_degrees
+            );
+            assert!((result.phase_radians - result.phase_degrees.to_radians()).abs() < 1e-12);
+            assert!(result.matched_count * 2 > result.eligible_count);
+            assert!(result.matched_count < result.eligible_count);
+            assert_eq!(result.corrected.len(), current.len());
+            assert!((result.corrected[39] - reference[39]).norm() > 0.2);
+        }
+    }
+
+    #[test]
+    fn hierarchical_alignment_uses_original_reference_noise_gate() {
+        let mut reference = (0..16)
+            .map(|index| Complex64::new(if index % 2 == 0 { 1.0 } else { -1.0 }, 0.0))
+            .collect::<Vec<_>>();
+        reference[14] = Complex64::new(2.0, 0.0);
+        reference[15] = Complex64::new(4.0, 0.0);
+        let result = align_cir_hierarchical(
+            &reference,
+            &reference,
+            CirAlignmentConfig {
+                gain_min_db: 0.0,
+                gain_max_db: 0.0,
+                delay_range_samples: 0.0,
+                ..CirAlignmentConfig::default()
+            },
+        )
+        .unwrap();
+        assert!(result.eligible_count > 1);
+        assert_eq!(result.matched_count, result.eligible_count);
+        assert_eq!(result.score, result.eligible_count as f64);
+    }
+
+    #[test]
+    fn hierarchical_alignment_rejects_invalid_inputs_and_config() {
+        let cir = vec![Complex64::new(1.0, 0.0); 16];
+        for factor in [1, 2, 4, 8, 16] {
+            assert_eq!(
+                correct_cir_non_circular(&cir, 0.0, 0.0, 0.0, factor).unwrap(),
+                cir
+            );
+        }
+        assert!(
+            align_cir_hierarchical(
+                &cir,
+                &cir,
+                CirAlignmentConfig {
+                    resampling_factor: 3,
+                    ..CirAlignmentConfig::default()
+                }
+            )
+            .is_none()
+        );
+        assert!(
+            align_cir_hierarchical(
+                &cir,
+                &cir,
+                CirAlignmentConfig {
+                    eta: 0.0,
+                    ..CirAlignmentConfig::default()
+                }
+            )
+            .is_none()
+        );
+        assert!(correct_cir_non_circular(&cir, 0.0, 0.0, 0.0, 3).is_none());
+        assert!(align_cir_hierarchical(&[], &cir, CirAlignmentConfig::default()).is_none());
+
+        let reference = synthetic_reference();
+        let current = transformed_current(&reference, 1.0, 0.0, 0.0);
+        let result = align_cir_hierarchical(
+            &reference,
+            &current,
+            CirAlignmentConfig {
+                resampling_factor: 1,
+                ..CirAlignmentConfig::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(result.delay_samples.fract(), 0.0);
     }
 }

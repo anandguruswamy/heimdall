@@ -46,6 +46,9 @@ export class HeimdallApi {
   }
 
   putSettings(value: unknown): Promise<unknown> { return this.send('/settings', 'PUT', value); }
+  boardStatus(): Promise<unknown> { return this.get('/board'); }
+  freezeBoard(): Promise<unknown> { return this.send('/board/freeze', 'POST', {}); }
+  unfreezeBoard(): Promise<unknown> { return this.send('/board/unfreeze', 'POST', {}); }
   getCalibration(): Promise<unknown> { return this.get('/calibration'); }
   snapshotCalibration(): Promise<unknown> { return this.send('/calibration/snapshot', 'POST', {}); }
   solveCalibration(referencesM: Record<string, number>): Promise<unknown> { return this.send('/calibration/solve', 'POST', { references_m: referencesM }); }

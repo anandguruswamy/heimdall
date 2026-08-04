@@ -17,7 +17,7 @@ use axum::{
     },
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -131,6 +131,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/topology", get(topology))
         .route("/api/v1/history/distance", get(distance_history))
         .route("/api/v1/settings", get(settings).put(put_settings))
+        .route("/api/v1/board", get(board))
+        .route("/api/v1/board/freeze", post(freeze_board))
+        .route("/api/v1/board/unfreeze", post(unfreeze_board))
         .route("/api/v1/clips", get(clips).post(post_clip))
         .route("/api/v1/clips/{id}", get(download_clip).delete(delete_clip))
         .route("/api/v1/calibration", get(calibration))
@@ -155,6 +158,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/topology", get(topology))
         .route("/api/history/distance", get(distance_history))
         .route("/api/settings", get(settings).put(put_settings))
+        .route("/api/board", get(board))
+        .route("/api/board/freeze", post(freeze_board))
+        .route("/api/board/unfreeze", post(unfreeze_board))
         .route("/api/clips", get(clips).post(post_clip))
         .route("/api/clips/{id}", get(download_clip).delete(delete_clip))
         .route("/api/calibration", get(calibration))
@@ -266,6 +272,18 @@ async fn put_settings(
         .put_settings(&serde_json::to_value(effective)?)?;
     stored["processing_epoch"] = json!(state.pipeline.lock().summary().processing_epoch);
     Ok(Json(stored))
+}
+
+async fn freeze_board(State(state): State<AppState>) -> Json<Value> {
+    Json(state.pipeline.lock().freeze_board_references())
+}
+
+async fn board(State(state): State<AppState>) -> Json<Value> {
+    Json(state.pipeline.lock().board_freeze_status("current"))
+}
+
+async fn unfreeze_board(State(state): State<AppState>) -> Json<Value> {
+    Json(state.pipeline.lock().unfreeze_board_references())
 }
 
 async fn clips(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
@@ -562,6 +580,8 @@ mod tests {
             "/api/health",
             "/api/v1/topology",
             "/api/settings",
+            "/api/v1/board",
+            "/api/board",
         ] {
             let response = app
                 .clone()
@@ -579,6 +599,25 @@ mod tests {
         }
 
         let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/board")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let board = serde_json::from_slice::<Value>(&body).unwrap();
+        assert_eq!(board["status"], "current");
+        assert_eq!(board["board_frozen"], false);
+        assert_eq!(board["reference_count"], 0);
+        assert!(board["configuration_epoch"].is_u64());
+        assert!(board["processing_epoch"].is_u64());
+
+        let response = app
+            .clone()
             .oneshot(
                 axum::http::Request::builder()
                     .method(axum::http::Method::PUT)
@@ -594,5 +633,27 @@ mod tests {
         let value = serde_json::from_slice::<Value>(&body).unwrap();
         assert_eq!(value["value"]["cfo_half_life_s"], 3.0);
         assert_eq!(value["processing_epoch"], 2);
+
+        for path in [
+            "/api/v1/board/freeze",
+            "/api/board/unfreeze",
+            "/api/board/freeze",
+            "/api/v1/board/unfreeze",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method(axum::http::Method::POST)
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            assert!(serde_json::from_slice::<Value>(&body).unwrap()["board_frozen"].is_boolean());
+        }
     }
 }
