@@ -9,7 +9,7 @@ use heimdall_dsp::{
     FftWindow, PairCalibrationObservation, QualityFlags, ReferenceMode, SsTwrInput,
     TimeMovingAverage, align_cir_hierarchical, asymmetric_ds_twr, calibrate_offsets, common_phase,
     fast_fft, fast_fft_complex, fractional_align_non_circular, hampel, interpolate_short_gaps,
-    normalized_correlation_delay, resample_cir_16x, scale_cir, ss_twr,
+    normalized_correlation_delay, resample_cir_16x, resampled_cir_peak, scale_cir, ss_twr,
 };
 use heimdall_protocol::{
     CanonicalObservation, CanonicalProcessor, DecodedRecord, HelloRecord, ParserStats,
@@ -197,6 +197,7 @@ pub struct DspSettings {
     pub cir_grid_delay_range_samples: f64,
     pub cir_grid_resampling_factor: usize,
     pub cir_grid_eta: f64,
+    pub cir_grid_reference_peak_db: f64,
 }
 
 impl Default for DspSettings {
@@ -237,6 +238,7 @@ impl Default for DspSettings {
             cir_grid_delay_range_samples: 2.0,
             cir_grid_resampling_factor: 16,
             cir_grid_eta: 0.25,
+            cir_grid_reference_peak_db: -10.0,
         }
     }
 }
@@ -645,8 +647,10 @@ impl Pipeline {
                     requested,
                 )
             };
-            if let Some(result) = grid_reference.as_ref().and_then(|reference| {
+            if let Some((result, reference_peak)) = grid_reference.as_ref().and_then(|reference| {
+                let peak = resampled_cir_peak(reference, self.settings.cir_grid_resampling_factor)?;
                 align_cir_hierarchical(reference, &scaled, cir_alignment_config(&self.settings))
+                    .map(|result| (result, peak))
             }) {
                 display_delay_samples = result.delay_samples;
                 display_phase = result.phase_radians;
@@ -655,17 +659,26 @@ impl Pipeline {
                 } else {
                     result.score / result.eligible_count as f64
                 };
+                let target_peak =
+                    11.2 * 10.0_f64.powf((self.settings.cir_grid_reference_peak_db + 10.0) / 20.0);
+                let level_gain = target_peak / reference_peak;
+                let total_gain_db = 20.0 * level_gain.log10() - result.gain_db;
+                let corrected = result
+                    .corrected
+                    .into_iter()
+                    .map(|value| value * level_gain)
+                    .collect();
                 fit_diagnostics = Some(json!({
                     "fit_reference": requested,
                     "fit_reference_effective": effective,
                     "fit_delay_samples": result.delay_samples,
-                    "fit_gain_db": result.gain_db,
+                    "fit_gain_db": total_gain_db,
                     "fit_phase_rad": result.phase_radians,
                     "fit_score": result.score,
                     "fit_matched_count": result.matched_count,
                     "fit_eligible_count": result.eligible_count,
                 }));
-                robust_display = Some(result.corrected);
+                robust_display = Some(corrected);
             } else {
                 display_quality.insert(QualityFlags::LOW_CORRELATION);
                 display_delay_samples = 0.0;
@@ -1882,6 +1895,9 @@ fn validate_settings(settings: &DspSettings) -> Result<()> {
         || !settings.cir_grid_eta.is_finite()
         || settings.cir_grid_eta <= 0.0
         || settings.cir_grid_eta > 4.0
+        || !settings.cir_grid_reference_peak_db.is_finite()
+        || !(-30.0..=0.0).contains(&settings.cir_grid_reference_peak_db)
+        || settings.cir_grid_reference_peak_db.fract() != 0.0
     {
         bail!("invalid DSP settings");
     }
@@ -2691,6 +2707,16 @@ mod tests {
                 .update_settings(&json!({"cir_grid_eta": 0.0}))
                 .is_err()
         );
+        assert!(
+            pipeline
+                .update_settings(&json!({"cir_grid_reference_peak_db": -31.0}))
+                .is_err()
+        );
+        assert!(
+            pipeline
+                .update_settings(&json!({"cir_grid_reference_peak_db": -10.5}))
+                .is_err()
+        );
 
         pipeline
             .update_settings(&json!({"cir_nuisance_fit": true}))
@@ -2733,6 +2759,7 @@ mod tests {
                 "cir_grid_gain_max_db": 1.0,
                 "cir_grid_delay_range_samples": 0.0,
                 "cir_grid_resampling_factor": 1,
+                "cir_grid_reference_peak_db": -20.0,
                 "slow_fft_cadence_s": 0.001
             }))
             .unwrap();
@@ -2747,6 +2774,17 @@ mod tests {
         assert_eq!(cir["fit_reference"], "rolling_mean");
         assert_eq!(cir["fit_reference_effective"], "rolling_mean");
         assert!(cir["fit_delay_samples"].is_number());
+        let peak = cir["magnitude"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(Value::as_f64)
+            .map(Option::unwrap)
+            .max_by(f64::total_cmp)
+            .unwrap();
+        let target_peak = 11.2 * 10.0_f64.powf(-10.0 / 20.0);
+        assert!((peak - target_peak).abs() < 1e-5);
+        assert!(cir["fit_gain_db"].as_f64().unwrap() > 20.0);
         assert_eq!(pipeline.links[&(0, 1)].cir.len(), 2);
 
         let mut base = Pipeline::new();

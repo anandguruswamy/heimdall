@@ -47,6 +47,7 @@
   let cirGridDelayRange = $state(2);
   let cirGridResamplingFactor = $state(16);
   let cirGridEta = $state(0.25);
+  let cirGridReferencePeakDb = $state(-10);
   let calibrationPair = $state('0>1');
   let referencesM = $state<Record<string, string>>({});
   let calibrationSolution = $state<Record<string, unknown> | null>(null);
@@ -79,6 +80,7 @@
   }
   const live = new LiveStore(requestUiRevision);
   const CIR_DB_OFFSET = -10 - 20 * Math.log10(11.2);
+  const CIR_LINEAR_SCALE = Math.pow(10, CIR_DB_OFFSET / 20);
 
   const links = $derived(linksFor(nodeCount));
   const selected = $derived(links.find((link) => link.id === selectedId) ?? links[0]);
@@ -86,6 +88,7 @@
   const calibrationLive = $derived.by(() => { void liveRevision; return live.calibration?.live && typeof live.calibration.live === 'object' ? live.calibration.live as Record<string, unknown> : null; });
   const EMPTY_FRAME: PlotFrame = { series: [], min: 0, max: 1 };
   const dbFrameCache = new WeakMap<PlotFrame, Map<string, PlotFrame>>();
+  const normalizedCirFrameCache = new WeakMap<PlotFrame, PlotFrame>();
   const distanceFrameCache = new WeakMap<PlotFrame, Map<string, PlotFrame>>();
   let calibrationFrameSource: unknown;
   let cachedCalibrationFrame: PlotFrame = EMPTY_FRAME;
@@ -96,21 +99,6 @@
     api?.subscribe(tab);
   }
 
-  function cirSharedMax(): number {
-    let peak = 0;
-    for (const entry of live.links.values()) {
-      const frame = entry.cir;
-      if (frame && typeof frame.max === 'number' && Number.isFinite(frame.max) && frame.max > peak) peak = frame.max;
-    }
-    return peak || 1;
-  }
-
-  const cirSharedDb = $derived.by(() => {
-    void liveRevision;
-    if (!cirLockScale) return undefined;
-    return [-60, 0] as [number, number];
-  });
-
   function plotFor(tab: Tab, link: Link) {
     return () => {
       void liveRevision;
@@ -120,8 +108,9 @@
         return data?.fastFftPhase ?? EMPTY_FRAME;
       }
       let frame = data?.[topic];
+      if (topic === 'cir' && frame) frame = normalizedCirFrame(frame);
       if (topic === 'cir' && cirLockScale && frame) {
-        frame = { ...frame, min: 0, max: cirSharedMax() };
+        frame = { ...frame, min: 0, max: 1 };
       }
       if (topic === 'distance' && frame?.series) {
         frame = distanceDisplayFrame(frame);
@@ -133,11 +122,11 @@
         const [min, max] = [0, Math.max(...squared)];
         return { series: [{ data: squared, color: frame.series[0].color }], min, max, xLabel: frame.xLabel, yLabel: 'power' };
       }
-      const cirOffset = topic === 'cir' || topic === 'waterfall' ? CIR_DB_OFFSET : 0;
+      const cirOffset = topic === 'waterfall' ? CIR_DB_OFFSET : 0;
       if (dbMode && frame) {
         const fixedBounds: [number,number] | undefined =
           topic === 'waterfall' && waterfallFixedScale ? [waterfallScaleMin, waterfallScaleMax]
-          : topic === 'cir' && cirLockScale ? cirSharedDb
+          : topic === 'cir' && cirLockScale ? [-60,0]
           : undefined;
         return toDbFrame(frame, cirOffset, fixedBounds);
       }
@@ -150,6 +139,13 @@
       }
       return frame ?? EMPTY_FRAME;
     };
+  }
+
+  function normalizedCirFrame(frame: PlotFrame): PlotFrame {
+    const cached=normalizedCirFrameCache.get(frame);if(cached)return cached;
+    const scale=(src:Float32Array)=>{const out=new Float32Array(src.length);for(let i=0;i<src.length;i++)out[i]=src[i]*CIR_LINEAR_SCALE;return out;};
+    const normalized={...frame,series:frame.series?.map((item)=>({...item,data:scale(item.data)})),min:frame.min===undefined?undefined:frame.min*CIR_LINEAR_SCALE,max:frame.max===undefined?undefined:frame.max*CIR_LINEAR_SCALE,yLabel:'normalized magnitude'};
+    normalizedCirFrameCache.set(frame,normalized);return normalized;
   }
 
   function distanceDisplayFrame(frame: PlotFrame): PlotFrame {
@@ -475,7 +471,7 @@
       if (data.health) live.health = data.health as Record<string,unknown>;
       if (data.topology) { live.loadTopology(data.topology); const config=(data.topology as Record<string,unknown>).config as Record<string,unknown>|undefined; const count = Number(config?.n_nodes); if (count >= 2 && count <= 8) chooseNodeCount(count); }
       if (data.distanceHistory) live.loadDistanceHistory(data.distanceHistory);
-      if (data.settings) { live.settings = data.settings as Record<string,unknown>; const value=(live.settings.value ?? {}) as Record<string,unknown>; halfLife=Number(value.cfo_half_life_s ?? 2); smoothing=Number(value.distance_smoothing_s ?? 1); range=Number(value.reference_half_life_s ?? 4); alignmentMode=String(value.cir_alignment_mode ?? 'correlation'); slowFftSeconds=Number(value.slow_fft_history_s ?? 2); waterfallClutter=Boolean(value.waterfall_clutter); waterfallMagnitudeClutter=value.waterfall_magnitude_clutter !== false; waterfallNuisanceFit=value.waterfall_nuisance_fit !== false; waterfallRejectSpikes=value.waterfall_reject_spikes !== false; waterfallPathLoss=Boolean(value.waterfall_path_loss); waterfallNoiseClipDb=Number(value.waterfall_noise_clip_db ?? 12); waterfallTapMin=Number(value.waterfall_tap_min ?? -20); waterfallTapMax=Number(value.waterfall_tap_max ?? 50); waterfallScaleMin=Number(value.waterfall_fixed_scale_min ?? -60); waterfallScaleMax=Number(value.waterfall_fixed_scale_max ?? -10); dgcCorrectionDb=Number(value.dgc_correction_db_per_step ?? 2.65); const configured=String(value.cir_fit_algorithm ?? 'off'); cirFitAlgorithm=(configured==='off'&&Boolean(value.cir_nuisance_fit)?'linear_ls':configured) as typeof cirFitAlgorithm; cirGridReferenceMode=String(value.cir_grid_reference_mode ?? 'frozen'); cirGridReferenceWindow=Number(value.cir_grid_reference_window ?? 32); cirGridScoreMode=String(value.cir_grid_score_mode ?? 'soft'); cirGridGainMinDb=Number(value.cir_grid_gain_min_db ?? -10); cirGridGainMaxDb=Number(value.cir_grid_gain_max_db ?? 10); cirGridDelayRange=Number(value.cir_grid_delay_range_samples ?? 2); cirGridResamplingFactor=Number(value.cir_grid_resampling_factor ?? 16); cirGridEta=Number(value.cir_grid_eta ?? .25); }
+      if (data.settings) { live.settings = data.settings as Record<string,unknown>; const value=(live.settings.value ?? {}) as Record<string,unknown>; halfLife=Number(value.cfo_half_life_s ?? 2); smoothing=Number(value.distance_smoothing_s ?? 1); range=Number(value.reference_half_life_s ?? 4); alignmentMode=String(value.cir_alignment_mode ?? 'correlation'); slowFftSeconds=Number(value.slow_fft_history_s ?? 2); waterfallClutter=Boolean(value.waterfall_clutter); waterfallMagnitudeClutter=value.waterfall_magnitude_clutter !== false; waterfallNuisanceFit=value.waterfall_nuisance_fit !== false; waterfallRejectSpikes=value.waterfall_reject_spikes !== false; waterfallPathLoss=Boolean(value.waterfall_path_loss); waterfallNoiseClipDb=Number(value.waterfall_noise_clip_db ?? 12); waterfallTapMin=Number(value.waterfall_tap_min ?? -20); waterfallTapMax=Number(value.waterfall_tap_max ?? 50); waterfallScaleMin=Number(value.waterfall_fixed_scale_min ?? -60); waterfallScaleMax=Number(value.waterfall_fixed_scale_max ?? -10); dgcCorrectionDb=Number(value.dgc_correction_db_per_step ?? 2.65); const configured=String(value.cir_fit_algorithm ?? 'off'); cirFitAlgorithm=(configured==='off'&&Boolean(value.cir_nuisance_fit)?'linear_ls':configured) as typeof cirFitAlgorithm; cirGridReferenceMode=String(value.cir_grid_reference_mode ?? 'frozen'); cirGridReferenceWindow=Number(value.cir_grid_reference_window ?? 32); cirGridScoreMode=String(value.cir_grid_score_mode ?? 'soft'); cirGridGainMinDb=Number(value.cir_grid_gain_min_db ?? -10); cirGridGainMaxDb=Number(value.cir_grid_gain_max_db ?? 10); cirGridDelayRange=Number(value.cir_grid_delay_range_samples ?? 2); cirGridResamplingFactor=Number(value.cir_grid_resampling_factor ?? 16); cirGridEta=Number(value.cir_grid_eta ?? .25); cirGridReferencePeakDb=Number(value.cir_grid_reference_peak_db ?? -10); }
       if (data.calibration) {
         live.calibration = data.calibration as Record<string,unknown>;
         const calibration=data.calibration as Record<string,unknown>, liveState=calibration.live as Record<string,unknown>|undefined, applied=calibration.applied as Record<string,unknown>|undefined, stored=applied?.value as Record<string,unknown>|undefined;
@@ -622,7 +618,7 @@
   <div class="settings-body">
     <fieldset><legend>Acquisition</legend><label>Slow FFT cadence<select onchange={(e)=>settingChanged('slow_fft_cadence_s',+e.currentTarget.value)}><option value="1">1.0 s</option><option value="0.5">0.5 s</option><option value="2">2.0 s</option></select></label><label>Reference half-life<output>{range.toFixed(1)} s</output><input type="range" min="0.1" max="30" step="0.1" value={range} oninput={(e)=>{range=+e.currentTarget.value;settingChanged('reference_half_life_s',range);}} /></label></fieldset>
     <fieldset><legend>Signal processing</legend><label>CIR alignment<select value={alignmentMode} onchange={(e)=>{alignmentMode=e.currentTarget.value;settingChanged('cir_alignment_mode',alignmentMode);}}><option value="correlation">Reference correlation</option><option value="first_path">DW3000 first path</option></select></label><label>DGC correction<select value={dgcCorrectionDb} onchange={(e)=>{dgcCorrectionDb=+e.currentTarget.value;settingChanged('dgc_correction_db_per_step',dgcCorrectionDb);}}><option value={2.65}>2.65 dB/step (current)</option><option value={6}>6 dB/step (Qorvo RSL)</option><option value={0}>Disabled</option></select></label><label>Distance smoothing<output>{smoothing.toFixed(1)} s</output><input type="range" min="1" max="30" step="0.1" value={smoothing} oninput={(e)=>{smoothing=+e.currentTarget.value;settingChanged('distance_smoothing_s',smoothing);}} /></label><label>Hampel radius<input type="number" min="0" max="64" value="5" onchange={(e)=>settingChanged('hampel_radius',+e.currentTarget.value)} /></label><label>FFT window<select onchange={(e)=>settingChanged('fft_window',e.currentTarget.value)}><option value="hann">Hann</option><option value="hamming">Hamming</option><option value="blackman">Blackman</option><option value="rectangular">Rectangular</option></select></label></fieldset>
-    <fieldset><legend>Live CIR robust grid</legend><label>Reference<select value={cirGridReferenceMode} onchange={(e)=>{cirGridReferenceMode=e.currentTarget.value;settingChanged('cir_grid_reference_mode',cirGridReferenceMode);}}><option value="frozen">Frozen board</option><option value="rolling_medoid">Rolling medoid</option><option value="rolling_mean">Rolling mean</option></select></label><label>Reference window<input type="number" min="3" max="64" step="1" value={cirGridReferenceWindow} onchange={(e)=>{cirGridReferenceWindow=+e.currentTarget.value;settingChanged('cir_grid_reference_window',cirGridReferenceWindow);}} /></label><label>Score<select value={cirGridScoreMode} onchange={(e)=>{cirGridScoreMode=e.currentTarget.value;settingChanged('cir_grid_score_mode',cirGridScoreMode);}}><option value="soft">Soft weights</option><option value="count">Match count</option></select></label><label>Gain min dB<input type="number" min="-40" max={cirGridGainMaxDb-.5} step=".5" value={cirGridGainMinDb} onchange={(e)=>{cirGridGainMinDb=+e.currentTarget.value;settingChanged('cir_grid_gain_min_db',cirGridGainMinDb);}} /></label><label>Gain max dB<input type="number" min={cirGridGainMinDb+.5} max="40" step=".5" value={cirGridGainMaxDb} onchange={(e)=>{cirGridGainMaxDb=+e.currentTarget.value;settingChanged('cir_grid_gain_max_db',cirGridGainMaxDb);}} /></label><label>Delay +/- taps<input type="number" min="0" max="8" step=".25" value={cirGridDelayRange} onchange={(e)=>{cirGridDelayRange=+e.currentTarget.value;settingChanged('cir_grid_delay_range_samples',cirGridDelayRange);}} /></label><label>Resample P<select value={cirGridResamplingFactor} onchange={(e)=>{cirGridResamplingFactor=+e.currentTarget.value;settingChanged('cir_grid_resampling_factor',cirGridResamplingFactor);}}>{#each [1,2,4,8,16] as factor}<option value={factor}>{factor}x</option>{/each}</select></label><label>Eta<input type="number" min=".01" max="4" step=".01" value={cirGridEta} onchange={(e)=>{cirGridEta=+e.currentTarget.value;settingChanged('cir_grid_eta',cirGridEta);}} /></label></fieldset>
+    <fieldset><legend>Live CIR robust grid</legend><label>Reference<select value={cirGridReferenceMode} onchange={(e)=>{cirGridReferenceMode=e.currentTarget.value;settingChanged('cir_grid_reference_mode',cirGridReferenceMode);}}><option value="frozen">Frozen board</option><option value="rolling_medoid">Rolling medoid</option><option value="rolling_mean">Rolling mean</option></select></label><label>Reference window<input type="number" min="3" max="64" step="1" value={cirGridReferenceWindow} onchange={(e)=>{cirGridReferenceWindow=+e.currentTarget.value;settingChanged('cir_grid_reference_window',cirGridReferenceWindow);}} /></label><label>Reference peak dB<input type="number" min="-30" max="0" step="1" value={cirGridReferencePeakDb} onchange={(e)=>{cirGridReferencePeakDb=+e.currentTarget.value;settingChanged('cir_grid_reference_peak_db',cirGridReferencePeakDb);}} /></label><label>Score<select value={cirGridScoreMode} onchange={(e)=>{cirGridScoreMode=e.currentTarget.value;settingChanged('cir_grid_score_mode',cirGridScoreMode);}}><option value="soft">Soft weights</option><option value="count">Match count</option></select></label><label>Gain min dB<input type="number" min="-40" max={cirGridGainMaxDb-.5} step=".5" value={cirGridGainMinDb} onchange={(e)=>{cirGridGainMinDb=+e.currentTarget.value;settingChanged('cir_grid_gain_min_db',cirGridGainMinDb);}} /></label><label>Gain max dB<input type="number" min={cirGridGainMinDb+.5} max="40" step=".5" value={cirGridGainMaxDb} onchange={(e)=>{cirGridGainMaxDb=+e.currentTarget.value;settingChanged('cir_grid_gain_max_db',cirGridGainMaxDb);}} /></label><label>Delay +/- taps<input type="number" min="0" max="8" step=".25" value={cirGridDelayRange} onchange={(e)=>{cirGridDelayRange=+e.currentTarget.value;settingChanged('cir_grid_delay_range_samples',cirGridDelayRange);}} /></label><label>Resample P<select value={cirGridResamplingFactor} onchange={(e)=>{cirGridResamplingFactor=+e.currentTarget.value;settingChanged('cir_grid_resampling_factor',cirGridResamplingFactor);}}>{#each [1,2,4,8,16] as factor}<option value={factor}>{factor}x</option>{/each}</select></label><label>Eta<input type="number" min=".01" max="4" step=".01" value={cirGridEta} onchange={(e)=>{cirGridEta=+e.currentTarget.value;settingChanged('cir_grid_eta',cirGridEta);}} /></label></fieldset>
     <fieldset><legend>Display</legend><label><span>Peak markers</span><input type="checkbox" checked /></label><label><span>30 FPS plots</span><input type="checkbox" checked disabled /></label></fieldset>
     <fieldset><legend>Protected clips</legend><label>Name<input maxlength="120" bind:value={clipName} placeholder="Optional label" /></label><label>Note<input maxlength="2000" bind:value={clipNote} placeholder="Optional context" /></label><button class="snapshot" onclick={saveClip} disabled={clipState === 'capturing'}>SAVE 10 SECOND CLIP</button><div class="capture-progress"><i style={`width:${clipProgress}%`}></i></div>{#each clips as clip}<p>{String((clip.value as Record<string,unknown>)?.status ?? 'unknown').toUpperCase()} · CLIP {String(clip.id)} {String((clip.value as Record<string,unknown>)?.name ?? '')} {#if (clip.value as Record<string,unknown>)?.status === 'complete'}<a href={api?.clipDownload(Number(clip.id))}>DOWNLOAD ZIP</a>{/if} <button class="text-button" onclick={()=>deleteClip(Number(clip.id))} disabled={(clip.value as Record<string,unknown>)?.status === 'collecting'}>DELETE</button></p>{/each}</fieldset>
     <fieldset><legend>Backend</legend><label>REST base<input value="/api" readonly /></label><p>{backendMessage}. Binary HMT1 WebSocket follows the active analysis topic and reconnects with exponential backoff.</p></fieldset>

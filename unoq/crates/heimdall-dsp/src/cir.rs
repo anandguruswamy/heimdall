@@ -123,6 +123,19 @@ pub fn resample_cir_16x(input: &[Complex64]) -> Vec<Complex64> {
     out
 }
 
+/// Maximum complex magnitude on the configured non-circular interpolation grid.
+pub fn resampled_cir_peak(input: &[Complex64], factor: usize) -> Option<f64> {
+    if input.is_empty() {
+        return None;
+    }
+    runtime_interpolation_weights(factor)?;
+    (0..=(input.len() - 1) * factor)
+        .filter_map(|position| interpolate_runtime(input, position as i64, factor, true))
+        .map(|value| value.norm())
+        .filter(|value| value.is_finite())
+        .max_by(f64::total_cmp)
+}
+
 pub fn fractional_align_non_circular(input: &[Complex64], shift_samples: f64) -> Vec<Complex64> {
     let shift = (shift_samples * CIR_INTERPOLATION as f64).round() as i64;
     (0..input.len())
@@ -245,12 +258,22 @@ fn search_alignment_grid(
     phases_degrees: &[f64],
 ) -> Option<AlignmentCandidate> {
     let factor = interpolation_factor as i64;
-    let corrections = gains_db
+    let gains = gains_db
         .iter()
-        .flat_map(|&gain_db| {
-            phases_degrees.iter().map(move |&phase_degrees| {
-                let value =
-                    Complex64::from_polar(10f64.powf(-gain_db / 20.0), -phase_degrees.to_radians());
+        .map(|&gain_db| (gain_db, 10f64.powf(-gain_db / 20.0)))
+        .collect::<Vec<_>>();
+    let phases = phases_degrees
+        .iter()
+        .map(|&phase_degrees| {
+            let value = Complex64::from_polar(1.0, -phase_degrees.to_radians());
+            (phase_degrees, value)
+        })
+        .collect::<Vec<_>>();
+    let corrections = gains
+        .iter()
+        .flat_map(|&(gain_db, inverse_gain)| {
+            phases.iter().map(move |&(phase_degrees, phase)| {
+                let value = phase * inverse_gain;
                 CorrectionCandidate {
                     gain_db,
                     phase_degrees,
@@ -262,6 +285,11 @@ fn search_alignment_grid(
         })
         .collect::<Vec<_>>();
     let eta_sqr = config.eta * config.eta;
+    let full_phase_step = if phases_degrees.len() > 16 {
+        Some((phases_degrees[1] - phases_degrees[0]).abs())
+    } else {
+        None
+    };
     let per_delay = delays
         .par_iter()
         .map(|&delay_units| {
@@ -278,25 +306,63 @@ fn search_alignment_grid(
             if samples.is_empty() {
                 return None;
             }
-            let mut best = None;
-            for correction in &corrections {
-                let mut score = 0.0;
-                let mut tie_score = 0.0;
-                let mut matched_count = 0;
-                for &(ratio_re, ratio_im, ratio_norm_sqr) in &samples {
-                    let error_sqr = correction.norm_sqr * ratio_norm_sqr
-                        - 2.0 * (correction.re * ratio_re - correction.im * ratio_im)
-                        + 1.0;
-                    if error_sqr < eta_sqr {
-                        matched_count += 1;
-                        let soft_score = 1.0 - error_sqr.max(0.0).sqrt() / config.eta;
-                        tie_score += soft_score;
-                        score += match config.score_mode {
-                            CirAlignmentScoreMode::Count => 1.0,
-                            CirAlignmentScoreMode::Soft => soft_score,
-                        };
+            let mut soft_scores = vec![0.0; corrections.len()];
+            let mut matched_counts = vec![0_usize; corrections.len()];
+            for &(ratio_re, ratio_im, ratio_norm_sqr) in &samples {
+                let ratio_norm = ratio_norm_sqr.sqrt();
+                if ratio_norm <= 0.0 {
+                    continue;
+                }
+                let ratio_phase = ratio_im.atan2(ratio_re).to_degrees();
+                for (gain_index, &(_, inverse_gain)) in gains.iter().enumerate() {
+                    let corrected_norm = inverse_gain * ratio_norm;
+                    if (corrected_norm - 1.0).abs() >= config.eta {
+                        continue;
+                    }
+                    let cosine_limit = ((corrected_norm * corrected_norm + 1.0 - eta_sqr)
+                        / (2.0 * corrected_norm))
+                        .clamp(-1.0, 1.0);
+                    let max_phase_error = cosine_limit.acos().to_degrees();
+                    let mut score_phase = |phase_index: usize| {
+                        let candidate_index = gain_index * phases.len() + phase_index;
+                        let correction = &corrections[candidate_index];
+                        let error_sqr = correction.norm_sqr * ratio_norm_sqr
+                            - 2.0 * (correction.re * ratio_re - correction.im * ratio_im)
+                            + 1.0;
+                        if error_sqr < eta_sqr {
+                            matched_counts[candidate_index] += 1;
+                            soft_scores[candidate_index] +=
+                                1.0 - error_sqr.max(0.0).sqrt() / config.eta;
+                        }
+                    };
+                    if let Some(step) = full_phase_step {
+                        let count = phases.len() as isize;
+                        let wrapped = (ratio_phase + 180.0).rem_euclid(360.0) - 180.0;
+                        let center = ((wrapped - phases_degrees[0]) / step).round() as isize;
+                        let radius = (max_phase_error / step).ceil() as isize + 1;
+                        if radius * 2 + 1 >= count {
+                            for phase_index in 0..phases.len() {
+                                score_phase(phase_index);
+                            }
+                        } else {
+                            for offset in -radius..=radius {
+                                score_phase((center + offset).rem_euclid(count) as usize);
+                            }
+                        }
+                    } else {
+                        for phase_index in 0..phases.len() {
+                            score_phase(phase_index);
+                        }
                     }
                 }
+            }
+            let mut best = None;
+            for (index, correction) in corrections.iter().enumerate() {
+                let score = match config.score_mode {
+                    CirAlignmentScoreMode::Count => matched_counts[index] as f64,
+                    CirAlignmentScoreMode::Soft => soft_scores[index],
+                };
+                let tie_score = soft_scores[index];
                 if best.is_none_or(|candidate: AlignmentCandidate| {
                     score > candidate.score
                         || (score == candidate.score && tie_score > candidate.tie_score)
@@ -307,7 +373,7 @@ fn search_alignment_grid(
                         phase_degrees: correction.phase_degrees,
                         score,
                         tie_score,
-                        matched_count,
+                        matched_count: matched_counts[index],
                         eligible_count: samples.len(),
                     });
                 }
@@ -770,6 +836,16 @@ mod tests {
     }
 
     #[test]
+    fn robust_hierarchical_alignment_wraps_phase_grid() {
+        let reference = synthetic_reference();
+        let current = transformed_current(&reference, 0.0, 0.0, 179f64.to_radians());
+        let result =
+            align_cir_hierarchical(&reference, &current, CirAlignmentConfig::default()).unwrap();
+        let phase_error = (result.phase_degrees - 179.0 + 180.0).rem_euclid(360.0) - 180.0;
+        assert!(phase_error.abs() <= 5.0, "phase={}", result.phase_degrees);
+    }
+
+    #[test]
     fn hierarchical_alignment_uses_original_reference_noise_gate() {
         let mut reference = (0..16)
             .map(|index| Complex64::new(if index % 2 == 0 { 1.0 } else { -1.0 }, 0.0))
@@ -838,5 +914,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.delay_samples.fract(), 0.0);
+        let expected_peak = resample_cir_16x(&reference)
+            .iter()
+            .map(|value| value.norm())
+            .max_by(f64::total_cmp)
+            .unwrap();
+        assert!((resampled_cir_peak(&reference, 16).unwrap() - expected_peak).abs() < 1e-12);
+        assert!(resampled_cir_peak(&reference, 3).is_none());
     }
 }

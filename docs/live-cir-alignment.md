@@ -137,6 +137,27 @@ weight. Candidates with no valid scoring taps are invalid.
 
 The default score is **soft**, with `eta = 0.25`.
 
+### Reference peak level
+
+After fitting, Robust Grid applies one additional reference-derived gain. The
+reference peak is the maximum complex magnitude on the configured `P`-resampled
+grid. With target level `L` dB,
+
+```text
+target_raw = 11.2 * 10^((L + 10) / 20)
+level_gain = target_raw / reference_peak
+```
+
+The displayed robust CIR is `level_gain * yhat`. The reported `fit_gain_db` is
+the total amplitude gain actually applied to the input:
+
+```text
+fit_gain_db = 20 log10(level_gain) - grid_gain_db
+```
+
+The setpoint defaults to `-10 dB` and is configurable from `-30` through `0 dB`
+in 1 dB steps. Movement-changed current taps do not alter this normalization.
+
 ### Hierarchical grid
 
 Every current frame runs a new complete hierarchical search. A previous
@@ -180,7 +201,8 @@ work.
 | Interpolation factor `P` | 16 | Fine delay spacing is `1/16` tap |
 | Gain range | `[-10, +10] dB` | Coarse gain search extent |
 | Robust threshold `eta` | 0.25 | Inlier threshold and soft-score clipping scale |
-| Score | Soft | Minimize mean clipped relative complex error |
+| Reference peak | `-10 dB` | P-resampled reference target; configurable `-30..0 dB` |
+| Score | Soft | Maximize bounded inlier weights |
 
 The coarse delay, gain, and phase spacings are fixed at 0.5 tap, 2 dB, and 5
 degrees respectively. Refined spacings are `1/P` tap, 0.5 dB, and 1 degree.
@@ -207,8 +229,27 @@ service may limit its configurable range.
 
 Delay hypotheses are scored in parallel using a persistent Rayon thread pool.
 Candidate ordering and final tie resolution remain deterministic.
+Within each delay, a resampled point votes only for gain/phase cells that can
+possibly satisfy `|z - 1| < eta`. The admissible radial and angular intervals
+are derived analytically, then every retained cell is evaluated with the exact
+complex-distance equation. This sparse voting changes computation cost, not the
+grid or objective.
 
 Radio/USB ingestion remains decoupled through the service queue, but grid work
 adds latency to the single processing path and can cause stale processing work
 to be dropped under overload. Live deployment must therefore be checked using
 the queue depth, queue wait, processing time, and drop counters in `/api/health`.
+
+## Live CIR display scale
+
+All Live CIR modes use normalized display amplitude. The existing calibration
+maps a raw magnitude of 11.2 to `-10 dB`, so normalized linear amplitude is
+
+```text
+a_normalized = a_raw * 10^((-10 - 20 log10(11.2)) / 20)
+```
+
+and `a_normalized = 1` is `0 dB`. With `LOCK Y SCALE` enabled every link uses
+fixed common limits: `0..1` in linear mode and `-60..0 dB` in dB mode. Unlocked
+plots auto-range in the same normalized units. Waterfall and FFT units are not
+changed by this display conversion.

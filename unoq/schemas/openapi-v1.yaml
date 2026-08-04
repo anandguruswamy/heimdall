@@ -209,6 +209,12 @@ components:
           exclusiveMinimum: 0
           maximum: 4
           default: 0.25
+        cir_grid_reference_peak_db:
+          type: number
+          minimum: -30
+          maximum: 0
+          multipleOf: 1
+          default: -10
     BoardFreezeStatus:
       type: object
       additionalProperties: false
