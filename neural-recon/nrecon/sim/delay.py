@@ -33,23 +33,51 @@ def fractional_shift(x: torch.Tensor, delta_taps: torch.Tensor) -> torch.Tensor:
     `x` has shape [..., S]; `delta_taps` is a scalar or broadcastable to
     `x.shape[:-1]`. Output equals `x(t - delta_taps * ts)` evaluated on the
     tap grid with a windowed-sinc interpolator, zero-filled outside support.
+    Complex inputs are shifted componentwise.
+    """
+    x = torch.as_tensor(x)
+    if torch.is_complex(x):
+        return _fractional_shift_real(x.real, delta_taps) + 1j * _fractional_shift_real(
+            x.imag, delta_taps
+        )
+    return _fractional_shift_real(x, delta_taps)
+
+
+def _fractional_shift_real(x: torch.Tensor, delta_taps: torch.Tensor) -> torch.Tensor:
+    """Shift by an exact integer roll plus a windowed-sinc fractional part.
+
+    Splitting `delta` into `round(delta) + frac` keeps the sinc support
+    (`_SINC_SUPPORT` taps) valid for any shift magnitude: the integer part
+    is an exact zero-filled roll, the fractional part |frac| <= 0.5 is
+    applied with the windowed-sinc kernel centered on the delay.
     """
     x = torch.as_tensor(x)
     delta = torch.as_tensor(delta_taps, dtype=x.dtype, device=x.device)
     leading = x.shape[:-1]
     S = x.shape[-1]
     if delta.ndim == 0:
-        delta_b = delta.reshape(1, 1, 1)
+        d_int = torch.round(delta).long().reshape(1)
+        f = (delta - d_int.to(delta.dtype)).reshape(1, 1, 1)
     else:
-        delta_b = delta.broadcast_to(leading).reshape(-1, 1, 1)
+        db = delta.broadcast_to(leading).reshape(-1)
+        d_int = torch.round(db).long()
+        f = (db - d_int.to(db.dtype)).reshape(-1, 1, 1)
 
-    k = torch.arange(-_SINC_SUPPORT, _SINC_SUPPORT + 1, dtype=torch.float64)
-    w = _kaiser(k.view(1, 1, -1) - delta_b.double()).to(x.dtype)  # follows delay
-    kernel = w * torch.sinc(k.view(1, 1, -1).to(x.dtype) + delta_b)  # [B,1,2S+1]
+    xr = x.reshape(-1, S)
+    cols = torch.arange(S, dtype=torch.long, device=x.device)
+    idx = cols[None, :] - d_int[:, None]
+    mask = (idx >= 0) & (idx < S)
+    idx = idx.clamp(0, S - 1)
+    rolled = torch.where(mask, xr.gather(1, idx), torch.zeros_like(xr))
 
-    xr = x.reshape(-1, 1, S)
-    xp = F.pad(xr, (_SINC_SUPPORT, _SINC_SUPPORT))
-    y = F.conv1d(xp, kernel)  # correlation form; length S by construction
+    k = torch.arange(-_SINC_SUPPORT, _SINC_SUPPORT + 1, dtype=x.dtype, device=x.device)
+    w = _kaiser(k.view(1, 1, -1) + f).to(x.dtype)  # window centered on the delay
+    kernel = w * torch.sinc(k.view(1, 1, -1) + f)  # [B,1,2S+1]
+
+    xp = F.pad(rolled[:, None, :], (_SINC_SUPPORT, _SINC_SUPPORT))
+    out = F.conv1d(xp, kernel)  # [B, B, S]; row b convolved with every kernel
+    idx_b = torch.arange(out.shape[0], device=out.device)
+    y = out[idx_b, idx_b]  # each row with its own kernel
     return y.reshape(x.shape)
 
 

@@ -4,6 +4,7 @@ runs/
 artifacts/**/*.npy
 artifacts/**/*.npz
 artifacts/**/*.pt
+artifacts/demo/
 __pycache__/
 *.pyc
 .pytest_cache/

@@ -74,3 +74,34 @@ Append dated entries. Never rewrite history; supersede with a new entry.
 - Measured delay-recovery accuracy over [-3, 3] taps: max error 0.0 tap
   (all deltas recovered exactly on the parabolic-refined 1/16-tap grid),
   comfortably under the <0.01 tap gate.
+
+## 2026-08-04 Phase 2 UWBRender implementation notes
+
+- `fractional_shift` splits the delay into an exact zero-filled integer roll
+  plus the windowed-sinc applied to the fractional remainder (|f| <= 0.5).
+  A pure windowed-sinc over a fixed +/-8 tap support cannot realize shifts
+  beyond the support (e.g., the F0 = 16 marker alignment), and the window
+  must be centered on the fractional delay itself; the roll+frac form is
+  exact for integer shifts and keeps one small window everywhere.
+- Plane image-source denominator guard: `torch.sign(0)` is 0, so an exact
+  zero denominator (receiver on the mirror plane) produced 0/0 NaN; the
+  guard now forces the sign to +/-1 for |den| < 1e-6.
+- Image-source singularity: a specular point (or surfel center, or capsule
+  quadrature point) within ~0.02 m of a node makes (d1*d2)^(-gamma/2)
+  diverge (e.g., a receiver lying on the floor plane). A smooth near-node
+  gate (0.02 -> 0.10 m, `PROVISIONAL`) suppresses these degenerate paths;
+  without it the demo produced echoes of amplitude ~1e10.
+- Quantization roundtrip: `to_i16` maps the float CIR to the i16 transport
+  via acc18 >> 2, and `from_i16` (Eq. (7) mirror) scales the transport
+  without restoring the dropped low bits. The roundtrip therefore
+  reconstructs h/4 within +-0.875 accumulator units (rounding +-0.5 plus
+  the two shifted-off bits), not h itself; the test asserts that property.
+- Performance smoke (G_MAX=48 mixed slots, 20 links, CPU float64,
+  forward+backward): measured 1.79 s vs the PROVISIONAL 30 s budget.
+- Demo (`python -m nrecon.sim.demo`, live geometry JSON read-only): LOS
+  peak at the F0=16 marker tap on every link; room-wall plane echoes at
+  taps 19-26 (excess 1-3 m, plausible for the 2.5 m demo room); surfel
+  and capsule echoes visible; envelopes sane, SVGs written to
+  `artifacts/demo/`. Note: the live node layout places nodes 0-2 on the
+  floor plane (z = 0), which is exactly the degenerate image-source case
+  exercised above.
