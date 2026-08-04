@@ -1,0 +1,14 @@
+# bulk generated data and run outputs are never committed
+datasets/
+runs/
+artifacts/**/*.npy
+artifacts/**/*.npz
+artifacts/**/*.pt
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.egg-info/
+# tracked exceptions
+!artifacts/**/manifest.json
+!artifacts/**/*.md
