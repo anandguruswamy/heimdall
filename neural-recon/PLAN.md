@@ -15,7 +15,7 @@ observed command result.
 | 5 | `plan/phase-5-network.md` | Geometry-conditioned set network implementation | N5 |
 | 6 | `plan/phase-6-training.md` | Losses and curriculum training runs 1-4 | N6 |
 | 7 | `plan/phase-7-evaluation.md` | Metrics, stratified protocol, decisive experiment, go/no-go | N7 |
-| 8 | `plan/phase-8-real-transfer.md` | Calibration campaign, real-data fine-tuning (leaves subfolder-only scope; user approval required) | N8 |
+| 8 | `plan/phase-8-real-transfer.md` | Calibration campaign, real-data fine-tuning via the live aligned/fitted CIR input contract (leaves subfolder-only scope; user approval required) | N8 |
 
 ## Gate checklist
 

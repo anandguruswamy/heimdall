@@ -23,15 +23,32 @@ Prerequisites: Gate N7 with a "go" decision; user approval.
      tooling to canonical observations; fit distributions for DGC,
      accumulation count, complex noise covariance, first-path jitter, link
      gain, false-first-path rate, missing-link rate (paper Sec. VIII-B).
+   - Prefer the live CIR tab's per-link fit estimates (see below) as the
+     direct source for link gain, phase coherence, and first-path jitter
+     statistics; reserve raw-CIR-derived fits for quantities the live fit
+     does not expose (noise covariance, DGC/accumulation distributions).
    - Regenerate stage-3/4 datasets with fitted parameters; record deltas
      against the assumed defaults in `DECISIONS.md`.
-2. Measured link kernels:
+2. Live aligned/fitted CIR as the real-data input contract:
+   - The UNO Q CIR tab fits per-link gain/phase/timing (`linear_ls` or
+     `robust_grid`, fallback base-aligned) and publishes one "display" CIR
+     per frame to the CIR, waterfall, and FFT products. The network input
+     for real data is that fitted display signal plus its fit metadata
+     (marker `f_ij` from `marker_aligned`, per-link gain/phase/timing
+     estimates, DGC, accumulation count, fit algorithm), consumed via the
+     Phase 5 preprocessor's real-data source — not a host-side re-fit of
+     raw CIRs.
+   - Captures must record the fit mode and fitted metadata alongside the
+     CIRs so the input is reproducible across replays (the live pipeline's
+     `processing_epoch` semantics mean products are consistent only within
+     one processing configuration).
+3. Measured link kernels:
    - From open-LOS captures at surveyed distances, estimate per-link
      accumulator kernels; fit the residual FIR `b_ij` against template v1
      (paper Eq. (14) discussion, Sec. X "Pulse mismatch").
    - Replace/augment the synthetic kernel: retrain or fine-tune run 4 with
      measured-kernel randomization.
-3. Calibration campaign (paper Sec. VIII-E) — each item is a scheduled
+4. Calibration campaign (paper Sec. VIII-E) — each item is a scheduled
    physical session with a capture checklist and surveyed ground truth:
    a. open LOS at surveyed distances/orientations;
    b. empty surveyed room;
@@ -42,17 +59,17 @@ Prerequisites: Gate N7 with a "go" decision; user approval.
    g. node rotations/replacements.
    Store captures under the existing protected-capture mechanism; label
    files (primitive ground truth per capture) live in this subfolder.
-4. Fine-tuning:
+5. Fine-tuning:
    - Stage 5: supervised fine-tune on labeled controlled scenes with
      primitive labels + CIR reconstruction.
    - Stage 6: conservative unlabeled adaptation on operational captures
      with CIR reconstruction only, anchored to the synthetic prior
      (small lr, strong regularization; watch for degenerate scene drift).
-5. Real evaluation: repeat the Phase 7 protocol on held-out real sessions
+6. Real evaluation: repeat the Phase 7 protocol on held-out real sessions
    (held-out scenes and held-out links); compare against dense
-   backprojection on identical inputs; report in
+   backprojection on identical (fitted) inputs; report in
    `reports/N8-real-evaluation.md`.
-6. Only after N8: consider deployment integration questions (UNO Q vs
+7. Only after N8: consider deployment integration questions (UNO Q vs
    off-board inference, cadence, static/dynamic decomposition). These are
    out of scope for this plan and require a new plan document.
 

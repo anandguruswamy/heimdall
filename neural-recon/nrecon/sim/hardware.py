@@ -59,7 +59,7 @@ def sample_nuisance(rng: np.random.Generator, cfg: dict, n_links: int) -> Nuisan
         lo, hi = hw["dgc"]
         dgc = rng.integers(lo, hi + 1, size=n).astype(np.int8)
 
-    accum = np.full(n, 1, dtype=np.int16)
+    accum = np.full(n, MEDIAN_ACCUM, dtype=np.int16)
     if "accum" in hw:
         lo, hi = hw["accum"]
         accum = np.round(np.exp(rng.normal(np.log(lo), 0.3, size=n))).clip(
@@ -84,6 +84,7 @@ def sample_nuisance(rng: np.random.Generator, cfg: dict, n_links: int) -> Nuisan
         peak_offset = np.abs(rng.normal(hw["peak_offset"][0], hw["peak_offset"][1], size=n))
 
     resid_fir = np.zeros((n, RESID_TAPS), dtype=np.complex128)
+    resid_fir[:, RESID_TAPS // 2] = 1.0  # identity default
     if "resid" in hw:
         strength = hw["resid"]
         center = RESID_TAPS // 2

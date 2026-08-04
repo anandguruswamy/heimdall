@@ -132,3 +132,24 @@ Append dated entries. Never rewrite history; supersede with a new entry.
 - Full stage 1 build (100 scenes): measured 29.5 scenes/s, built and
   validated (schema/manifest/determinism/consistency/splits all PASSED).
   Stages 2-4 (10k scenes) are deferred to Phase 6 per the plan.
+
+## 2026-08-04 Live aligned/fitted CIR pipeline becomes the real-data input contract
+
+- The UNO Q live pipeline (heimdall-service `pipeline.rs`, commit 09a6aea
+  "Feed CIR products from selected fit") now computes one fitted "display"
+  CIR per frame — `linear_ls` gain/phase/timing fit, `robust_grid`, or
+  base-aligned fallback — and feeds it to the CIR, waterfall, slow-FFT, and
+  fast-FFT products, gated by a `processing_epoch` so products are
+  consistent within one processing configuration.
+- Impact on the plan: Phases 0-4 are unaffected (the synthetic pipeline
+  remains the training authority, and its marker ~16 alignment already
+  matches the live `marker_aligned` convention). The real-data input
+  contract changes: Phase 5's preprocessor must accept the live fitted
+  CIR as-is and map the fit's per-link estimates onto the paper's
+  nuisance metadata (log `a_ij`, phase, marker `f_ij`), and Phase 8 must
+  (a) fit hardware statistics preferentially from the live fit's per-link
+  gain/phase/timing estimates, and (b) record fit mode + fitted metadata
+  in captures for reproducibility.
+- Plan updated accordingly: `plan/phase-5-network.md` step 1, rewritten
+  `plan/phase-8-real-transfer.md` steps, `README.md` scope note, `PLAN.md`
+  Phase 8 row.

@@ -14,6 +14,14 @@ network that maps 20 directed 64-tap CIRs to a compact typed primitive scene.
   in Phase 8 only, read-only replay of protected `.husb` captures.
 - Nothing here touches firmware, the UNO Q service, contracts, or the live
   system.
+- Real-data input contract (Phase 8): the live UNO Q CIR tab fits per-link
+  gain/phase/timing (`linear_ls` / `robust_grid`, fallback base-aligned)
+  and publishes one aligned/fitted "display" CIR to the CIR, waterfall, and
+  FFT products. Real data enters the network as that fitted CIR plus its
+  fit metadata (marker `f_ij`, per-link gain/phase/timing estimates, DGC,
+  accumulation count) via the Phase 5 preprocessor's real-data source —
+  not a host-side re-fit of raw CIRs. Synthetic records remain the
+  training authority and already mirror the marker ~16 alignment.
 - Generated datasets, checkpoints, run logs, and rendered artifacts are never
   committed (see `.gitignore`). Small, deterministic, hashed artifacts (pulse
   template manifests, configs, metrics reports) are committed.

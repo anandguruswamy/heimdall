@@ -15,6 +15,16 @@ Prerequisites: Gate N4 (positive or user-approved-conditional verdict).
      `nrecon.sim.delay.fractional_shift`); common-phase removal against the
      direct-path template and robust amplitude normalization (Eq. (9)) with
      `log a_ij` and removed phase appended to metadata.
+   - **Real-data source (Phase 8):** the live UNO Q CIR tab already performs
+     the gain/phase/timing fit (`linear_ls` or `robust_grid`; fallback to
+     base-aligned when fit is `off`) and publishes a fitted "display" CIR
+     plus fit diagnostics to every CIR-derived product. The preprocessor
+     must therefore also accept the live fitted CIR *as-is* and map the
+     fit's per-link estimates onto the metadata (log `a_ij`, removed phase,
+     marker `f_ij` from `marker_aligned`, DGC, accumulation count, CFO),
+     instead of re-fitting raw CIRs host-side. Synthetic records remain the
+     primary training path; the live fitted input is used for Phase 8
+     fine-tuning and evaluation.
    - Channels Eq. (10): `[Re, Im, log(eps + |.|)]` -> `[L, 64, 3]`.
    - Metadata vector Eq. text (Sec. IV-B): marker `f_ij`, `log a_ij`, DGC,
      accumulation count, CFO, quality flags, `t_in_cycle`, missing mask.
