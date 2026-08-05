@@ -47,6 +47,86 @@ class TrainConfig:
     amp: bool = False
     permute_labels: bool = False
     weights: dict = field(default_factory=lambda: LossWeights().__dict__)
+    # monitoring / early stop
+    eval_every: int = 50  # val evaluation cadence (steps); 0 disables
+    early_stop_patience: int = 4  # eval windows without improvement
+    early_stop_min_delta: float = 1e-4
+    max_steps: int = 0  # hard step cap; 0 = epochs * batches
+    max_minutes: float = 0.0  # wall-clock cap; 0 disables
+
+
+class RunMonitor:
+    """Health checks and early-stop bookkeeping for a training run."""
+
+    def __init__(self, cfg: TrainConfig):
+        self.cfg = cfg
+        self.best = float("inf")
+        self.plateau = 0
+        self.stop_reason = None
+        self.history = []
+
+    def check_loss(self, total: float, step: int) -> str | None:
+        """Returns a stop reason or None. NaN/inf -> immediate stop."""
+        if not (total == total) or total in (float("inf"), float("-inf")):
+            self.stop_reason = f"non-finite loss {total} at step {step}"
+            return self.stop_reason
+        if total < self.best - self.cfg.early_stop_min_delta:
+            self.best = total
+            self.plateau = 0
+        else:
+            self.plateau += 1
+            if self.cfg.early_stop_patience and \
+                    self.plateau >= self.cfg.early_stop_patience:
+                self.stop_reason = (f"loss plateau at {total:.4f} for "
+                                    f"{self.plateau} eval windows")
+                return self.stop_reason
+        return None
+
+    def check_degenerate(self, pred: dict) -> str | None:
+        """Presence collapse / giant-surfel degeneracy (plan Phase 6 step 5)."""
+        p = pred["presence"].detach()
+        if float(p.mean()) < 0.05:
+            return "presence collapse (mean presence < 0.05)"
+        s = torch.exp(pred["scale_log"].detach())
+        if float(s.max()) > 20.0:
+            return "giant-surfel runaway (max scale > 20 m)"
+        return None
+
+    def record(self, step: int, total: float, med_center: float) -> None:
+        self.history.append({"step": step, "loss": total, "med_center": med_center})
+
+
+def evaluate(model: torch.nn.Module, ds: ShardDataset, kernel: torch.Tensor,
+             weights: LossWeights, cfg: TrainConfig, n: int = 16) -> dict:
+    """Mean loss and matched-center error on a fixed val subset."""
+    model.eval()
+    losses = []
+    centers = []
+    with torch.no_grad():
+        for i in range(min(n, len(ds))):
+            sample = ds[i]
+            batch = collate([sample])
+            pred = model(batch["x"], batch["meta"], batch["geom"], batch["valid"])
+            h_hat = render_predicted(pred, batch, kernel)
+            parts = total_loss(pred, batch["truth"], h_hat, batch["target"],
+                               batch["valid"], weights)
+            losses.append(float(parts["total"]))
+            rows, cols = match_slots(pred, batch["truth"]["prim_type"],
+                                     batch["truth"]["prim_center"],
+                                     batch["truth"]["prim_rot"],
+                                     batch["truth"]["prim_scale"],
+                                     batch["truth"]["prim_present"])
+            matched = rows >= 0
+            if matched.any():
+                mc = cols[matched]
+                bi = torch.arange(pred["center"].shape[0], device=pred["center"].device
+                                  )[:, None].expand_as(rows)[matched]
+                err = torch.linalg.vector_norm(
+                    pred["center"][matched] - batch["truth"]["prim_center"][bi, mc], dim=-1)
+                centers.append(float(err.median()))
+    model.train()
+    return {"val_loss": float(np.mean(losses)),
+            "val_med_center": float(np.median(centers)) if centers else float("nan")}
 
 
 def _kernel():
@@ -147,23 +227,36 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
 
     weights = LossWeights(**cfg.weights)
     balancer = GradNormBalancer(weights, power=cfg.balance_power) if cfg.balance_every else None
-    scaler = torch.cuda.amp.GradScaler(enabled=cfg.amp)
+    scaler = torch.amp.GradScaler("cuda", enabled=cfg.amp)
+    monitor = RunMonitor(cfg)
     log_f = open(out / "metrics.csv", "a", newline="")
     writer = csv.writer(log_f)
     if start_step == 0:
         writer.writerow(["step", "epoch", "loss", "set", "cpx", "env", "fft",
                          "reg", "matched_center", "lr"])
+    val_f = open(out / "val.csv", "a", newline="")
+    val_writer = csv.writer(val_f)
+    if start_step == 0:
+        val_writer.writerow(["step", "val_loss", "val_med_center"])
 
     indices = list(range(len(train_ds)))
     step = start_step
-    total_steps = cfg.epochs * len(indices)
+    total_steps = cfg.max_steps or (cfg.epochs * len(indices))
     last_log = time.perf_counter()
+    run_start = time.perf_counter()
     for epoch in range(cfg.epochs):
         if cfg.permute_labels:
             train_ds.permute_epoch()
         rng = np.random.default_rng(cfg.seed + epoch)
         rng.shuffle(indices)
         for bi in range(0, len(indices), cfg.batch_size):
+            if step >= total_steps:
+                break
+            if cfg.max_minutes and (time.perf_counter() - run_start) / 60.0 >= cfg.max_minutes:
+                print(f"WALL-CLOCK CAP reached at step {step} "
+                      f"({cfg.max_minutes} min)", flush=True)
+                monitor.stop_reason = "max_minutes reached"
+                break
             batch_idx = indices[bi:bi + cfg.batch_size]
             if train_ds.permute_labels:
                 samples = [train_ds.__getitem_permuted__(i) for i in batch_idx]
@@ -227,11 +320,27 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
                       f"{float(parts['env'].detach()):.4f} medCenter "
                       f"{med_err:.3f}", flush=True)
                 last_log = now
+                stop = monitor.check_loss(float(parts["total"].detach()), step)
+                if stop:
+                    print(f"EARLY STOP: {stop}", flush=True)
+                    break
+                degen = monitor.check_degenerate(pred)
+                if degen:
+                    print(f"DEGENERATE: {degen}", flush=True)
+
+            if cfg.eval_every and step % cfg.eval_every == 0:
+                val = evaluate(model, val_ds, kernel, weights, cfg)
+                val_writer.writerow([step, val["val_loss"], val["val_med_center"]])
+                val_f.flush()
+                print(f"val step {step}: loss {val['val_loss']:.4f} "
+                      f"medCenter {val['val_med_center']:.3f}", flush=True)
 
             if step % cfg.checkpoint_every == 0:
                 torch.save({"model": model.state_dict(),
                             "optim": optim.state_dict(), "step": step,
                             "config": cfg.__dict__}, ckpt)
+        if monitor.stop_reason:
+            break
 
     torch.save({"model": model.state_dict(), "optim": optim.state_dict(),
                 "step": step, "config": cfg.__dict__}, ckpt)
