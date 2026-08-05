@@ -527,3 +527,130 @@ Append dated entries. Never rewrite history; supersede with a new entry.
   further curriculum training spend; regenerating `runs/fit` (Phase 4)
   reports is not required since baselines/fit_scene.py is untouched by
   this pass.
+
+## 2026-08-05 Full curriculum run (runs 1-4) completed on Vast.ai
+
+- User: "run the sanity, then if it looks good do a 30 min run and if it
+  looks good launch a full training run" (going to sleep, no further
+  check-ins). GPU sanity (stage1-mini smoke) and a 30-minute run 1 on
+  `datasets/stage1` both looked healthy, so the full curriculum (runs
+  2-4, Algorithm 1 steps 2-4) was launched autonomously; new configs
+  `configs/train-run2/3/4.yaml` (batch 8, 90-minute wall-clock cap each,
+  `early_stop_patience: 12`, warm-started from the prior run's checkpoint
+  via a new `TrainConfig.init_checkpoint`/`--init-checkpoint`, see
+  `nrecon/train/loop.py`/`run.py`) and datasets `stage2`/`stage3`/`stage4`
+  (10k scenes each, ~4-20 min to build on this host) were all committed.
+- **Instance churn:** the previously-stopped RTX 5070 instance's host had
+  no GPU resources available on restart (`vastai start` stuck on
+  "Required resources are currently unavailable" indefinitely); destroyed
+  and rented an RTX 4070 Ti (Ada, sm_89 -- no Blackwell torch mismatch
+  this time). That host's step time was ~30x worse than the earlier RTX
+  5070 (~3-5 s/step vs ~0.1-0.16 s/step) for the *identical* workload --
+  consistent with our kernel-launch-latency-bound bottleneck (batch size
+  doesn't help; see the 2026-08-05 GPU-sanity entry above) being highly
+  sensitive to PCIe generation/bandwidth (that host: PCIe gen 3, 9.2 GB/s)
+  and per-core CPU dispatch speed, not raw GPU compute. Switched to a
+  Threadripper PRO 5975WX + RTX 4090 host (PCIe gen 4, 23.3 GB/s,
+  $0.3556/hr) which matched the RTX 5070's best measured throughput
+  (~0.08-0.28 s/step depending on run).
+- **`Run 1` verdict:** covered in the entry above this one -- reached its
+  stated purpose (verify gradient flow: loss 32 -> 2.5, medCenter 3.95 m
+  -> 0.55 m) but stopped well short of the plan's stricter target because
+  `early_stop_patience: 6` on `train-run1-gpu-sanity.yaml` is too
+  aggressive; a longer-patience test on `stage1-mini` reached medCenter
+  ~0.05-0.15 m given more steps. Not rerun before warm-starting run 2 (see
+  "not yet done" below); `runs/train-run2/3/4.yaml` use
+  `early_stop_patience: 12` to reduce (not eliminate) this risk for the
+  later stages.
+- **Five real bugs found and fixed in the ~2 hours between "launch the
+  full run" and it actually completing successfully** -- every one only
+  surfaces when a *trained* (not freshly-initialized) model, warm-started
+  across a curriculum stage boundary, is pushed through many real
+  optimizer steps on GPU; none of this was reachable by the existing
+  synthetic-only unit tests or the earlier short GPU-sanity passes:
+  1. **`torch.load` `weights_only=True` default (PyTorch >=2.6)** could
+     not unpickle our checkpoint's `config` dict (a `numpy` scalar trips
+     the stricter unpickler), breaking both `init_checkpoint` and the
+     (never-yet-exercised) same-run resume path outright. Fixed with an
+     explicit `weights_only=False` (our own checkpoints are trusted).
+  2. **`match_slots`'s Hungarian-matching cost matrix had no NaN/Inf
+     guard**: a transient instability right after the run1->run2 warm
+     start produced a non-finite predicted center, and
+     `scipy.optimize.linear_sum_assignment` raised `ValueError: cost
+     matrix is infeasible`, crashing the whole run instead of letting the
+     existing loss-based monitoring handle it. Fixed with
+     `torch.nan_to_num` before the assignment solve.
+  3. **`RunMonitor.check_loss`'s NaN detection only ran at `log_every`
+     cadence**, so a non-finite loss could silently poison up to
+     `log_every` optimizer steps before being noticed -- and separately,
+     a NaN could originate *inside* `render_predicted` (an extreme
+     predicted `scale_log` produced a NaN Gaussian-broadening kernel
+     width, `ValueError: cannot convert float NaN to integer`), a code
+     path with no loss value to check at all. Fixed with (a) an
+     every-step finite-loss check that skips the optimizer step rather
+     than applying a NaN-poisoned update, (b) `nan_to_num`+clamping the
+     predicted center/rot6d/scale_log used to build the *rendered* scene
+     in `pred_to_scene` (the loss/matching still see the raw, unclamped
+     prediction), and (c) a broad `try/except` around the whole
+     forward/backward step as defense in depth against numerical edge
+     cases we haven't anticipated, given this needs to survive an
+     unattended multi-hour run.
+  4. **A CUDA device-side assert is not recoverable within a process**:
+     even with (3)'s guards, a NaN reaching `presence`
+     (`sigmoid(NaN)=NaN`) tripped `binary_cross_entropy`'s hard CUDA
+     input-range assertion; the `try/except` caught that *specific* step,
+     but the *next* CUDA call (moving the following batch to the GPU)
+     failed uncaught on the now-corrupted CUDA context, killing the run
+     before it could save a checkpoint (which cascaded into the
+     downstream warm-started runs failing on a missing checkpoint file).
+     Root-fixed by sanitizing NaN/Inf at `split_heads`, the network's
+     single output boundary -- protects every downstream consumer (loss,
+     rendering, evaluation) at once rather than patching each one.
+  5. **A finite-but-extreme gradient can still corrupt an otherwise-healthy
+     run**: with (1)-(4) fixed, run 2 no longer crashed, but its loss
+     jumped ~4.9 -> ~228 around step 126-140 (a single pathological batch
+     driving a large-but-clipped gradient into a bad basin the model never
+     recovered from) and stayed there, and that corruption cascaded
+     through the warm-started runs 3 and 4 (both stuck at loss ~200-260 /
+     medCenter ~4 m for their whole duration -- no better than random
+     init). Fixed with a loss-spike guard: track an EMA of the per-step
+     loss on successful steps, skip the optimizer step if the current
+     step's loss exceeds `max(8x EMA, an absolute floor of 15)`.
+  All five were verified against the local CPU test suite (71/71 passing
+  by the end) plus local smoke runs confirming normal training is
+  unaffected (identical loss trajectories to the pre-fix baseline, no
+  false triggers) before each re-deploy; each fix has a regression test
+  where one was practical to write (`test_match_slots_survives_nan_
+  predictions`, `test_split_heads_sanitizes_nan_inf`).
+- **After fix 5, the full curriculum completed cleanly in ~85 minutes
+  (runs 2-4 combined; well under each run's 90-minute cap) with no further
+  crashes or divergence:**
+
+  | Run | Dataset | Steps | Loss (first->last) | medCenter train (first->last) | medCenter val (last) |
+  |---|---|---|---|---|---|
+  | 1 | stage1 (100) | 280 | 32.1 -> 2.50 | 3.95 m -> 0.55 m | 0.49 m |
+  | 2 | stage2 (10k) | 1680 | 10.1 -> 2.26 | 1.01 m -> 0.57 m | 0.57 m |
+  | 3 | stage3 (10k, full hw + reverb) | 500 | 5.04 -> 3.61 | 0.80 m -> 0.94 m | 0.69 m |
+  | 4 | stage4 (10k, random layouts + label permutation) | 300 | 4.17 -> 4.96 | 0.77 m -> 0.87 m | 0.74 m |
+
+  All four stopped on `RunMonitor`'s loss-plateau early-stop, not the
+  wall-clock cap. Run 3/4's slightly worse medCenter than run 2 is
+  expected (harder data: capsules, full hardware nuisance including the
+  new reverb-tail model, randomized node layouts, per-epoch label
+  permutation) rather than a regression. **Run 4's checkpoint
+  (`runs/train-run4/checkpoint.pt`) is the Phase 7 evaluation candidate**
+  per `plan/phase-6-training.md`'s exit criteria; it has not yet been
+  evaluated against Phase 7's held-out suite.
+- Cost: this session (instance churn + the full curriculum) used roughly
+  2.5-3 hours of RTX 4070 Ti time (~$0.10-0.11/hr, mostly wasted on
+  stuck-host and debugging churn) plus ~1.5 hours of Threadripper+RTX 4090
+  time (~$0.356/hr) -- call it under $1 total. Instance left **running**
+  (not stopped) at the end of this session pending the user's review in
+  the morning.
+- Not yet done: re-running run 1 with a longer `early_stop_patience`
+  before trusting the curriculum's starting point fully; Phase 7
+  evaluation of the run 4 checkpoint; a decision on whether the loss
+  spike at step 126-140 of the (corrupted, discarded) run 2 attempt
+  reflects a specific reproducible stage-2 data pathology worth
+  investigating further, or was simply optimizer noise now adequately
+  guarded against.
