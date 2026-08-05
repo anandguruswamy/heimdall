@@ -66,6 +66,28 @@ def _bounds(nodes: torch.Tensor) -> np.ndarray:
     return np.stack([lo, hi])
 
 
+def _volume_centroid_init(env: np.ndarray, fp: np.ndarray, nodes: np.ndarray,
+                          kernel: np.ndarray) -> np.ndarray:
+    """Surfel init from the backprojection volume's top-decile centroid.
+
+    The DAS volume is near-flat around the truth (quantized shells), so the
+    argmax is unstable; the centroid of the strongest decile is a stabler
+    coarse position.
+    """
+    from nrecon.baselines.backprojection import GridSpec, backproject, los_subtract
+
+    grid = GridSpec(-0.5, 3.5, -0.5, 3.2, 0.0, 2.2, spacing=0.15)
+    res = backproject(env, nodes, directed_links(5), fp, grid)
+    vol = res.volume
+    thresh = np.percentile(vol, 90.0)
+    mask = vol >= thresh
+    if not mask.any():
+        return np.zeros((0, 3))
+    zz, yy, xx = np.nonzero(mask)
+    cx = (res.x_m[xx].mean(), res.y_m[yy].mean(), res.z_m[zz].mean())
+    return np.array([cx], dtype=np.float64)
+
+
 def _target_from_record(rec: dict) -> tuple:
     """Scaled complex target, fp taps, gain/accum ratio from a record row."""
     target = from_i16(rec["cir_i16"], rec["dgc"], rec["accum"])
@@ -135,18 +157,24 @@ def run_v1(cfg: dict) -> dict:
 
         best = None
         restart_errs = []
-        for k in range(restarts):
-            init = init_random(rng, [SURFEL], bounds)
+        centroid = _volume_centroid_init(np.abs(target), fp, spec.nodes, kernel.numpy())
+        inits = []
+        if centroid.shape[0]:
+            inits.append(("volume", init_from_points(centroid)))
+        for k in range(restarts - len(inits)):
+            inits.append((f"random{k}", init_random(rng, [SURFEL], bounds)))
+        for iname, init in inits:
             res = fit_scene(target_t, fp_t, nodes, kernel, init, fcfg,
-                            gain_accum=gain_accum)
+                            gain_accum=gain_accum,
+                            kernel_scales_taps=cfg.get("kernel_scales_taps"))
             c_fit = res.scene.center[0].detach().numpy()
             err = float(np.linalg.norm(c_fit - truth.center[0].numpy()))
             restart_errs.append(err)
-            print(f"  restart {k}: err {err:.3f} m loss {res.loss_trace[-1]:.4f} "
+            print(f"  {iname}: err {err:.3f} m loss {res.loss_trace[-1]:.4f} "
                   f"({res.runtime_s:.1f}s)", flush=True)
             if best is None or res.loss_trace[-1] < best["loss"]:
                 best = {"loss": float(res.loss_trace[-1]), "err": err,
-                        "restart": k, "runtime": res.runtime_s}
+                        "restart": len(restart_errs) - 1, "runtime": res.runtime_s}
         ok = best["err"] < float(cfg.get("success_center_m", 0.10))
         results.append({
             "scene": i, "seed": seed, "surfel_center_err_m": best["err"],
@@ -255,10 +283,15 @@ def run_v2(cfg: dict) -> dict:
             candidates = vote(peaks, nodes.numpy(), links, fp)
             inits["voting"] = init_from_points(candidates) if len(candidates) else \
                 init_random(rng, [SURFEL], bounds)
+        if cfg.get("volume_init", True):
+            centroid = _volume_centroid_init(env, fp, nodes.numpy(), kernel.numpy())
+            inits["volume"] = init_from_points(centroid) if centroid.shape[0] else \
+                init_random(rng, [SURFEL], bounds)
 
         for init_name, init in inits.items():
             res = fit_scene(target_t, fp_t, nodes, kernel, init, fcfg,
-                            gain_accum=gain_accum, link_mask=link_mask)
+                            gain_accum=gain_accum, link_mask=link_mask,
+                            kernel_scales_taps=cfg.get("kernel_scales_taps"))
             metrics = _plane_metrics(res.scene, truth)
             surf_idx = [g for g in range(res.scene.type_id.numel())
                         if int(res.scene.type_id[g]) == SURFEL]
@@ -282,7 +315,8 @@ def run_v2(cfg: dict) -> dict:
             print(f"v2 scene {i} [{init_name}]: planes "
                   f"n{metrics['plane_normal_err_deg']} "
                   f"o{metrics['plane_offset_err_m']} surfel "
-                  f"{surf_err:.3f} m held-out env {held_out_env:.4f}")
+                  f"{surf_err:.3f} m held-out env {held_out_env:.4f}",
+                  flush=True)
     return {"results": summaries}
 
 

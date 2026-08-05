@@ -23,6 +23,7 @@ from nrecon.sim.render import render_scene
 
 ENVELOPE_EPS = 1e-3  # log-envelope floor (PROVISIONAL)
 PRUNE_THRESHOLD = 0.05
+LOS_EXCLUDE_TAPS = 5  # scene-independent direct-path region excluded from the fit loss
 
 
 @dataclass
@@ -60,9 +61,20 @@ def _phase_invariant_loss(h_hat: torch.Tensor, h: torch.Tensor,
     return torch.sqrt(diff.abs() ** 2 + eps**2).mean()
 
 
-def _envelope_loss(h_hat: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
-    e = ENVELOPE_EPS
-    return (torch.log(e + h.abs()) - torch.log(e + h_hat.abs())).abs().mean()
+def _envelope_loss(h_hat: torch.Tensor, h: torch.Tensor,
+                   eps: float = ENVELOPE_EPS,
+                   normalize_per_link: bool = True) -> torch.Tensor:
+    """Log-envelope loss (paper Eq. (26)).
+
+    With `normalize_per_link` (default), each CIR is divided by its own
+    RMS so the loss measures echo *shape/delay* alignment rather than the
+    fixed per-link amplitude ratio between render and quantized target
+    (paper Eq. (9) amplitude normalization).
+    """
+    if normalize_per_link:
+        h_hat = h_hat / h_hat.abs().pow(2).mean(dim=-1, keepdim=True).sqrt().clamp(min=1e-12)
+        h = h / h.abs().pow(2).mean(dim=-1, keepdim=True).sqrt().clamp(min=1e-12)
+    return (torch.log(eps + h.abs()) - torch.log(eps + h_hat.abs())).abs().mean()
 
 
 def _regularizers(scene: SceneTensors, cfg: FitConfig) -> torch.Tensor:
@@ -86,57 +98,102 @@ def _regularizers(scene: SceneTensors, cfg: FitConfig) -> torch.Tensor:
 def fit_scene(target: torch.Tensor, fp_taps: torch.Tensor, nodes: torch.Tensor,
               kernel: torch.Tensor, init_scene: SceneTensors, cfg: FitConfig,
               gain_accum: np.ndarray = None,
-              link_mask: np.ndarray = None) -> FitResult:
+              link_mask: np.ndarray = None,
+              kernel_scales_taps: list = None) -> FitResult:
     """Fit `init_scene` to `target` ([L, 64] pipeline-domain, LOS at fp).
 
     `gain_accum` per link = 10^((dgc-3)*2.65/20) / accum, mapping the
     accumulator-domain render onto the pipeline-domain target.
+    `kernel_scales_taps`: multiscale schedule — fit for a share of the
+    iterations through successively narrower broadened kernels, which
+    widens the loss basins at coarse scales (initialization and plane
+    rotation-basin escape).
     """
     scene = _clone_trainable(init_scene, cfg.dtype)
     cplx = torch.complex128 if cfg.dtype == torch.float64 else torch.complex64
     t0 = fractional_shift(target.to(cplx), -fp_taps.to(cfg.dtype))
     nodes = nodes.to(cfg.dtype)
 
-    if gain_accum is not None:
-        scale = torch.as_tensor(gain_accum, dtype=cfg.dtype).reshape(-1, 1) / 4.0
-    else:
-        scale = torch.ones(target.shape[0], 1, dtype=cfg.dtype) / 4.0
+    # Pipeline-domain mapping: target = from_i16(to_i16(h_true)) ~= h_true / 4
+    # (the accumulator gain/accum factors cancel; the /4 is the transport
+    # arithmetic shift). Uniform across links; per-link quantization noise
+    # remains in the target.
+    scale = torch.ones(target.shape[0], 1, dtype=cfg.dtype) / 4.0
 
     if link_mask is None:
         mask = torch.ones(target.shape[0], dtype=torch.bool)
     else:
         mask = torch.as_tensor(link_mask, dtype=torch.bool)
-    h_masked = t0[mask]
+    h_masked = t0[mask][:, LOS_EXCLUDE_TAPS:]
     scale_masked = scale[mask]
 
     params = [scene.center, scene.rot6d, scene.scale_log, scene.rho, scene.presence]
     optim = torch.optim.Adam(params, lr=cfg.lr)
     env_cut = int(cfg.envelope_first_frac * cfg.iterations)
 
+    from nrecon.sim.render import _gauss_broadened
+    import torch.nn.functional as F_
+
+    def scale_kernel(s_taps: float) -> torch.Tensor:
+        if s_taps <= 0.0:
+            return kernel
+        return _gauss_broadened(kernel, torch.as_tensor(s_taps / 998.4e6))
+
+    def smooth_target(h: torch.Tensor, s_taps: float) -> torch.Tensor:
+        """Smooth the target at the same scale as the render kernel, so the
+        coarse stages compare matched-smoothed pulses (wide, strong basins)."""
+        if s_taps <= 0.0:
+            return h
+        g_std = s_taps
+        m = int(np.ceil(4.0 * g_std))
+        idx = torch.arange(-m, m + 1, dtype=cfg.dtype)
+        g = torch.exp(-(idx**2) / (2.0 * g_std**2))
+        g = g / g.sum()
+        padded = F_.pad(h, (m, m))
+        out = F_.conv1d(padded.unsqueeze(1), g.view(1, 1, -1).to(torch.complex128))
+        return out.squeeze(1)
+
+    if kernel_scales_taps:
+        per_scale = max(1, cfg.iterations // len(kernel_scales_taps))
+        schedule = [(s, per_scale) for s in kernel_scales_taps]
+        schedule[-1] = (schedule[-1][0], cfg.iterations - per_scale * (len(schedule) - 1))
+    else:
+        schedule = [(0.0, cfg.iterations)]
+
     start = time.perf_counter()
     loss_trace = []
     env_trace = []
     cpx_trace = []
-    for it in range(cfg.iterations):
-        optim.zero_grad()
-        h = render_scene(scene, nodes, kernel)
-        h_pipe = h * scale
-        h_pipe_m = h_pipe[mask]
-        env = _envelope_loss(h_pipe_m, h_masked)
-        cpx = _phase_invariant_loss(h_pipe_m, h_masked, cfg.epsilon_char)
-        reg = _regularizers(scene, cfg)
-        if it < env_cut:
-            loss = env + reg
-        else:
-            loss = cpx + cfg.env_weight * env + reg
-        loss.backward()
-        optim.step()
-        with torch.no_grad():
-            scene.presence.clamp_(0.0, 1.0)  # keep the sparsity penalty bounded
-        if it % 25 == 0 or it == cfg.iterations - 1:
-            loss_trace.append(float(loss.detach()))
-            env_trace.append(float(env.detach()))
-            cpx_trace.append(float(cpx.detach()))
+    global_it = 0
+    for s_taps, n_iters in schedule:
+        k_eff = scale_kernel(s_taps)
+        excl = max(LOS_EXCLUDE_TAPS, int(np.ceil(s_taps)) + 2)
+        t_eff = smooth_target(t0, s_taps)[:, excl:]
+        t_masked = t_eff[mask]
+        # coarse scales smooth the echo below the fine-scale log floor; drop
+        # the floor so the smoothed mismatch stays visible to the loss
+        eps_env = 1e-4 if s_taps > 0.5 else ENVELOPE_EPS
+        for it in range(n_iters):
+            optim.zero_grad()
+            h = render_scene(scene, nodes, k_eff)
+            h_pipe = h * scale
+            h_pipe_m = h_pipe[mask][:, excl:]
+            env = _envelope_loss(h_pipe_m, t_masked, eps_env)
+            cpx = _phase_invariant_loss(h_pipe_m, t_masked, cfg.epsilon_char)
+            reg = _regularizers(scene, cfg)
+            if global_it < env_cut:
+                loss = env + reg
+            else:
+                loss = cpx + cfg.env_weight * env + reg
+            loss.backward()
+            optim.step()
+            with torch.no_grad():
+                scene.presence.clamp_(0.0, 1.0)  # keep the sparsity penalty bounded
+            if it % 25 == 0 or it == n_iters - 1:
+                loss_trace.append(float(loss.detach()))
+                env_trace.append(float(env.detach()))
+                cpx_trace.append(float(cpx.detach()))
+            global_it += 1
     elapsed = time.perf_counter() - start
 
     # final per-link residuals (full links)

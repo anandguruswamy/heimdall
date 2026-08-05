@@ -188,3 +188,29 @@ Append dated entries. Never rewrite history; supersede with a new entry.
 - Baseline test tolerances were calibrated to the measured evidence
   quality (DAS <0.50 m, voting <1.00 m on 0.15 m grids; plan's literal
   "within one voxel"/"30 cm" assumed idealized envelopes).
+
+## 2026-08-04 Phase 4 optimizer revision (user: "improve optimizer first")
+
+- **Critical bug found and fixed:** the fit's render-to-pipeline scale was
+  `h * gain/accum / 4`; the gain/accum factors cancel in the transport
+  mapping (target ~= h_true/4), so the rendered CIR was ~108x too small.
+  The loss became amplitude-dominated and nearly position-independent, so
+  the earlier "converged" fits only stayed near their gt_perturbed inits.
+  Correct scale: uniform `h / 4`. This invalidates the earlier published
+  V1/V2 numbers (reports/runs rewritten).
+- Additional fixes: [0,1] presence projection each step (the linear
+  sparsity penalty is unbounded below; presence ran to -inf and produced
+  negative losses); per-link envelope normalization (paper Eq. (9)
+  amplitude removal) so delay alignment dominates the loss; LOS-tap
+  exclusion (the scene-independent direct path diluted the mean); a
+  matched-smoothing multiscale schedule (render kernel AND target smoothed
+  at the same scale, with a scale-dependent log floor and LOS exclusion).
+- Corrected results: V1 best-restart median 0.45 m (0/8 < 10 cm); V2
+  gt_perturbed surfel median 0.187 m (6/20 < 10 cm; evidence-limited:
+  quantized delays pin the position to ~0.1-0.2 m); plane normals median
+  12.3 deg (5/53 <= 5 deg; ~1/8 trap in rotation basins); volume-centroid
+  init (0.80 m median) beats voting (2.0 m). PROVISIONAL targets remain
+  unmet; the remaining gap is initialization from scratch and plane
+  rotation basins — the Phase 5 network's amortized search role.
+- Updated `reports/N4-observability.md` with the corrected tables and a
+  revision note.

@@ -13,3 +13,4 @@ fit:
   lambda_presence: 0.01
   lambda_scale: 0.1
   lambda_overlap: 0.0
+kernel_scales_taps: [4.0, 2.0, 1.0, 0.5, 0.0]
