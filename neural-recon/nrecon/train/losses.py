@@ -117,6 +117,15 @@ def match_slots(pred: dict, truth_type: torch.Tensor, truth_center: torch.Tensor
             pr[:, None, :, :].expand(g, nt, 3, 3),
             tr[None, :, :, :].expand(g, nt, 3, 3),
             pred["type_logits"][bi].argmax(-1)[:, None].expand(g, nt))
+        # A NaN/Inf prediction (e.g. a transient instability early in
+        # training, especially right after a curriculum warm-start into a
+        # new dataset) makes scipy's linear_sum_assignment raise
+        # "cost matrix is infeasible" and crash the whole run instead of
+        # letting RunMonitor's loss-based NaN/degenerate checks handle it
+        # gracefully. Sanitize to a large-but-finite cost so matching
+        # always succeeds; the (likely garbage) match for that step gets
+        # caught by the normal loss/degenerate monitoring instead.
+        cost = torch.nan_to_num(cost, nan=1e6, posinf=1e6, neginf=1e6)
         # scipy needs a CPU array regardless of the compute device.
         rr, cc = linear_sum_assignment(cost.detach().cpu().numpy())
         rows_full = torch.full((g,), -1, dtype=torch.long, device=device)

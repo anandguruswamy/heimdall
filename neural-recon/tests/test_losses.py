@@ -137,6 +137,29 @@ def test_set_loss_decreases_toward_truth():
     assert float(l_near) < float(l_far)
 
 
+def test_match_slots_survives_nan_predictions():
+    """Regression test (2026-08-05): a NaN/Inf prediction -- e.g. a
+    transient instability right after a curriculum warm-start into a new
+    dataset -- used to make scipy's linear_sum_assignment raise
+    "cost matrix is infeasible" and crash the whole training run instead
+    of letting the normal loss/degenerate monitoring handle it."""
+    seed_all(95)
+    p = _pred()
+    t = _truth()
+    t["prim_type"][0] = SURFEL
+    t["prim_present"][0] = 1.0
+    t["prim_center"][0] = torch.tensor([0.5, 0.2, 0.1])
+    t["prim_rot"][0] = torch.eye(3, dtype=torch.float64)
+    t["prim_scale"][0] = torch.tensor([0.3, 0.3, 0.3])
+    p["center"][0, 0] = float("nan")
+    p["center"][0, 1] = float("inf")
+    rows, cols = match_slots(p, t["prim_type"][None], t["prim_center"][None],
+                             t["prim_rot"][None], t["prim_scale"][None],
+                             t["prim_present"][None])
+    assert rows.shape == (1, 48)
+    assert torch.isfinite(rows.float()).all()
+
+
 def test_losses_finite_masked_and_empty():
     seed_all(94)
     kernel = torch.randn(257, dtype=torch.float64)
