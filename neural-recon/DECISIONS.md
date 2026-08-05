@@ -346,9 +346,22 @@ Append dated entries. Never rewrite history; supersede with a new entry.
   `_coerce_types` helper that casts any YAML-loaded value to its declared
   `TrainConfig` dataclass field type before construction, so this class of
   mistake fails fast/silently-corrects instead of crashing mid-run.
-- GPU sanity results (stage-1, 100 scenes, batch 32, no AMP): ~0.08-0.09
-  s/step after warm-up at batch 8 on `stage1-mini`, ~35-40x faster than the
-  measured local CPU rate (~3.1 s/step); a 2-minute/340-step run on
-  `stage1-mini` early-stopped on a genuine loss plateau (loss 680 -> 1.25,
-  medCenter 4.7 -> 0.30 m), validating both the device fix and the
-  early-stop monitor end-to-end on real CUDA hardware.
+- GPU sanity results (batch 8, no AMP): ~0.08-0.16 s/step after warm-up on
+  `stage1-mini`, ~20-35x faster than the measured local CPU rate
+  (~3.1 s/step at batch 8); a 2-minute/340-step run on `stage1-mini`
+  early-stopped on a genuine loss plateau (loss 680 -> 1.25, medCenter
+  4.7 -> 0.30 m), validating both the device fix and the early-stop monitor
+  end-to-end on real CUDA hardware.
+- **Batch size does not help GPU throughput as currently written:** a
+  stage-1 (100-scene) run at batch 32 measured ~32.7 s/step (294 s for 9
+  steps), ~200-400x worse than batch 8's ~0.1-0.16 s/step -- not the ~4x a
+  batched op would show. Cause: `render_predicted()` in `loop.py` renders
+  each batch element with a serial per-sample Python loop (one
+  `render_scene` call per sample), and each call launches many small CUDA
+  kernels for a 20-link/`G_MAX=48`-slot scene; kernel-launch overhead
+  dominates and does not amortize across the batch. `train-run1-gpu-sanity.yaml`
+  kept batch 8 (matching `train-run1.yaml`) rather than chasing a larger
+  batch. Vectorizing `render_predicted`/`pred_to_scene` across the batch
+  dimension (single `SceneTensors` with a leading batch axis, one
+  `render_scene` call) is a real GPU-throughput opportunity for later runs
+  but is out of scope for the current sanity pass.

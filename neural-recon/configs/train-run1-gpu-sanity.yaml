@@ -1,11 +1,19 @@
-# Run 1, GPU sanity variant: same stage-1 dataset and objective as
-# train-run1.yaml, but larger batch size and a wall-clock cap for the
-# Vast.ai size-ramp sanity checks (plan Phase 6 step "monitor and decide").
+# Run 1, GPU sanity variant: same stage-1 dataset, objective, and batch
+# size (8) as train-run1.yaml, plus a wall-clock cap for the Vast.ai
+# size-ramp sanity checks (plan Phase 6 step "monitor and decide").
 # epochs is set high; max_minutes is the real stop condition.
+# batch_size stays at 8, matching train-run1.yaml: render_predicted()
+# renders each batch element with a serial per-sample Python loop (one
+# render_scene call per sample, each launching many small CUDA kernels
+# for a 20-link/G_MAX=48-slot scene); measured batch 32 at ~32.7 s/step
+# on this GPU vs batch 8 at ~0.1-0.16 s/step -- roughly 200-400x worse,
+# not the ~4x linear scaling a batched op would show. Until
+# render_predicted is vectorized across the batch, larger batches do not
+# help throughput on GPU (see DECISIONS.md 2026-08-05).
 name: train-run1-gpu-sanity
 dataset_dir: datasets/stage1
 epochs: 100000
-batch_size: 32
+batch_size: 8
 lr: 0.0003
 wd: 0.01
 warmup_steps: 100
