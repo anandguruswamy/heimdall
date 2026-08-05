@@ -16,9 +16,12 @@ use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 use crate::{
     archive::{hash_file, require_storage_headroom},
     metadata::Metadata,
+    pipeline::AlignedCirSample,
 };
 
-const CLIP_WINDOW_NS: i64 = 10_000_000_000;
+const DEFAULT_CLIP_DURATION_S: i64 = 10;
+const MIN_CLIP_DURATION_S: i64 = 1;
+const MAX_CLIP_DURATION_S: i64 = 60;
 const MAX_ACTIVE_CLIPS: usize = 2;
 
 #[derive(Clone)]
@@ -44,10 +47,12 @@ struct ActiveClip {
     id: i64,
     trigger_ns: i64,
     deadline_ns: i64,
+    duration_s: i64,
     name: String,
     note: String,
     context: Value,
     records: Vec<TimedRecord>,
+    cir_samples: Vec<AlignedCirSample>,
 }
 
 impl ClipManager {
@@ -88,25 +93,32 @@ impl ClipManager {
         if name.len() > 120 || note.len() > 2_000 {
             bail!("clip name or note is too long");
         }
+        let duration_s = request["duration_s"]
+            .as_i64()
+            .unwrap_or(DEFAULT_CLIP_DURATION_S)
+            .clamp(MIN_CLIP_DURATION_S, MAX_CLIP_DURATION_S);
+        let deadline_ns = trigger_ns + duration_s * 1_000_000_000;
         let mut state = self.state.lock();
         if state.active.len() >= MAX_ACTIVE_CLIPS {
             bail!("at most {MAX_ACTIVE_CLIPS} capture clips may be active");
         }
         let initial = json!({
             "status": "capturing", "name": name, "note": note,
-            "trigger_ns": trigger_ns, "deadline_ns": trigger_ns + CLIP_WINDOW_NS,
-            "post_seconds": 10
+            "trigger_ns": trigger_ns, "deadline_ns": deadline_ns,
+            "duration_s": duration_s
         });
         let row = self.metadata.add_clip(&initial)?;
         let id = row["id"].as_i64().context("clip row has no id")?;
         state.active.push(ActiveClip {
             id,
             trigger_ns,
-            deadline_ns: trigger_ns + CLIP_WINDOW_NS,
+            deadline_ns,
+            duration_s,
             name: name.to_owned(),
             note: note.to_owned(),
             context,
             records: Vec::new(),
+            cir_samples: Vec::new(),
         });
         Ok(row)
     }
@@ -144,6 +156,27 @@ impl ClipManager {
         };
         for clip in completed {
             self.finalize_async(clip);
+        }
+    }
+
+    pub fn has_active_clips(&self) -> bool {
+        !self.state.lock().active.is_empty()
+    }
+
+    pub fn ingest_cir(&self, received_ns: i64, samples: Vec<AlignedCirSample>) {
+        if samples.is_empty() {
+            return;
+        }
+        let mut state = self.state.lock();
+        if state.active.is_empty() {
+            return;
+        }
+        for sample in samples {
+            for clip in &mut state.active {
+                if received_ns <= clip.deadline_ns {
+                    clip.cir_samples.push(sample.clone());
+                }
+            }
         }
     }
 
@@ -222,6 +255,7 @@ fn finalize(root: &Path, metadata: &Metadata, clip: &ActiveClip) -> Result<()> {
         "name": clip.name,
         "note": clip.note,
         "trigger_ns": clip.trigger_ns,
+        "duration_s": clip.duration_s,
         "first_record_ns": first.received_ns,
         "last_record_ns": last.received_ns,
         "first_sequence": first.sequence,
@@ -229,21 +263,35 @@ fn finalize(root: &Path, metadata: &Metadata, clip: &ActiveClip) -> Result<()> {
         "records": clip.records.len(),
         "raw_bytes": raw.len(),
         "raw_sha256": raw_sha256,
+        "aligned_cir_records": clip.cir_samples.len(),
         "complete_usb_record_boundaries": true,
         "compression": "stored"
     });
+    let mut aligned_cir_bytes = Vec::new();
+    for sample in &clip.cir_samples {
+        serde_json::to_writer(&mut aligned_cir_bytes, sample)?;
+        aligned_cir_bytes.push(b'\n');
+    }
+    let aligned_cir_sha256 = format!("{:x}", Sha256::digest(&aligned_cir_bytes));
     let temporary = root.join(format!("clip-{:06}.open", clip.id));
     let final_path = root.join(format!("clip-{:06}.zip", clip.id));
     let mut zip = ZipWriter::new(File::create(&temporary)?);
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
     zip.start_file("capture.husb", options)?;
     zip.write_all(&raw)?;
+    if !aligned_cir_bytes.is_empty() {
+        zip.start_file("aligned-cirs.ndjson", options)?;
+        zip.write_all(&aligned_cir_bytes)?;
+    }
     zip.start_file("manifest.json", options)?;
     zip.write_all(&serde_json::to_vec_pretty(&manifest)?)?;
     zip.start_file("metadata.json", options)?;
     zip.write_all(&serde_json::to_vec_pretty(&clip.context)?)?;
     zip.start_file("sha256.txt", options)?;
     writeln!(zip, "{}  capture.husb", raw_sha256)?;
+    if !aligned_cir_bytes.is_empty() {
+        writeln!(zip, "{}  aligned-cirs.ndjson", aligned_cir_sha256)?;
+    }
     let file = zip.finish()?;
     file.sync_all()?;
     fs::rename(&temporary, &final_path)?;
@@ -280,9 +328,9 @@ mod tests {
             .unwrap();
         let id = started["id"].as_i64().unwrap();
         assert_eq!(started["value"]["pre_seconds"].as_i64(), None);
-        assert_eq!(started["value"]["post_seconds"].as_i64(), Some(10));
-        manager.ingest(CLIP_WINDOW_NS / 2, &after);
-        manager.ingest(CLIP_WINDOW_NS + 1_000_000_000, &before);
+        assert_eq!(started["value"]["duration_s"].as_i64(), Some(10));
+        manager.ingest(DEFAULT_CLIP_DURATION_S * 500_000_000, &after);
+        manager.ingest(DEFAULT_CLIP_DURATION_S * 1_000_000_000 + 1_000_000_000, &before);
         for _ in 0..100 {
             if metadata.clip(id).unwrap().unwrap()["value"]["status"] == "complete" {
                 break;
@@ -302,5 +350,81 @@ mod tests {
         assert_eq!(raw, [after].concat());
         assert!(manager.delete(id).unwrap());
         assert!(metadata.clip(id).unwrap().is_none());
+    }
+
+    #[test]
+    fn clip_stores_aligned_cir_samples() {
+        let dir = tempfile::tempdir().unwrap();
+        let metadata = Metadata::open(dir.path().join("clips.db")).unwrap();
+        let manager = ClipManager::new(dir.path().join("clips"), metadata.clone()).unwrap();
+        let started = manager
+            .start(&json!({"name": "test"}), json!({"epoch": 1}), 0)
+            .unwrap();
+        let id = started["id"].as_i64().unwrap();
+        assert!(manager.has_active_clips());
+        let sample = AlignedCirSample {
+            from: 0,
+            to: 1,
+            round: 7,
+            event_s: 1.5,
+            evidence: 42,
+            delay_samples: 2.25,
+            common_phase_rad: 0.5,
+            correlation: 0.9,
+            quality: 3,
+            marker_raw: 12.0,
+            marker_aligned: 9.75,
+            fit_algorithm: "robust_grid".to_owned(),
+            magnitude: vec![1.0, 0.5],
+            iq: vec![[1.0, 0.0], [0.5, -0.25]],
+        };
+        manager.ingest_cir(DEFAULT_CLIP_DURATION_S * 500_000_000, vec![sample.clone()]);
+        manager.ingest_cir(
+            DEFAULT_CLIP_DURATION_S * 1_000_000_000 + 1_000_000_000,
+            vec![sample],
+        );
+        let record = encode_record(RecordKind::Heartbeat, 0, 1, &[0; 12]).unwrap();
+        manager.ingest(DEFAULT_CLIP_DURATION_S * 500_000_000, &record);
+        manager.ingest(DEFAULT_CLIP_DURATION_S * 1_000_000_000 + 1_000_000_000, &record);
+        for _ in 0..100 {
+            if metadata.clip(id).unwrap().unwrap()["value"]["status"] == "complete" {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            metadata.clip(id).unwrap().unwrap()["value"]["manifest"]["aligned_cir_records"]
+                .as_i64(),
+            Some(1)
+        );
+        let path = manager.path(id).unwrap();
+        let mut zip = zip::ZipArchive::new(File::open(path).unwrap()).unwrap();
+        let mut ndjson = String::new();
+        zip.by_name("aligned-cirs.ndjson")
+            .unwrap()
+            .read_to_string(&mut ndjson)
+            .unwrap();
+        let first: Value = ndjson.lines().next().map(|line| serde_json::from_str(line).unwrap()).unwrap();
+        assert_eq!(first["from"].as_u64(), Some(0));
+        assert_eq!(first["to"].as_u64(), Some(1));
+        assert_eq!(first["round"].as_u64(), Some(7));
+        assert_eq!(first["magnitude"][1].as_f64(), Some(0.5));
+        assert_eq!(first["iq"][1][0].as_f64(), Some(0.5));
+        assert!(manager.delete(id).unwrap());
+    }
+
+    #[test]
+    fn clip_honors_requested_duration_with_clamping() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = |request: Value| -> Value {
+            let metadata = Metadata::open(dir.path().join("clips.db")).unwrap();
+            let manager = ClipManager::new(dir.path().join("clips"), metadata.clone()).unwrap();
+            manager
+                .start(&request, json!({"epoch": 1}), 0)
+                .unwrap()
+        };
+        assert_eq!(start(json!({"name": "t", "duration_s": 25}))["value"]["duration_s"].as_i64(), Some(25));
+        assert_eq!(start(json!({"name": "t", "duration_s": 3600}))["value"]["duration_s"].as_i64(), Some(60));
+        assert_eq!(start(json!({"name": "t"}))["value"]["duration_s"].as_i64(), Some(10));
     }
 }

@@ -60,6 +60,7 @@
   let clips = $state<Record<string, unknown>[]>([]);
   let clipName = $state('');
   let clipNote = $state('');
+  let clipDurationS = $state(10);
   let compactMode = $state(false);
   let uiCommitLatencyMs = $state(0);
   let waterfallSeconds = $state(5);
@@ -435,16 +436,36 @@
     liveRevision++;
   }
 
+  function frozenBoardPositions() {
+    const freeze = live.boardFreeze;
+    if (!freeze) return null;
+    return {
+      schema: 'heimdall-geometry/1',
+      units: 'm',
+      revision: freeze.configurationRevision,
+      frame: {
+        name: 'dashboard-range-derived',
+        origin: `N${freeze.origin} antenna phase centre`,
+        axes: `+X toward N${freeze.xAxis}, +Y side selected by N${freeze.xyPlane}, +Z side selected by N${freeze.above}`,
+      },
+      source: freeze.source,
+      node_count: freeze.nodeCount,
+      configuration_revision: freeze.configurationRevision,
+      nodes: freeze.solution.positions.map((point, node_id) => ({ node_id, position_m: [point.x, point.y, point.z] })),
+    };
+  }
+
   async function saveClip() {
     if (clipState === 'capturing') return;
-    clipState = 'capturing'; clipProgress = 0; backendMessage = 'Capturing 10 seconds from trigger…';
+    clipState = 'capturing'; clipProgress = 0; backendMessage = `Capturing ${clipDurationS} seconds from trigger…`;
     try {
-      const created=await api.saveClip(clipName.trim(),clipNote.trim()) as Record<string,unknown>;
-      const clipId=Number(created.id);
+      const created = await api.saveClip({ name: clipName.trim(), note: clipNote.trim(), duration_s: clipDurationS, board_positions: frozenBoardPositions() }) as Record<string,unknown>;
+      const clipId = Number(created.id);
       const started = Date.now();
-      while (Date.now() - started < 15_000) {
+      const pollMs = Math.max(15_000, clipDurationS * 1000 + 5_000);
+      while (Date.now() - started < pollMs) {
         await new Promise((resolve) => setTimeout(resolve, 1_000));
-        clipProgress = Math.min(99, (Date.now() - started) / 150);
+        clipProgress = Math.min(99, (Date.now() - started) / pollMs * 100);
         const value = await api.getClips();
         clips = Array.isArray(value) ? value as Record<string,unknown>[] : [];
         const row=clips.find((clip)=>Number(clip.id)===clipId);
@@ -507,7 +528,7 @@
     <div class="actions">
       {#if !calibrated()}<span class="calibration-warning">UNCALIBRATED</span>{/if}
       <span class:offline={status === 'offline'} class="status"><i></i>{status.toUpperCase()}</span>
-      <button class="icon-button" onclick={saveClip} disabled={clipState === 'capturing'}>{clipState === 'capturing' ? `CLIP ${Math.round(clipProgress)}%` : 'CAPTURE'}</button>
+      <button class="icon-button" onclick={saveClip} disabled={clipState === 'capturing'}>{clipState === 'capturing' ? `CLIP ${Math.round(clipProgress)}%` : `CAPTURE ${clipDurationS}S`}</button>
       <button class="icon-button" onclick={() => settingsOpen = !settingsOpen} aria-expanded={settingsOpen} aria-label="Open settings">TUNE</button>
     </div>
   </header>
@@ -620,7 +641,7 @@
     <fieldset><legend>Signal processing</legend><label>CIR alignment<select value={alignmentMode} onchange={(e)=>{alignmentMode=e.currentTarget.value;settingChanged('cir_alignment_mode',alignmentMode);}}><option value="correlation">Reference correlation</option><option value="first_path">DW3000 first path</option></select></label><label>DGC correction<select value={dgcCorrectionDb} onchange={(e)=>{dgcCorrectionDb=+e.currentTarget.value;settingChanged('dgc_correction_db_per_step',dgcCorrectionDb);}}><option value={2.65}>2.65 dB/step (current)</option><option value={6}>6 dB/step (Qorvo RSL)</option><option value={0}>Disabled</option></select></label><label>Distance smoothing<output>{smoothing.toFixed(1)} s</output><input type="range" min="1" max="30" step="0.1" value={smoothing} oninput={(e)=>{smoothing=+e.currentTarget.value;settingChanged('distance_smoothing_s',smoothing);}} /></label><label>Hampel radius<input type="number" min="0" max="64" value="5" onchange={(e)=>settingChanged('hampel_radius',+e.currentTarget.value)} /></label><label>FFT window<select onchange={(e)=>settingChanged('fft_window',e.currentTarget.value)}><option value="hann">Hann</option><option value="hamming">Hamming</option><option value="blackman">Blackman</option><option value="rectangular">Rectangular</option></select></label></fieldset>
     <fieldset><legend>Live CIR robust grid</legend><label>Reference<select value={cirGridReferenceMode} onchange={(e)=>{cirGridReferenceMode=e.currentTarget.value;settingChanged('cir_grid_reference_mode',cirGridReferenceMode);}}><option value="frozen">Frozen board</option><option value="rolling_medoid">Rolling medoid</option><option value="rolling_mean">Rolling mean</option></select></label><label>Reference window<input type="number" min="3" max="64" step="1" value={cirGridReferenceWindow} onchange={(e)=>{cirGridReferenceWindow=+e.currentTarget.value;settingChanged('cir_grid_reference_window',cirGridReferenceWindow);}} /></label><label>Reference peak dB<input type="number" min="-30" max="0" step="1" value={cirGridReferencePeakDb} onchange={(e)=>{cirGridReferencePeakDb=+e.currentTarget.value;settingChanged('cir_grid_reference_peak_db',cirGridReferencePeakDb);}} /></label><label>Score<select value={cirGridScoreMode} onchange={(e)=>{cirGridScoreMode=e.currentTarget.value;settingChanged('cir_grid_score_mode',cirGridScoreMode);}}><option value="soft">Soft weights</option><option value="count">Match count</option></select></label><label>Gain min dB<input type="number" min="-40" max={cirGridGainMaxDb-.5} step=".5" value={cirGridGainMinDb} onchange={(e)=>{cirGridGainMinDb=+e.currentTarget.value;settingChanged('cir_grid_gain_min_db',cirGridGainMinDb);}} /></label><label>Gain max dB<input type="number" min={cirGridGainMinDb+.5} max="40" step=".5" value={cirGridGainMaxDb} onchange={(e)=>{cirGridGainMaxDb=+e.currentTarget.value;settingChanged('cir_grid_gain_max_db',cirGridGainMaxDb);}} /></label><label>Delay +/- taps<input type="number" min="0" max="8" step=".25" value={cirGridDelayRange} onchange={(e)=>{cirGridDelayRange=+e.currentTarget.value;settingChanged('cir_grid_delay_range_samples',cirGridDelayRange);}} /></label><label>Resample P<select value={cirGridResamplingFactor} onchange={(e)=>{cirGridResamplingFactor=+e.currentTarget.value;settingChanged('cir_grid_resampling_factor',cirGridResamplingFactor);}}>{#each [1,2,4,8,16] as factor}<option value={factor}>{factor}x</option>{/each}</select></label><label>Eta<input type="number" min=".01" max="4" step=".01" value={cirGridEta} onchange={(e)=>{cirGridEta=+e.currentTarget.value;settingChanged('cir_grid_eta',cirGridEta);}} /></label></fieldset>
     <fieldset><legend>Display</legend><label><span>Peak markers</span><input type="checkbox" checked /></label><label><span>30 FPS plots</span><input type="checkbox" checked disabled /></label></fieldset>
-    <fieldset><legend>Protected clips</legend><label>Name<input maxlength="120" bind:value={clipName} placeholder="Optional label" /></label><label>Note<input maxlength="2000" bind:value={clipNote} placeholder="Optional context" /></label><button class="snapshot" onclick={saveClip} disabled={clipState === 'capturing'}>SAVE 10 SECOND CLIP</button><div class="capture-progress"><i style={`width:${clipProgress}%`}></i></div>{#each clips as clip}<p>{String((clip.value as Record<string,unknown>)?.status ?? 'unknown').toUpperCase()} · CLIP {String(clip.id)} {String((clip.value as Record<string,unknown>)?.name ?? '')} {#if (clip.value as Record<string,unknown>)?.status === 'complete'}<a href={api?.clipDownload(Number(clip.id))}>DOWNLOAD ZIP</a>{/if} <button class="text-button" onclick={()=>deleteClip(Number(clip.id))} disabled={(clip.value as Record<string,unknown>)?.status === 'collecting'}>DELETE</button></p>{/each}</fieldset>
+    <fieldset><legend>Protected clips</legend><label>Name<input maxlength="120" bind:value={clipName} placeholder="Optional label" /></label><label>Note<input maxlength="2000" bind:value={clipNote} placeholder="Optional context" /></label><label>Length<select bind:value={clipDurationS}>{#each [5,10,15,30,60] as seconds}<option value={seconds}>{seconds} s</option>{/each}</select></label><button class="snapshot" onclick={saveClip} disabled={clipState === 'capturing'}>SAVE {clipDurationS} SECOND CLIP</button><div class="capture-progress"><i style={`width:${clipProgress}%`}></i></div>{#each clips as clip}<p>{String((clip.value as Record<string,unknown>)?.status ?? 'unknown').toUpperCase()} · CLIP {String(clip.id)} {String((clip.value as Record<string,unknown>)?.name ?? '')} {#if (clip.value as Record<string,unknown>)?.status === 'complete'}<a href={api?.clipDownload(Number(clip.id))}>DOWNLOAD ZIP</a>{/if} <button class="text-button" onclick={()=>deleteClip(Number(clip.id))} disabled={(clip.value as Record<string,unknown>)?.status === 'collecting'}>DELETE</button></p>{/each}</fieldset>
     <fieldset><legend>Backend</legend><label>REST base<input value="/api" readonly /></label><p>{backendMessage}. Binary HMT1 WebSocket follows the active analysis topic and reconnects with exponential backoff.</p></fieldset>
   </div>
 </aside>

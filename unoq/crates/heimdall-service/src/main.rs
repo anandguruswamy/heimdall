@@ -544,10 +544,19 @@ fn spawn_processor(receiver: Receiver<ProcessingInput>, state: AppState) -> thre
                         .fetch_add(wait, Ordering::Relaxed);
                     record_max(&state.live_metrics.queue_wait_max_ns, wait);
                     let started = Instant::now();
-                    let messages = state
-                        .pipeline
-                        .lock()
-                        .feed_with_topics(&bytes, state.topic_mask());
+                    let (messages, cir_samples) = {
+                        let mut pipeline = state.pipeline.lock();
+                        pipeline.set_capture_active(state.clips.has_active_clips());
+                        let messages = pipeline.feed_with_topics(&bytes, state.topic_mask());
+                        let cir_samples = pipeline.drain_capture_cir_samples();
+                        parking_lot::MutexGuard::unlock_fair(pipeline);
+                        (messages, cir_samples)
+                    };
+                    if !cir_samples.is_empty() {
+                        state
+                            .clips
+                            .ingest_cir(heimdall_service::metadata::now_ns(), cir_samples);
+                    }
                     let elapsed = started.elapsed().as_nanos() as u64;
                     state
                         .live_metrics

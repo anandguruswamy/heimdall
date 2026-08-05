@@ -54,7 +54,9 @@ export class HeimdallApi {
   solveCalibration(referencesM: Record<string, number>): Promise<unknown> { return this.send('/calibration/solve', 'POST', { references_m: referencesM }); }
   applyCalibration(): Promise<unknown> { return this.send('/calibration/apply', 'POST', {}); }
   rollbackCalibration(): Promise<unknown> { return this.send('/calibration/rollback', 'POST', {}); }
-  saveClip(name = '', note = ''): Promise<unknown> { return this.send('/clips', 'POST', { name, note }); }
+  saveClip(payload: { name: string; note: string; duration_s?: number; board_positions?: unknown }): Promise<unknown> {
+    return this.send('/clips', 'POST', { name: payload.name, note: payload.note, duration_s: payload.duration_s ?? 10, board_positions: payload.board_positions ?? null });
+  }
   getClips(): Promise<unknown> { return this.get('/clips'); }
   clipDownload(id: number): string { return `${this.base}/clips/${id}`; }
   async deleteClip(id: number): Promise<void> {

@@ -192,7 +192,7 @@ pub fn router(state: AppState) -> Router {
 }
 
 async fn health(State(state): State<AppState>) -> Json<Value> {
-    let pipeline = state.pipeline.lock();
+    let pipeline = state.pipeline.lock().summary();
     let total_bytes = fs2::total_space(state.data_root.as_ref()).unwrap_or(0);
     let free_bytes = fs2::available_space(state.data_root.as_ref()).unwrap_or(0);
     let archive_bytes = state.metadata.verified_segments().map_or(0, |segments| {
@@ -215,7 +215,7 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
     };
     Json(json!({
         "status": if archive_paused { "degraded" } else { "ok" }, "uptime_seconds": state.started.elapsed().as_secs_f64(),
-        "pipeline": pipeline.summary(),
+        "pipeline": pipeline,
         "processing_queue_drops": state.processing_drops.load(Ordering::Relaxed),
         "websocket_clients": state.web_clients.load(Ordering::Relaxed),
         "live": {
@@ -294,14 +294,18 @@ async fn post_clip(
     State(state): State<AppState>,
     Json(value): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let context = {
+    let mut context = {
         let pipeline = state.pipeline.lock();
         json!({
             "software": {"name": "heimdall-service", "version": env!("CARGO_PKG_VERSION")},
             "pipeline": pipeline.summary(), "settings": pipeline.settings(),
+            "board_freeze": pipeline.board_freeze_snapshot(),
             "calibration": state.metadata.calibration_snapshot()?
         })
     };
+    if let Some(positions) = value.get("board_positions") {
+        context["board_positions"] = positions.clone();
+    }
     let clip = state
         .clips
         .start(&value, context, crate::metadata::now_ns())?;

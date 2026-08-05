@@ -28,6 +28,7 @@ const MAX_CIR_FRAMES: usize = 1024;
 const MAX_TIMING_OBSERVATIONS: usize = 32;
 const MAX_DISTANCE_SAMPLES: usize = 1_024;
 const MAX_DISTANCE_HISTORY_SAMPLES: usize = 2_048;
+const MAX_CAPTURE_CIR_SAMPLES: usize = 200_000;
 const SLOW_FFT_TAPS: usize = 64;
 pub const QUALITY_BRIDGED_SPAN: u32 = 1 << 30;
 
@@ -53,6 +54,26 @@ pub struct Pipeline {
     observations: u64,
     prehello_skipped: u64,
     rejected: u64,
+    capture_cir_active: bool,
+    capture_cir_samples: VecDeque<AlignedCirSample>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct AlignedCirSample {
+    pub from: u8,
+    pub to: u8,
+    pub round: u32,
+    pub event_s: f64,
+    pub evidence: u64,
+    pub delay_samples: f64,
+    pub common_phase_rad: f64,
+    pub correlation: f64,
+    pub quality: u32,
+    pub marker_raw: f64,
+    pub marker_aligned: f64,
+    pub fit_algorithm: String,
+    pub magnitude: Vec<f32>,
+    pub iq: Vec<[f32; 2]>,
 }
 
 struct LinkState {
@@ -378,6 +399,8 @@ impl Pipeline {
             observations: 0,
             prehello_skipped: 0,
             rejected: 0,
+            capture_cir_active: false,
+            capture_cir_samples: VecDeque::new(),
         }
     }
 
@@ -396,6 +419,19 @@ impl Pipeline {
         self.cfo = DirectionalCfoIntegrator::new(self.settings.cfo_half_life_s);
         self.clock = RoundClock::default();
         self.calibration = None;
+        self.capture_cir_active = false;
+        self.capture_cir_samples.clear();
+    }
+
+    pub fn set_capture_active(&mut self, active: bool) {
+        self.capture_cir_active = active;
+        if !active {
+            self.capture_cir_samples.clear();
+        }
+    }
+
+    pub fn drain_capture_cir_samples(&mut self) -> Vec<AlignedCirSample> {
+        self.capture_cir_samples.drain(..).collect()
     }
 
     pub fn feed_with_stream(&mut self, bytes: &[u8], emit_stream: bool) -> Vec<Vec<u8>> {
@@ -760,6 +796,27 @@ impl Pipeline {
             correlation,
             quality: quality.0,
         };
+        if self.capture_cir_active {
+            self.capture_cir_samples.push_back(AlignedCirSample {
+                from: key.0,
+                to: key.1,
+                round: observation.observed_k,
+                event_s,
+                evidence: evidence_id,
+                delay_samples: display_delay_samples,
+                common_phase_rad: display_phase,
+                correlation: display_correlation,
+                quality: display_quality.0,
+                marker_raw,
+                marker_aligned: marker_raw - display_delay_samples,
+                fit_algorithm: fit_algorithm.to_owned(),
+                magnitude: display.iter().map(|value| value.norm() as f32).collect(),
+                iq: display.iter().map(|value| [value.re as f32, value.im as f32]).collect(),
+            });
+            if self.capture_cir_samples.len() > MAX_CAPTURE_CIR_SAMPLES {
+                self.capture_cir_samples.pop_front();
+            }
+        }
         if !link
             .cir
             .iter()
@@ -1214,6 +1271,30 @@ impl Pipeline {
             "reference_count": self.board_frozen_references.len(),
             "configuration_epoch": self.configuration_epoch,
             "processing_epoch": self.processing_epoch,
+        })
+    }
+
+    pub fn board_freeze_snapshot(&self) -> Value {
+        let references = self
+            .board_frozen_references
+            .iter()
+            .map(|((from, to), taps)| {
+                let values = taps
+                    .iter()
+                    .map(|value| json!({"re": value.re, "im": value.im}))
+                    .collect::<Vec<_>>();
+                (
+                    format!("{from}>{to}"),
+                    json!({"taps": taps.len(), "iq": values}),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        json!({
+            "board_frozen": self.board_frozen,
+            "reference_count": self.board_frozen_references.len(),
+            "configuration_epoch": self.configuration_epoch,
+            "processing_epoch": self.processing_epoch,
+            "references": references,
         })
     }
 
