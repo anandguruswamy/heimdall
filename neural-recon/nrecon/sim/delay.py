@@ -84,17 +84,19 @@ def _fractional_shift_real(x: torch.Tensor, delta_taps: torch.Tensor) -> torch.T
 def sample_kernel(
     kernel_samples: torch.Tensor, offsets_taps: torch.Tensor
 ) -> torch.Tensor:
-    """Evaluate a fine-grid kernel at arbitrary fractional tap offsets.
+    """Evaluate fine-grid kernels at arbitrary fractional tap offsets.
 
-    `kernel_samples` has shape [K] (fine grid, step `TS_NS / OVERSAMPLE`);
-    `offsets_taps` is a scalar or arbitrary-shape tensor. Linear
+    `kernel_samples` has shape [K] (fine grid, step `TS_NS / OVERSAMPLE`)
+    or [B, K] for a batch of kernels; `offsets_taps` is a scalar or a
+    tensor broadcastable against the kernel leading dims. Linear
     interpolation on the fine grid (differentiable); offsets outside the
-    stored support yield zero. Returns the broadcast shape of `offsets_taps`.
+    stored support yield zero. Returns the broadcast shape of
+    `offsets_taps` over the kernel leading dims.
     """
     kernel = torch.as_tensor(kernel_samples)
-    if kernel.ndim != 1:
-        raise ValueError("kernel_samples must be 1-D")
-    K = kernel.shape[0]
+    if kernel.ndim not in (1, 2):
+        raise ValueError("kernel_samples must be 1-D or 2-D")
+    K = kernel.shape[-1]
     offsets = torch.as_tensor(offsets_taps, dtype=kernel.dtype, device=kernel.device)
 
     x = offsets * OVERSAMPLE
@@ -103,5 +105,12 @@ def sample_kernel(
     lo = torch.floor(xc).long()
     hi = torch.clamp(lo + 1, max=K - 1)
     frac = xc - lo.to(x.dtype)
-    vals = kernel[lo] * (1.0 - frac) + kernel[hi] * frac
+    if kernel.ndim == 1:
+        vals = kernel[lo] * (1.0 - frac) + kernel[hi] * frac
+    else:
+        if lo.ndim < kernel.ndim:
+            lo = lo.broadcast_to(kernel.shape[:-1] + lo.shape[-1:])
+            hi = hi.broadcast_to(kernel.shape[:-1] + hi.shape[-1:])
+        vals = torch.gather(kernel, -1, lo) * (1.0 - frac) + \
+            torch.gather(kernel, -1, hi) * frac
     return torch.where(in_range, vals, torch.zeros_like(vals))

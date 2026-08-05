@@ -1,0 +1,20 @@
+# Experiment V2: the paper's decisive experiment (Sec. XI) — 2-4 planes +
+# 1 surfel at the fixed live geometry; gt_perturbed (5 cm / 5 deg) and
+# voting inits; held-out links 4 (fit on 16, evaluate on 20).
+name: exp-v2-planes-surfel
+seed: 100
+n_scenes: 20
+n_planes: [2, 4]
+held_out_links: 4
+init_pos_m: 0.05
+init_rot_deg: 5.0
+voting_init: true
+fit:
+  iterations: 350
+  lr: 0.01
+  envelope_first_frac: 0.5
+  env_weight: 1.0
+  lambda_presence: 0.01
+  lambda_scale: 0.1
+  lambda_overlap: 0.1
+  overlap_sigma: 0.5

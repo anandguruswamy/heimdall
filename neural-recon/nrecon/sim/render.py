@@ -102,14 +102,16 @@ def render_surfel_slot(scene: SceneTensors, g: int, nodes: torch.Tensor, links,
     p_tx, p_rx = _link_endpoints(nodes, links)
     v_i = mu - p_tx
     v_j = mu - p_rx
-    d_i = torch.linalg.vector_norm(v_i, dim=-1)
-    d_j = torch.linalg.vector_norm(v_j, dim=-1)
+    d_i = torch.linalg.vector_norm(v_i, dim=-1).clamp(min=1e-6)
+    d_j = torch.linalg.vector_norm(v_j, dim=-1).clamp(min=1e-6)
     u_i = v_i / d_i[:, None]
     u_j = v_j / d_j[:, None]
     sigma = surfel_covariance(scene, g)
     s = u_i + u_j
     var = torch.einsum("li,ij,lj->l", s, sigma, s) / (C_AIR**2)  # Eq. (16) [s^2]
-    sigma_tau = torch.sqrt(var.clamp(min=0.0))
+    # clamp keeps the sqrt gradient finite at the degenerate zero-covariance
+    # init (voting candidates start with rot6d = 0 -> Sigma = 0)
+    sigma_tau = torch.sqrt(var.clamp(min=1e-24))
     los = torch.linalg.vector_norm(p_tx - p_rx, dim=-1)
     path = d_i + d_j
     delta = _excess_taps(path, los)
@@ -130,26 +132,30 @@ def render_surfel_slot(scene: SceneTensors, g: int, nodes: torch.Tensor, links,
 
     n = torch.arange(S_TAPS, dtype=nodes.dtype, device=nodes.device)
     peak = kernel_peak_taps(kernel)
-    h = torch.zeros(len(links), S_TAPS, dtype=torch.complex128 if nodes.dtype == torch.float64 else torch.complex64,
-                    device=nodes.device)
-    for l in range(len(links)):
-        kc = _gauss_broadened(kernel, sigma_tau[l])
-        h[l] = alpha[l] * _place(kc, n, delta[l], peak)
+    kc = _gauss_broadened_batch(kernel, sigma_tau)  # [L, K]
+    h = alpha[:, None] * _place(kc, n, delta, peak)
     return h, mu
+
+
+def _gauss_broadened_batch(kernel: torch.Tensor, sigma_tau_sec: torch.Tensor,
+                           step_ns: float = TS_NS / OVERSAMPLE) -> torch.Tensor:
+    """Kernel convolved with per-link analytic Gaussians of std sigma_tau
+    (Eq. (16)), batched over links: [L] sigma -> [L, K] kernels."""
+    sigma_fine = sigma_tau_sec / (step_ns * 1e-9)
+    sigma_fine = sigma_fine.clamp(min=1e-3)
+    m = int(torch.ceil(4.0 * sigma_fine.max()).item())
+    idx = torch.arange(-m, m + 1, dtype=kernel.dtype, device=kernel.device)
+    g = torch.exp(-(idx[None, :] ** 2) / (2.0 * sigma_fine[:, None] ** 2))
+    g = g / g.sum(dim=-1, keepdim=True)
+    xp = F.pad(kernel[None, None, :], (m, m))
+    kc = F.conv1d(xp, g[:, None, :])  # [1, L, K]; one Gaussian per channel
+    return kc.squeeze(0)
 
 
 def _gauss_broadened(kernel: torch.Tensor, sigma_tau_sec: torch.Tensor,
                      step_ns: float = TS_NS / OVERSAMPLE) -> torch.Tensor:
-    """Kernel convolved with an analytic Gaussian of std sigma_tau (Eq. (16))."""
-    sigma_fine = sigma_tau_sec / (step_ns * 1e-9)
-    sigma_fine = sigma_fine.clamp(min=1e-3)
-    m = int(torch.ceil(4.0 * sigma_fine).item())
-    idx = torch.arange(-m, m + 1, dtype=kernel.dtype, device=kernel.device)
-    g = torch.exp(-(idx**2) / (2.0 * sigma_fine**2))
-    g = g / g.sum()
-    padded = F.pad(kernel[None, None, :], (m, m))
-    kc = F.conv1d(padded, g[None, None, :]).squeeze(0).squeeze(0)
-    return kc
+    """Single-sigma variant (scalar sigma -> 1-D kernel)."""
+    return _gauss_broadened_batch(kernel, sigma_tau_sec.reshape(1), step_ns).squeeze(0)
 
 
 def render_plane_slot(scene: SceneTensors, g: int, nodes: torch.Tensor, links,
@@ -225,8 +231,8 @@ def render_capsule_slot(scene: SceneTensors, g: int, nodes: torch.Tensor, links,
     for p, nrm_p in zip(pts, nrm):
         v_i = p - p_tx
         v_j = p - p_rx
-        d_i = torch.linalg.vector_norm(v_i, dim=-1)
-        d_j = torch.linalg.vector_norm(v_j, dim=-1)
+        d_i = torch.linalg.vector_norm(v_i, dim=-1).clamp(min=1e-6)
+        d_j = torch.linalg.vector_norm(v_j, dim=-1).clamp(min=1e-6)
         u_i = v_i / d_i[:, None]
         u_j = v_j / d_j[:, None]
         w = torch.sigmoid(INC_SLOPE * (u_i * nrm_p).sum(dim=-1)) * \

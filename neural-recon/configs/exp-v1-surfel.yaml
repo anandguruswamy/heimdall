@@ -1,0 +1,15 @@
+# Experiment V1: 1-surfel noiseless scenes, fixed live geometry,
+# random multistart K=8 (plan Phase 4 step 4).
+name: exp-v1-surfel
+seed: 0
+n_scenes: 8
+restarts: 8
+success_center_m: 0.10
+fit:
+  iterations: 300
+  lr: 0.01
+  envelope_first_frac: 0.5
+  env_weight: 1.0
+  lambda_presence: 0.01
+  lambda_scale: 0.1
+  lambda_overlap: 0.0

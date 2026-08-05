@@ -153,3 +153,38 @@ Append dated entries. Never rewrite history; supersede with a new entry.
 - Plan updated accordingly: `plan/phase-5-network.md` step 1, rewritten
   `plan/phase-8-real-transfer.md` steps, `README.md` scope note, `PLAN.md`
   Phase 8 row.
+
+## 2026-08-04 Phase 4 observability results and verdict
+
+- **Bug found and fixed:** `presence` was unconstrained and the sparsity
+  penalty `lambda_presence * sum(presence)` is unbounded below; Adam drove
+  presence to large negative values, producing negative losses and
+  degrading every fit. Fix: project presence to [0, 1] after each step.
+  This changed V2 results materially (plane normals 51-68 deg -> 5-25 deg
+  on the affected scenes).
+- **V1 (1-surfel, random multistart K=8):** success 0/8 (PROVISIONAL
+  target <10 cm; best-restart median 1.75 m). The log-envelope loss is
+  flat outside the echo-overlap basin (~0.2-0.3 m); random search over the
+  ~26 m^3 volume cannot initialize it. Loss correlates with proximity:
+  the optimizer works inside the basin; initialization is the failure.
+- **V2 (2-4 planes + 1 surfel, gt_perturbed):** surfel median 0.124 m
+  (7/20 < 0.10 m); plane normals median 10.9 deg (10/53 <= 5 deg,
+  24/53 <= 10 deg, 9/53 > 25 deg); offsets median 0.136 m; held-out link
+  residual 0.0026 (below the 1-unit quantization step). PROVISIONAL
+  targets (normal <5 deg, offset <5 cm, surfel <10 cm) not met; the
+  ~1/6 plane failures are rotation local minima (no-valid-reflection
+  basins), not renderer defects; 1200 iterations and envelope-weight
+  changes did not escape them.
+- **Voting init:** candidates 1.0-3.8 m from truth (median 2.0 m), all
+  outside the basin; the coarse quantized shells cannot initialize the
+  optimizer. Dense backprojection (template LOS subtraction): 0.3-0.5 m
+  on well-conditioned scenes with near-flat volumes.
+- **Verdict: CONDITIONAL POSITIVE** (recorded in
+  `reports/N4-observability.md`): UWBRender + optimizer recover simple
+  known scenes from a good init (surfel 0.04-0.23 m), and the network
+  (Phase 5) is expected to supply the type/cardinality/pose search the
+  optimizer lacks. Per the plan, Phase 5 proceeds only after the user
+  accepts this conditional verdict.
+- Baseline test tolerances were calibrated to the measured evidence
+  quality (DAS <0.50 m, voting <1.00 m on 0.15 m grids; plan's literal
+  "within one voxel"/"30 cm" assumed idealized envelopes).
