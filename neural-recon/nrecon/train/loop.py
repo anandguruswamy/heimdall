@@ -308,6 +308,10 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
     nonfinite_streak = 0
     NONFINITE_STREAK_LIMIT = 5
     parts = None  # guards the final return if every step fails immediately
+    loss_ema = None  # for the loss-spike guard below
+    LOSS_SPIKE_MULT = 8.0
+    LOSS_SPIKE_ABS_FLOOR = 15.0  # only trip on a large absolute loss, not
+                                 # relative noise once loss_ema is already small
     for epoch in range(cfg.epochs):
         if cfg.permute_labels:
             train_ds.permute_epoch()
@@ -355,6 +359,20 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
                 total_val = float(parts["total"].detach())
                 if not (total_val == total_val) or total_val in (float("inf"), float("-inf")):
                     failure_reason = f"non-finite loss {total_val}"
+                elif loss_ema is not None and total_val > max(
+                        LOSS_SPIKE_MULT * loss_ema, LOSS_SPIKE_ABS_FLOOR):
+                    # Loss-spike guard: a finite-but-extreme gradient from a
+                    # single pathological batch can still knock the model
+                    # into a bad basin it never recovers from, even though
+                    # gradient clipping bounds the applied step's norm --
+                    # hit this exactly once the crash guards above stopped
+                    # the run from dying outright: loss jumped ~4.9 -> ~228
+                    # around step 126-140 of the first successfully-completed
+                    # run 2 and never recovered, cascading the damage
+                    # through the warm-started runs 3 and 4 (2026-08-05).
+                    failure_reason = (
+                        f"loss spike {total_val:.4f} > "
+                        f"{LOSS_SPIKE_MULT}x EMA ({loss_ema:.4f}) / floor {LOSS_SPIKE_ABS_FLOOR}")
             except Exception as exc:  # noqa: BLE001 - intentionally broad, see comment above
                 failure_reason = f"exception {exc!r}"
             if failure_reason is not None:
@@ -369,6 +387,7 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
                     break
                 continue
             nonfinite_streak = 0
+            loss_ema = total_val if loss_ema is None else 0.98 * loss_ema + 0.02 * total_val
             scaler.unscale_(optim)
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.clip)
             scaler.step(optim)
