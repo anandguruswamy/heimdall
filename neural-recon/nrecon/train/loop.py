@@ -142,8 +142,23 @@ def _kernel():
     return torch.as_tensor(correlation_kernel(t, t).samples)
 
 
+SCENE_CENTER_CLAMP = 50.0  # m; well beyond any plausible room (PROVISIONAL safety bound)
+SCENE_SCALE_LOG_MAX = 3.0  # log(20 m); matches RunMonitor's giant-surfel threshold
+
+
 def pred_to_scene(pred: dict, batch: dict, dtype=torch.float32) -> SceneTensors:
-    """Network heads -> one SceneTensors per batch element."""
+    """Network heads -> one SceneTensors per batch element.
+
+    Clamps `center`/`scale_log` to a generous but finite range: the raw
+    decoder heads for both are unconstrained linear outputs (paper Fig. 1
+    heads have no activation there), and during early/unstable training
+    they can occasionally take extreme values that blow up
+    UWBRender's numerics (e.g. an enormous surfel scale making the
+    Gaussian-broadening kernel width overflow to inf/nan -- hit this
+    exactly, step ~100-120 of the first real run 2, 2026-08-05). Clamping
+    here keeps the renderer numerically well-behaved without changing the
+    network's own (unclamped) prediction used for the loss/matching.
+    """
     b = pred["center"].shape[0]
     scenes = []
     for bi in range(b):
@@ -151,9 +166,18 @@ def pred_to_scene(pred: dict, batch: dict, dtype=torch.float32) -> SceneTensors:
         scene = SceneTensors.empty(g, dtype=dtype)
         scene.type_id = pred["type_logits"][bi].argmax(-1)
         scene.presence = pred["presence"][bi, :, 0]
-        scene.center = pred["center"][bi]
-        scene.rot6d = pred["rot6d"][bi]
-        scene.scale_log = pred["scale_log"][bi]
+        # nan_to_num first: torch.clamp leaves actual NaN as NaN (only
+        # bounds finite values), so a NaN prediction would otherwise still
+        # reach the renderer.
+        scene.center = torch.nan_to_num(
+            pred["center"][bi], nan=0.0, posinf=SCENE_CENTER_CLAMP,
+            neginf=-SCENE_CENTER_CLAMP).clamp(-SCENE_CENTER_CLAMP, SCENE_CENTER_CLAMP)
+        scene.rot6d = torch.nan_to_num(pred["rot6d"][bi], nan=0.0,
+                                       posinf=1.0, neginf=-1.0)
+        scene.scale_log = torch.nan_to_num(
+            pred["scale_log"][bi], nan=SCENE_SCALE_LOG_MAX,
+            posinf=SCENE_SCALE_LOG_MAX,
+            neginf=-SCENE_SCALE_LOG_MAX).clamp(max=SCENE_SCALE_LOG_MAX)
         rho = torch.complex(pred["rho"][bi, :, 0], pred["rho"][bi, :, 1])
         scene.rho = rho
         scene.roughness = pred["roughness"][bi, :, 0]
@@ -283,6 +307,7 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
     run_start = time.perf_counter()
     nonfinite_streak = 0
     NONFINITE_STREAK_LIMIT = 5
+    parts = None  # guards the final return if every step fails immediately
     for epoch in range(cfg.epochs):
         if cfg.permute_labels:
             train_ds.permute_epoch()
@@ -314,24 +339,33 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
                 scaler.scale(total).backward()
                 return pred, parts
 
-            pred, parts = closure()
-            total_val = float(parts["total"].detach())
-            if not (total_val == total_val) or total_val in (float("inf"), float("-inf")):
-                # Immediate, every-step guard (RunMonitor.check_loss only
-                # runs at log_every cadence, so a NaN/Inf loss could
-                # otherwise poison up to log_every optimizer steps before
-                # being noticed -- hit this exact scenario right after a
-                # curriculum warm-start into a new dataset). Skip the
-                # optimizer step entirely rather than applying a
-                # NaN-poisoned gradient update.
+            # Broad exception guard (defense in depth): an extreme/degenerate
+            # predicted primitive can occasionally blow up UWBRender's
+            # numerics in ways the nan_to_num/clamp in pred_to_scene doesn't
+            # anticipate (hit a ValueError from an inf kernel-broadening
+            # width at step ~100-120 of the first real run 2, 2026-08-05,
+            # a step *after* one that had already passed the finite-loss
+            # check below -- i.e. a fresh instability from a new batch's
+            # geometry, not a lingering bad model state). Treat any
+            # exception here the same as a non-finite loss rather than
+            # crashing the whole (potentially many-hour, unattended) run.
+            failure_reason = None
+            try:
+                pred, parts = closure()
+                total_val = float(parts["total"].detach())
+                if not (total_val == total_val) or total_val in (float("inf"), float("-inf")):
+                    failure_reason = f"non-finite loss {total_val}"
+            except Exception as exc:  # noqa: BLE001 - intentionally broad, see comment above
+                failure_reason = f"exception {exc!r}"
+            if failure_reason is not None:
                 nonfinite_streak += 1
-                print(f"NON-FINITE LOSS at step {step + 1}: {total_val} "
+                print(f"STEP FAILED at step {step + 1}: {failure_reason} "
                       f"(streak {nonfinite_streak}/{NONFINITE_STREAK_LIMIT}); "
                       f"skipping optimizer step", flush=True)
                 optim.zero_grad(set_to_none=True)
                 if nonfinite_streak >= NONFINITE_STREAK_LIMIT:
                     monitor.stop_reason = (
-                        f"non-finite loss for {nonfinite_streak} consecutive steps")
+                        f"non-finite loss/exception for {nonfinite_streak} consecutive steps")
                     break
                 continue
             nonfinite_streak = 0
@@ -406,4 +440,5 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
     torch.save({"model": model.state_dict(), "optim": optim.state_dict(),
                 "step": step, "config": cfg.__dict__}, ckpt)
     log_f.close()
-    return {"steps": step, "final_loss": float(parts["total"].detach())}
+    final_loss = float(parts["total"].detach()) if parts is not None else float("nan")
+    return {"steps": step, "final_loss": final_loss}
