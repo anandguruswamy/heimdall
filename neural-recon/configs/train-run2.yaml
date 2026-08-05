@@ -1,0 +1,34 @@
+# Run 2 (Algorithm 1 step 2, plan/phase-6-training.md): stage-2 dataset
+# (10k scenes, planes + 1-5 cm node jitter, noiseless). GPU-only (renderer-
+# in-the-loop; see train-run1-gpu-sanity.yaml for the batch-size note --
+# batch 8 stays optimal since render_predicted's per-sample loop does not
+# batch efficiently on GPU). Warm-started from run 1's checkpoint via
+# --init-checkpoint at launch (paths differ per host, not hardcoded here).
+# max_minutes is the real stop condition; epochs is set high so it never
+# binds first.
+name: train-run2
+dataset_dir: datasets/stage2
+epochs: 100000
+batch_size: 8
+lr: 0.0003
+wd: 0.01
+warmup_steps: 200
+clip: 1.0
+seed: 0
+log_every: 20
+checkpoint_every: 500
+balance_every: 0
+amp: false
+permute_labels: false
+device: cuda
+eval_every: 100
+early_stop_patience: 12
+early_stop_min_delta: 0.0001
+max_steps: 0
+max_minutes: 90
+weights:
+  set_: 1.0
+  cpx: 1.0
+  env: 0.5
+  fft: 0.1
+  reg: 0.01

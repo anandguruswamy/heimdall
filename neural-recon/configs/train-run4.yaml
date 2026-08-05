@@ -1,0 +1,35 @@
+# Run 4 (Algorithm 1 step 4, plan/phase-6-training.md): stage-4 dataset
+# (randomized non-degenerate N=5 layouts per the real deployment
+# convention -- nodes 0/1/2 same height, node 3 higher, node 4 typically
+# lower, pairwise 0.5-4.0 m, see scenes.py::sample_nodes and DECISIONS.md
+# 2026-08-05 -- two layouts per scene, full nuisance + reverb-tail like
+# stage 3), with per-epoch node-label permutation augmentation
+# (permute_labels). This is the checkpoint plan/phase-7-evaluation.md
+# evaluates. Warm-started from run 3's checkpoint via --init-checkpoint
+# at launch. max_minutes is the real stop condition.
+name: train-run4
+dataset_dir: datasets/stage4
+epochs: 100000
+batch_size: 8
+lr: 0.0003
+wd: 0.01
+warmup_steps: 200
+clip: 1.0
+seed: 0
+log_every: 20
+checkpoint_every: 500
+balance_every: 0
+amp: false
+permute_labels: true
+device: cuda
+eval_every: 100
+early_stop_patience: 12
+early_stop_min_delta: 0.0001
+max_steps: 0
+max_minutes: 90
+weights:
+  set_: 1.0
+  cpx: 1.0
+  env: 0.5
+  fft: 0.1
+  reg: 0.01

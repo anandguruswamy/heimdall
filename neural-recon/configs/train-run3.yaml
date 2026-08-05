@@ -1,0 +1,31 @@
+# Run 3 (Algorithm 1 step 3, plan/phase-6-training.md): stage-3 dataset
+# (10k scenes, capsules + full hardware randomization + the 2026-08-05
+# reverb-tail model closing the measured sim-to-real CIR-density gap --
+# see DECISIONS.md). Warm-started from run 2's checkpoint via
+# --init-checkpoint at launch. max_minutes is the real stop condition.
+name: train-run3
+dataset_dir: datasets/stage3
+epochs: 100000
+batch_size: 8
+lr: 0.0003
+wd: 0.01
+warmup_steps: 200
+clip: 1.0
+seed: 0
+log_every: 20
+checkpoint_every: 500
+balance_every: 0
+amp: false
+permute_labels: false
+device: cuda
+eval_every: 100
+early_stop_patience: 12
+early_stop_min_delta: 0.0001
+max_steps: 0
+max_minutes: 90
+weights:
+  set_: 1.0
+  cpx: 1.0
+  env: 0.5
+  fft: 0.1
+  reg: 0.01
