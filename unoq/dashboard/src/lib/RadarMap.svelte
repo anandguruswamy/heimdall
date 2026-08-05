@@ -497,6 +497,7 @@
 <style>
   .map-layout { display: grid; grid-template-columns: minmax(250px, 280px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 10px; height: 100%; min-height: 0; }
   .map-side { min-width: 0; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 2px; scrollbar-width: thin; }
+  .map-side > * { flex: 0 0 auto; }
   .map-scene { min-width: 0; min-height: 0; position: relative; border: 1px solid var(--line); background: linear-gradient(145deg, #10191d, #0b1114); overflow: hidden; }
   .map-scene :global(.scene) { width: 100%; height: 100%; }
   .map-head { display: flex; flex-direction: column; gap: 10px; }
@@ -519,7 +520,7 @@
   .controls label.scrub { grid-column: 1 / -1; min-width: 0; }
   .controls label.mode { grid-column: 1 / -1; }
   .controls input[type="range"] { width: 100%; }
-  .controls select { background: #0b1215; color: #dbe5e7; border: 1px solid #385056; font: 9px DM Mono, monospace; padding: 4px; width: 100%; }
+  .controls select { box-sizing: border-box; height: 28px; background: #0b1215; color: #dbe5e7; border: 1px solid #385056; font: 9px DM Mono, monospace; padding: 4px; width: 100%; }
   .controls button.play, .controls button.snapshot { width: 100%; }
   .controls button.snapshot { grid-column: 1 / -1; }
   .mode-settings { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 10px; padding: 8px; border: 1px solid #304147; background: #0b1215; }
