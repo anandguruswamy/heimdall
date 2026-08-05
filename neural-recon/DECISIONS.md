@@ -251,3 +251,50 @@ Append dated entries. Never rewrite history; supersede with a new entry.
 - Phase 7 gains an export task: ONNX export plus an fp16/int8
   quantization sanity check (metrics before/after quantization on the
   evaluation suite) before the Phase 7 report.
+
+## 2026-08-05 Pre-GPU-run code review: trainer had no device wiring
+
+- **Bug found and fixed (user requested a review before the Vast.ai run):**
+  `nrecon/train/loop.py` never moved the model, kernel, or batches off CPU —
+  `TrainConfig` had no `device` field and nothing called `.to(device)`
+  anywhere. As written, a run on the rented CUDA instance would have either
+  silently trained on the container's CPU or crashed on the first
+  device-mismatched op. Fixed: `TrainConfig.device` (default `"cpu"`,
+  overridable via `--device` on the CLI), `model`/`kernel` moved once in
+  `train()`, batches moved via a new `nrecon.train.data.to_device` helper
+  after `collate()`, AMP/`autocast`/`GradScaler` gated on
+  `device.type == "cuda"` (previously hardcoded to `"cuda"` regardless of
+  `cfg.amp`, which would have broken the CPU-only local runs the moment
+  `amp=True`), and optimizer checkpoint state explicitly moved to `device`
+  after `load_state_dict` (PyTorch does not do this automatically and the
+  next `optim.step()` would otherwise raise a device-mismatch error).
+- **Second bug found while fixing the first:** `match_slots` in `losses.py`
+  (called on every training step, not just eval) built its Hungarian-matching
+  cost tensor and the returned `(rows, cols)` index tensors with no `device=`
+  argument, defaulting to CPU. This would have crashed on step 1 of any GPU
+  run the moment the CPU cost tensor was combined with GPU-resident
+  prediction tensors. Fixed by threading `pred["center"].device` through;
+  `cost` is still moved to CPU only for the `scipy.optimize.linear_sum_assignment`
+  call (SciPy requires a NumPy array), then the Hungarian result is placed
+  back on `device`.
+- `seed_all` now also calls `torch.cuda.manual_seed_all` when CUDA is
+  available (previously CPU-only seeding, silently non-reproducible on GPU).
+- `nrecon/train/analyze.py`'s `step_time_s` never used wall-clock time — it
+  recomputed the average steps-per-log-row (a constant ~= `log_every`), not
+  seconds/step, making it useless for estimating full-training duration from
+  a GPU sanity run. Fixed: `loop.py` now logs a cumulative `wall_s` column in
+  `metrics.csv`/`val.csv`; `analyze.py` derives `step_time_s`/`steps_per_sec`
+  from the first/last valid `wall_s` sample. Older run directories predating
+  this column report `nan` for these two fields rather than a wrong number.
+- Verified: full CPU test suite still 66/66 passing; a fresh 6-step CPU smoke
+  run against `datasets/stage1-mini` reproduces the previously observed loss
+  trajectory (726 -> 12) with no device errors, and `analyze.py` now reports
+  a real `step_time_s` (~2.0 s/step on this CPU) matching the printed
+  per-step timings. The `device="cuda"` path itself can only be exercised on
+  the rented Vast.ai instance (no local CUDA GPU); this is the first thing to
+  verify there before any real training run.
+- No other correctness issues found in `sim/`, `baselines/`, or `model/`; one
+  cosmetic-only note: `render.py`'s `GAMMA` comment ("randomized per link in
+  datasets") describes a variation that was never implemented anywhere in
+  `hardware.py`/`export.py` — harmless (fixed gamma=2.0 is used throughout)
+  but the comment should eventually be corrected or the feature added.

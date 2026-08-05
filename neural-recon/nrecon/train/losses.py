@@ -92,14 +92,15 @@ def match_slots(pred: dict, truth_type: torch.Tensor, truth_center: torch.Tensor
     """
     if w is None:
         w = MatchWeights()
+    device = pred["center"].device
     b, g = pred["center"].shape[:2]
     rows, cols = [], []
     for bi in range(b):
         t_idx = torch.nonzero(truth_present[bi] > 0.5).squeeze(-1)
         nt = t_idx.numel()
         if nt == 0:
-            rows.append(torch.full((g,), -1, dtype=torch.long))
-            cols.append(torch.full((g,), -1, dtype=torch.long))
+            rows.append(torch.full((g,), -1, dtype=torch.long, device=device))
+            cols.append(torch.full((g,), -1, dtype=torch.long, device=device))
             continue
         tc = truth_center[bi, t_idx]
         tr = truth_rot[bi, t_idx]
@@ -108,7 +109,7 @@ def match_slots(pred: dict, truth_type: torch.Tensor, truth_center: torch.Tensor
         pc = pred["center"][bi]
         pr = rot6d_to_matrix(pred["rot6d"][bi])
         ps = torch.exp(pred["scale_log"][bi])
-        cost = torch.zeros(g, nt, dtype=torch.float64)
+        cost = torch.zeros(g, nt, dtype=torch.float64, device=device)
         cost += w.type * (pred["type_logits"][bi].argmax(-1)[:, None] != tt[None, :]).double()
         cost += w.center * torch.linalg.vector_norm(pc[:, None, :] - tc[None, :, :], dim=-1)
         cost += w.scale * (ps[:, None, :] - ts[None, :, :]).abs().sum(dim=-1)
@@ -116,10 +117,12 @@ def match_slots(pred: dict, truth_type: torch.Tensor, truth_center: torch.Tensor
             pr[:, None, :, :].expand(g, nt, 3, 3),
             tr[None, :, :, :].expand(g, nt, 3, 3),
             pred["type_logits"][bi].argmax(-1)[:, None].expand(g, nt))
-        rr, cc = linear_sum_assignment(cost.detach().numpy())
-        rows_full = torch.full((g,), -1, dtype=torch.long)
-        rows_full[torch.as_tensor(rr, dtype=torch.long)] = torch.as_tensor(cc, dtype=torch.long)
-        cols_full = torch.full((g,), -1, dtype=torch.long)
+        # scipy needs a CPU array regardless of the compute device.
+        rr, cc = linear_sum_assignment(cost.detach().cpu().numpy())
+        rows_full = torch.full((g,), -1, dtype=torch.long, device=device)
+        rows_full[torch.as_tensor(rr, dtype=torch.long, device=device)] = \
+            torch.as_tensor(cc, dtype=torch.long, device=device)
+        cols_full = torch.full((g,), -1, dtype=torch.long, device=device)
         matched = rows_full >= 0
         cols_full[matched] = t_idx[rows_full[matched]]
         rows.append(rows_full)

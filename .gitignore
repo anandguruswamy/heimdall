@@ -18,6 +18,7 @@ captures/processed/
 __pycache__/
 *.py[cod]
 .venv/
+tools/venv-vastai/
 
 # Rust and frontend generated state
 target/

@@ -124,3 +124,17 @@ def collate(samples: list) -> dict:
     t = samples[0]["truth"]
     out["truth"] = {k: torch.stack([s["truth"][k] for s in samples]) for k in t}
     return out
+
+
+def to_device(batch: dict, device) -> dict:
+    """Move every tensor in a collated batch (including the nested `truth`
+    dict) to `device`. No-op copy when already resident there."""
+    out = {}
+    for k, v in batch.items():
+        if isinstance(v, dict):
+            out[k] = {kk: vv.to(device) for kk, vv in v.items()}
+        elif torch.is_tensor(v):
+            out[k] = v.to(device)
+        else:
+            out[k] = v
+    return out

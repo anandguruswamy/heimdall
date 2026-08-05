@@ -38,8 +38,22 @@ def summarize(run_dir: str) -> dict:
             out["med_center_first"] = float(centers[0])
             out["med_center_last"] = float(centers[-1])
             out["med_center_min"] = float(np.nanmin(centers))
-        out["step_time_s"] = float(
-            (steps[-1] - steps[0]) / max(1, (len(steps) - 1) * max(1e-9, 1))) if len(steps) > 1 else float("nan")
+        # Real wall-clock step time from the "wall_s" column (seconds since
+        # run start, logged every `log_every` steps); older runs predating
+        # that column report NaN rather than the bogus log-interval count
+        # this used to silently return.
+        out["step_time_s"] = float("nan")
+        out["steps_per_sec"] = float("nan")
+        if rows and "wall_s" in rows[0] and len(rows) > 1:
+            wall = np.array([r.get("wall_s", float("nan")) for r in rows])
+            valid = np.nonzero(~np.isnan(wall))[0]
+            if len(valid) > 1:
+                i0, i1 = valid[0], valid[-1]
+                dsteps = steps[i1] - steps[i0]
+                dwall = wall[i1] - wall[i0]
+                if dsteps > 0 and dwall > 0:
+                    out["step_time_s"] = float(dwall / dsteps)
+                    out["steps_per_sec"] = float(dsteps / dwall)
     val_rows = []
     vf = d / "val.csv"
     if vf.exists():

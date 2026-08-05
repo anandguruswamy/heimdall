@@ -25,7 +25,7 @@ from nrecon.seeding import seed_all
 from nrecon.sim.primitives import SceneTensors, rot6d_to_matrix
 from nrecon.sim.pulse import correlation_kernel, make_template_v1
 from nrecon.sim.render import render_scene
-from nrecon.train.data import ShardDataset, collate
+from nrecon.train.data import ShardDataset, collate, to_device
 from nrecon.train.losses import LossWeights, match_slots, total_loss
 
 
@@ -53,6 +53,7 @@ class TrainConfig:
     early_stop_min_delta: float = 1e-4
     max_steps: int = 0  # hard step cap; 0 = epochs * batches
     max_minutes: float = 0.0  # wall-clock cap; 0 disables
+    device: str = "cpu"  # "cpu" or "cuda" (or "cuda:N"); model/kernel/batches moved here
 
 
 class RunMonitor:
@@ -97,7 +98,8 @@ class RunMonitor:
 
 
 def evaluate(model: torch.nn.Module, ds: ShardDataset, kernel: torch.Tensor,
-             weights: LossWeights, cfg: TrainConfig, n: int = 16) -> dict:
+             weights: LossWeights, cfg: TrainConfig, n: int = 16,
+             device=None) -> dict:
     """Mean loss and matched-center error on a fixed val subset."""
     model.eval()
     losses = []
@@ -106,6 +108,8 @@ def evaluate(model: torch.nn.Module, ds: ShardDataset, kernel: torch.Tensor,
         for i in range(min(n, len(ds))):
             sample = ds[i]
             batch = collate([sample])
+            if device is not None:
+                batch = to_device(batch, device)
             pred = model(batch["x"], batch["meta"], batch["geom"], batch["valid"])
             h_hat = render_predicted(pred, batch, kernel)
             parts = total_loss(pred, batch["truth"], h_hat, batch["target"],
@@ -204,16 +208,32 @@ def _cosine_with_warmup(step: int, total: int, warmup: int, lr: float) -> float:
     return lr * 0.5 * (1.0 + np.cos(np.pi * p))
 
 
+def _optimizer_state_to_device(optim: torch.optim.Optimizer, device) -> None:
+    """`optim.load_state_dict` restores tensor state (e.g. Adam moments) on
+    whatever device `torch.load` used (we load with map_location="cpu" for
+    portability); move it onto `device` to match the (already-moved) model
+    parameters, or the first `optim.step()` raises a device-mismatch error."""
+    for state in optim.state.values():
+        for k, v in state.items():
+            if torch.is_tensor(v):
+                state[k] = v.to(device)
+
+
 def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
     seed_all(cfg.seed)
     out = Path(out_dir) / cfg.name
     out.mkdir(parents=True, exist_ok=True)
-    kernel = _kernel()
+    device = torch.device(cfg.device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(
+            f"device={cfg.device!r} requested but torch.cuda.is_available() is False")
+    kernel = _kernel().to(device)
+    amp_enabled = bool(cfg.amp and device.type == "cuda")
 
-    train_ds = ShardDataset(cfg.dataset_dir, "train", kernel,
+    train_ds = ShardDataset(cfg.dataset_dir, "train", kernel.cpu(),
                             permute_labels=cfg.permute_labels, seed=cfg.seed)
-    val_ds = ShardDataset(cfg.dataset_dir, "val", kernel, seed=cfg.seed + 1)
-    model = HeimdallSetNet().train()
+    val_ds = ShardDataset(cfg.dataset_dir, "val", kernel.cpu(), seed=cfg.seed + 1)
+    model = HeimdallSetNet().to(device).train()
     optim = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.wd)
 
     start_step = 0
@@ -222,22 +242,23 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
         state = torch.load(ckpt, map_location="cpu")
         model.load_state_dict(state["model"])
         optim.load_state_dict(state["optim"])
+        _optimizer_state_to_device(optim, device)
         start_step = state["step"]
         print(f"resumed from step {start_step}")
 
     weights = LossWeights(**cfg.weights)
     balancer = GradNormBalancer(weights, power=cfg.balance_power) if cfg.balance_every else None
-    scaler = torch.amp.GradScaler("cuda", enabled=cfg.amp)
+    scaler = torch.amp.GradScaler("cuda", enabled=amp_enabled)
     monitor = RunMonitor(cfg)
     log_f = open(out / "metrics.csv", "a", newline="")
     writer = csv.writer(log_f)
     if start_step == 0:
         writer.writerow(["step", "epoch", "loss", "set", "cpx", "env", "fft",
-                         "reg", "matched_center", "lr"])
+                         "reg", "matched_center", "lr", "wall_s"])
     val_f = open(out / "val.csv", "a", newline="")
     val_writer = csv.writer(val_f)
     if start_step == 0:
-        val_writer.writerow(["step", "val_loss", "val_med_center"])
+        val_writer.writerow(["step", "val_loss", "val_med_center", "wall_s"])
 
     indices = list(range(len(train_ds)))
     step = start_step
@@ -262,11 +283,11 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
                 samples = [train_ds.__getitem_permuted__(i) for i in batch_idx]
             else:
                 samples = [train_ds[i] for i in batch_idx]
-            batch = collate(samples)
+            batch = to_device(collate(samples), device)
 
             def closure():
                 optim.zero_grad()
-                with torch.autocast("cuda", enabled=cfg.amp):
+                with torch.autocast("cuda", enabled=amp_enabled):
                     pred = model(batch["x"], batch["meta"], batch["geom"],
                                  batch["valid"])
                 h_hat = render_predicted(pred, batch, kernel)
@@ -305,12 +326,14 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
                         pred["center"][matched] - batch["truth"]["prim_center"][bi, mc],
                         dim=-1)
                     med_err = float(err.median()) if err.numel() else float("nan")
+                wall_s = time.perf_counter() - run_start
                 writer.writerow([step, epoch, float(parts["total"].detach()),
                                  float(parts["set"].detach()),
                                  float(parts["cpx"].detach()),
                                  float(parts["env"].detach()),
                                  float(parts["fft"].detach()),
-                                 float(parts["reg"].detach()), med_err, lr_now])
+                                 float(parts["reg"].detach()), med_err, lr_now,
+                                 wall_s])
                 log_f.flush()
                 now = time.perf_counter()
                 print(f"step {step} ({now - last_log:.1f}s) loss "
@@ -329,8 +352,9 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
                     print(f"DEGENERATE: {degen}", flush=True)
 
             if cfg.eval_every and step % cfg.eval_every == 0:
-                val = evaluate(model, val_ds, kernel, weights, cfg)
-                val_writer.writerow([step, val["val_loss"], val["val_med_center"]])
+                val = evaluate(model, val_ds, kernel, weights, cfg, device=device)
+                val_writer.writerow([step, val["val_loss"], val["val_med_center"],
+                                     time.perf_counter() - run_start])
                 val_f.flush()
                 print(f"val step {step}: loss {val['val_loss']:.4f} "
                       f"medCenter {val['val_med_center']:.3f}", flush=True)
