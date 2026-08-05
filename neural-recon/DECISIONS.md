@@ -365,3 +365,165 @@ Append dated entries. Never rewrite history; supersede with a new entry.
   dimension (single `SceneTensors` with a leading batch axis, one
   `render_scene` call) is a real GPU-throughput opportunity for later runs
   but is out of scope for the current sanity pass.
+
+## 2026-08-05 Sim-to-real CIR density gap found; GPU curriculum paused
+
+- Comparing a real capture (`datasets/chair-occupancy-2026-08-04`,
+  `aligned-cirs.ndjson`: 8414 records, N=5/20 links, `robust_grid`-fitted
+  64-tap magnitude/IQ, no `dgc`/`accum`/`cfo` fields — already a post-fit
+  "display" CIR) against synthetic stage-1/3 data found the real CIR is far
+  denser than anything the renderer produces: mean fraction of the 64 taps
+  with magnitude > 10% of peak is **42%** real vs **5.6%** synthetic
+  stage-1 (1-3 surfels) vs **4.6%** synthetic stage-3 (11.9 primitives/scene
+  avg, full hw noise model) — i.e. going from 2 to 11.9 primitives did not
+  move the needle at all. The real tail is genuine slowly-decaying
+  reverberant signal, not a noise-floor artifact: pre-marker region (taps
+  0-11) averages 1.2% of peak (clean) vs the tail (taps 45-63, 40+ taps
+  after the peak) averaging 8.2% of peak, ~7x the noise floor, decaying
+  smoothly from the peak. Root cause: UWBRender only models single-bounce
+  discrete-primitive echoes (one specular point per plane, one
+  Gaussian-broadened point per surfel), each inherently narrow (~8 taps);
+  no multi-bounce paths, no diffuse/rough-surface scattering, and the only
+  broadening mechanism (`hardware.py`'s `resid_fir`, 5 taps, strength 0.05)
+  is far too short to produce a 40+-tap decay. This is a structural
+  representation gap, not a "needs more scenes/noise tuning" one. User
+  paused further Vast.ai GPU spend pending this investigation (see the
+  now-stopped instance in the prior entries); training resumes only after
+  the fixes below are validated.
+- **Caveat (user): this is one dataset from one room.** `chair-occupancy-
+  2026-08-04` is a single reflective conference room (drywall, concrete
+  ceiling beam, an acoustic wall panel, a metal-legged table/chairs).
+  Other real environments will have different multipath density/decay.
+  All new randomized parameters below are therefore drawn from a *range*
+  per link/scene, not fixed to this one capture's point estimate, and are
+  explicitly flagged PROVISIONAL/single-dataset pending more captures.
+- **Network inputs simplified (user directive):** dropped the entire
+  per-link scalar metadata pathway (`metadata_vector`: marker offset,
+  log-gain, DGC, accum, CFO, observation time, missing-link flag) from
+  `HeimdallSetNet`. Rationale (user + investigation): DGC/accum/CFO are
+  hardware-transport artifacts needed only for `from_i16` and have no
+  equivalent in the real live-fitted CIR; the marker offset is already
+  fully consumed by `preprocess_cirs`'s alignment step (every CIR is
+  re-centered to the same fixed reference before the network sees it) and
+  its raw value would otherwise expose the live pipeline's own fit error
+  (Qorvo modem marker + our robust-grid/linear-ls fit) with no way for the
+  network to judge its reliability; the missing-link flag duplicates the
+  `link_valid` mask already used for attention masking. Network inputs are
+  now CIR channels (`preprocess_cirs`, I/Q + log-magnitude, unchanged) and
+  geometry (`geometry_features`) only — `LinkEncoder`/`HeimdallSetNet`
+  signatures drop `meta`/`meta_dim`, and `nrecon/train/data.py` stops
+  building it. This is a real architecture change to the already-tested
+  Phase 5 network and needs re-verifying with GPU sanity runs before
+  trusting further training.
+  - Follow-up (deferred, user): whether to also make phase explicit as
+    `cos(phase), sin(phase)` (never raw radians — wraps discontinuously at
+    +/-pi) alongside the existing I/Q + log-magnitude channels was
+    discussed but held for a later ablation. The phase used here is
+    already the *relative* phase after `preprocess_cirs` removes the
+    common per-link reference phase (correlation against the LOS
+    template), so it is not exposed to raw hardware CFO/oscillator drift
+    the way a naive absolute-phase feature would be. The open concern if
+    implemented: `cos/sin = I/mag, Q/mag` loses the free SNR-proportional
+    confidence weighting that raw I/Q has (a noisy near-zero-magnitude tap
+    contributes a full-strength unit vector once normalized), which matters
+    more now that the reverb-tail model below fills much of the window
+    with exactly that kind of low-magnitude, near-random-phase content;
+    would need an amplitude-based gate or an `eps`-guarded denominator.
+- **Real node-placement/frame investigation:** traced how
+  `deployment/radar-geometry.live-*.json`'s frame is built
+  (`unoq/dashboard/src/lib/positions.ts`/`BoardPositions.svelte`): node 0 =
+  origin, node 1 = +X axis, node 2 = XY-plane (its Z is *forced* to exactly
+  0 by the solver's parameterization, not measured), node 3 only resolves
+  the sign of Z; there is no IMU/leveling/gravity input anywhere in the
+  pipeline (confirmed by a repo-wide search), and the repo repeatedly
+  self-flags this frame as "not surveyed"
+  (`calibration_status: antenna-delay-not-independently-verified`).
+  User clarified the real deployment convention: nodes 0/1/2 are placed at
+  the same physical height (hand-leveled together — consistent with them
+  being the nodes chosen to define the frame's plane), node 3 is placed
+  higher, node 4 is placed anywhere but typically lower, and all pairwise
+  node distances stay within 0.5-4.0 m for this deployment.
+  `nrecon/sim/scenes.py::sample_nodes`'s `mode="random"` branch (used by
+  stage 4) is rewritten to follow this convention via rejection sampling
+  (`_MIN_SEPARATION=0.5`, `_MAX_SEPARATION=4.0`, replacing the old
+  generic "N=5 on a random circle, min separation 0.6 m" sampler that had
+  no connection to the real deployment).
+  - Because "same height" is hand-leveled (not laser-surveyed) and the
+    frame's Z-axis has no inherent gravity connection, a real room's true
+    walls will be tilted from this frame's Z-axis by some small, unmodeled
+    angle. User: "you can add a small randomized tilt, that's okay."
+    Added `_sample_room_tilt`/`_place_in_world` to `scenes.py`: a small
+    rigid rotation (`room.tilt_deg: [lo, hi]`, PROVISIONAL, `[0, 3]`
+    degrees in stage 3/4) about a random horizontal axis, applied to the
+    whole primitive set (walls, furniture, people, surfels — all built
+    assuming Z is true-vertical, then re-expressed in the node frame) about
+    the room's own center pivot. Drawn from the scene's object RNG (not the
+    per-layout RNG), so it stays fixed across `layouts_per_scene > 1`
+    layouts of one scene, preserving the existing "same scene objects,
+    different node layouts" contract
+    (`test_multiple_layouts_share_scene_objects`); a physically more
+    accurate per-layout tilt was considered and deferred since it would
+    require revisiting that contract.
+- **Two more bugs found while investigating:** (1) `_sample_room` used to
+  redraw its own independent `x, y, z` from the same config ranges
+  already drawn by `sample_scene()` for furniture/people/surfels — the
+  rendered walls and the scatter extent could silently disagree (and, per
+  a test failure this fix exposed, `test_room_plane_count_and_sizes`'s
+  `4 <= len(planes) <= 8` bound was already wrong/fragile — it counted
+  furniture-table planes too, which also have `type == PLANE`; only
+  happened to pass before because of exactly where the old buggy RNG
+  stream landed for that seed). Fixed: `_sample_room` now takes `x, y, z`
+  as parameters like the other samplers; the plane-count test now checks
+  `_sample_room`'s own output directly. (2) For `node_mode: "random"`, the
+  room box spans `[0, x_range] x [0, y_range]` while the old node sampler
+  centered nodes near the origin (including negative coordinates) —
+  nodes could fall outside/behind the room's own walls. The new
+  `sample_nodes` random-mode cluster is anchored at a positive-quadrant
+  point (`rng.uniform(0.5, 2.5, size=2)`), similar in scale to where
+  `fixed_live`'s real node cluster sits, rather than being re-centered to
+  zero-mean; not a rigorous fix for every possible room-size draw, but a
+  real improvement over the previous unconditional mismatch.
+- **Reverb-tail model added** (`nrecon/sim/hardware.py`): a lightweight
+  statistical late-multipath/diffuse-tail nuisance — single-cluster
+  Saleh-Valenzuela-style, i.i.d. complex Gaussian per-tap gain under an
+  exponentially-decaying power envelope starting `REVERB_ONSET_TAPS=4`
+  taps after the LOS/direct-path delay (avoids double-counting the direct
+  path's own ~8-tap pulse width). New `hw.reverb: [lo, hi]` (per-link
+  scale, log-uniform, as a fraction of that link's own rendered peak
+  amplitude — applied via `apply_reverb_tail` once the peak is known) and
+  `hw.reverb_decay_taps: [lo, hi]` (per-link decay time constant, taps).
+  Applied in `export.py::render_record` as a channel effect (before
+  `resid_fir`, which is downstream as a receiver-filter effect):
+  `render_scene -> apply_reverb_tail -> apply_resid_fir -> align -> quantize`.
+  Not applied to the network's own predicted-scene render
+  (`loop.py::render_predicted`) — like existing noise/resid_fir, it is a
+  target-side realism addition the network is trained to be robust to, not
+  something it predicts. New `reverb_tail` shard array
+  (`[L, S_TAPS, 2] f32`, real/imag, same storage pattern as `resid_fir`)
+  added to the schema (`validate.py`), write/read (`export.py`), and
+  `Nuisance` round-trip (`nuisance_from_record`); disabled by default
+  (all-zero) when `hw.reverb` is absent, so stages 1/2 and existing
+  configs are unaffected.
+  - Calibration (PROVISIONAL, single-dataset): iterated
+    `hw.reverb: [0.15, 0.6]` (measured 17.4% density on a 12-scene
+    stage-3 mini-build, up from 4.6% pre-reverb) then
+    `hw.reverb: [0.3, 1.0]`, `hw.reverb_decay_taps: [15.0, 30.0]`
+    (measured **28.9%**, std 17.2%, on the same mini-build) — a ~6.3x
+    density increase, most of the way to the real 42% without
+    over-fitting a randomized-range model to one noisy 12-scene sample
+    against one real capture. Set in `configs/dataset-stage3.yaml` and
+    `configs/dataset-stage4.yaml`; stage 1/2 remain deliberately simple/
+    noiseless per their own design intent.
+- Verified: 69/69 tests pass (2 new: `test_random_node_placement_convention`,
+  `test_room_tilt_disabled_by_default_enabled_when_configured` in
+  `test_scenes.py`; 1 new: `test_reverb_tail_increases_cir_density` in
+  `test_export.py`, plus `tilt_deg`/`reverb` added to the stage 3/4 test
+  fixtures so the existing determinism/consistency/schema checks exercise
+  the new fields). `datasets/stage1`, `stage1-mini`, and `stage3-mini`
+  rebuilt and re-validated locally (schema/manifest/determinism/
+  consistency/splits all PASSED) against the new shard schema.
+- Not yet done: re-running the GPU sanity pass against the updated network
+  (metadata removal) and the more-realistic stage-3/4 data before any
+  further curriculum training spend; regenerating `runs/fit` (Phase 4)
+  reports is not required since baselines/fit_scene.py is untouched by
+  this pass.

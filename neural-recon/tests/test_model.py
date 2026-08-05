@@ -12,7 +12,7 @@ from scipy.optimize import linear_sum_assignment
 from nrecon.constants import F0_MARKER, directed_links
 from nrecon.model.decoder import HEAD_DIM
 from nrecon.model.net import HeimdallSetNet
-from nrecon.model.preprocess import geometry_features, metadata_vector, preprocess_cirs
+from nrecon.model.preprocess import geometry_features, preprocess_cirs
 from nrecon.seeding import seed_all
 from nrecon.sim.export import build_scene_pipeline
 from nrecon.sim.pulse import correlation_kernel, make_template_v1
@@ -53,11 +53,9 @@ def _record_batch(n: int = 2, seeds=(400, 401)) -> dict:
 def _inputs(batch: dict, kernel: torch.Tensor, links, dtype=torch.float64):
     x = preprocess_cirs(batch["cir_i16"], batch["dgc"], batch["accum"],
                         batch["fp_aligned"], kernel).double()
-    meta = metadata_vector(batch["fp_aligned"], batch["dgc"], batch["accum"],
-                           batch["cfo"], batch["t_in_cycle"], batch["link_valid"]).double()
     geom = geometry_features(batch["node_pos"], links).double()
     valid = torch.as_tensor(batch["link_valid"])
-    return x, meta, geom, valid
+    return x, geom, valid
 
 
 def _make_net(dtype: torch.dtype = torch.float64) -> HeimdallSetNet:
@@ -70,8 +68,8 @@ def test_forward_shapes_full_and_masked():
     net = _make_net()
     links = directed_links(5)
     batch = _record_batch()
-    x, meta, geom, valid = _inputs(batch, _kernel(), links)
-    out = net(x, meta, geom, valid)
+    x, geom, valid = _inputs(batch, _kernel(), links)
+    out = net(x, geom, valid)
     for k, v in out.items():
         assert v.shape[0] == 2, k
         assert v.shape[1] == 48, k
@@ -85,7 +83,7 @@ def test_forward_shapes_full_and_masked():
     # partially masked link set
     valid_m = valid.clone()
     valid_m[0, [3, 7]] = False
-    out_m = net(x, meta, geom, valid_m)
+    out_m = net(x, geom, valid_m)
     assert torch.isfinite(out_m["center"]).all()
 
 
@@ -100,24 +98,23 @@ def test_node_relabel_invariance():
     links = directed_links(5)
     batch = _record_batch(seeds=(402, 403))
     kernel = _kernel()
-    x, meta, geom, valid = _inputs(batch, kernel, links)
+    x, geom, valid = _inputs(batch, kernel, links)
 
     sigma = [2, 4, 1, 0, 3]
     perm = np.asarray(sigma)
     # Relabeled link list: link k becomes (sigma(a_k), sigma(b_k)); the
-    # CIR/metadata stay at position k (the network is order-invariant).
-    # The position matrix must be permuted by the INVERSE permutation so
-    # that new_positions[sigma(a)] == old_positions[a].
+    # CIR stays at position k (the network is order-invariant). The
+    # position matrix must be permuted by the INVERSE permutation so that
+    # new_positions[sigma(a)] == old_positions[a].
     rel_links = [(perm[a], perm[b]) for a, b in links]
     inv = np.argsort(perm)
     x_p = x.clone()
-    meta_p = meta.clone()
     valid_p = valid.clone()
     geom_p = geometry_features(batch["node_pos"][:, inv], rel_links).double()
 
     net = _make_net()
-    out = net(x, meta, geom, valid)
-    out_p = net(x_p, meta_p, geom_p, valid_p)
+    out = net(x, geom, valid)
+    out_p = net(x_p, geom_p, valid_p)
 
     # match slots by parameter distance (Hungarian)
     def param_vec(o):
@@ -137,19 +134,17 @@ def test_missing_link_mask_correctness():
     links = directed_links(5)
     batch = _record_batch(seeds=(404,))
     kernel = _kernel()
-    x, meta, geom, valid = _inputs(batch, kernel, links)
+    x, geom, valid = _inputs(batch, kernel, links)
 
     net = _make_net()
     valid_m = valid.clone()
     valid_m[0, 5] = False
-    out_masked = net(x, meta, geom, valid_m)
+    out_masked = net(x, geom, valid_m)
 
     # under the same mask, the masked link's CIR content must not matter
     x_zero = x.clone()
     x_zero[0, 5] = 0.0
-    meta_zero = meta.clone()
-    meta_zero[0, 5] = 0.0
-    out_zero = net(x_zero, meta_zero, geom, valid_m)
+    out_zero = net(x_zero, geom, valid_m)
     for k in ("center", "rot6d", "scale_log", "presence", "type_logits"):
         assert torch.allclose(out_masked[k], out_zero[k], atol=1e-9), k
 
@@ -176,12 +171,12 @@ def test_deterministic_algorithms_and_seeding():
     links = directed_links(5)
     batch = _record_batch(seeds=(407,))
     kernel = _kernel()
-    x, meta, geom, valid = _inputs(batch, kernel, links)
+    x, geom, valid = _inputs(batch, kernel, links)
     net = _make_net()
     with torch.no_grad():
-        o1 = net(x, meta, geom, valid)["center"].clone()
+        o1 = net(x, geom, valid)["center"].clone()
     seed_all(85)
     net = _make_net()
     with torch.no_grad():
-        o2 = net(x, meta, geom, valid)["center"]
+        o2 = net(x, geom, valid)["center"]
     assert torch.equal(o1, o2)

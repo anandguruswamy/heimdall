@@ -2,8 +2,10 @@
 
 Four residual 1D-CNN stages (widths 32/64/96/128, kernels 7/5/5/3, strided
 downsampling, GroupNorm, GELU) with attention pooling to e_cir in R^128;
-metadata MLP, Fourier-feature geometry MLP, and a learned direction-role
-embedding; the token sum per Eq. (12).
+Fourier-feature geometry MLP and a learned direction-role embedding; the
+token sum per Eq. (12) (minus the metadata term -- see preprocess.py's
+module docstring for the 2026-08-05 deviation dropping the per-link
+scalar metadata input).
 """
 
 from __future__ import annotations
@@ -33,10 +35,10 @@ class ResidualConvStage(nn.Module):
 
 
 class LinkEncoder(nn.Module):
-    """[B, L, 64, 3] CIR channels + [B, L, M] metadata + [B, L, 10] geometry
-    -> [B, L, 128] link tokens."""
+    """[B, L, 64, 3] CIR channels + [B, L, 10] geometry -> [B, L, 128] link
+    tokens."""
 
-    def __init__(self, d_model: int = 128, meta_dim: int = 7, geom_dim: int = 11,
+    def __init__(self, d_model: int = 128, geom_dim: int = 11,
                  fourier_bands: int = 5):
         super().__init__()
         widths = (32, 64, 96, 128)
@@ -51,16 +53,13 @@ class LinkEncoder(nn.Module):
             nn.Linear(128, 128), nn.GELU(), nn.Linear(128, 1))
         self.e_cir_proj = nn.Linear(128, d_model)
 
-        self.meta_mlp = nn.Sequential(
-            nn.Linear(meta_dim, 64), nn.GELU(), nn.Linear(64, d_model))
         fourier_out = 2 * fourier_bands * geom_dim
         self.geom_mlp = nn.Sequential(
             nn.Linear(fourier_out, 128), nn.GELU(), nn.Linear(128, d_model))
         self.role_emb = nn.Embedding(2, d_model)
         self.fourier = FourierFeatures(fourier_bands)
 
-    def forward(self, x: torch.Tensor, meta: torch.Tensor,
-                geom: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, geom: torch.Tensor) -> torch.Tensor:
         b, l = x.shape[:2]
         h = x.reshape(b * l, 3, -1)
         for stage in self.stages:
@@ -69,14 +68,13 @@ class LinkEncoder(nn.Module):
         e_cir = (h.transpose(1, 2) * att.unsqueeze(-1)).sum(dim=1)
         e_cir = self.e_cir_proj(e_cir).reshape(b, l, -1)
 
-        e_meta = self.meta_mlp(meta)
         e_geom = self.geom_mlp(self.fourier(geom))
         # learned direction role keyed by a label-invariant geometric
         # quantity: the baseline direction's world-frame x-sign
         # (geom columns 6:9 are (p_j' - p_i'))
         role = (geom[..., 6] >= 0).long()
         e_role = self.role_emb(role)
-        return e_cir + e_meta + e_geom + e_role
+        return e_cir + e_geom + e_role
 
 
 class FourierFeatures(nn.Module):

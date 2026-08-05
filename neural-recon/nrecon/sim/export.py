@@ -18,7 +18,13 @@ import torch
 
 from nrecon.constants import G_MAX, N_NODES, S_TAPS, directed_links
 from nrecon.sim.delay import fractional_shift
-from nrecon.sim.hardware import Nuisance, RESID_TAPS, apply_resid_fir, sample_nuisance
+from nrecon.sim.hardware import (
+    Nuisance,
+    RESID_TAPS,
+    apply_resid_fir,
+    apply_reverb_tail,
+    sample_nuisance,
+)
 from nrecon.sim.quantize import to_i16
 from nrecon.sim.render import render_scene
 from nrecon.sim.scenes import SceneSpec, sample_scene, spec_to_scene
@@ -72,8 +78,11 @@ def render_record(spec: SceneSpec, nuis: Nuisance, kernel: torch.Tensor,
                      noise_std=noise_std, noise_seed=noise_seed)
     h_np = h.numpy()
 
-    # residual FIR then alignment (marker + hardware peak offset)
-    h_fir = apply_resid_fir(h_np, nuis.resid_fir)
+    # late-multipath/diffuse tail (channel effect), then residual FIR
+    # (receiver-filter effect, applied downstream of the channel), then
+    # alignment (marker + hardware peak offset)
+    h_reverb = apply_reverb_tail(h_np, nuis.reverb_tail)
+    h_fir = apply_resid_fir(h_reverb, nuis.resid_fir)
     align = torch.as_tensor(nuis.fp_taps + nuis.peak_offset, dtype=torch.float64)
     h_al = fractional_shift(torch.as_tensor(h_fir, dtype=torch.complex128), align).numpy()
 
@@ -138,6 +147,8 @@ def _nuisance_arrays(nuis: Nuisance) -> dict:
         "link_phase": nuis.phase.astype(np.float32),
         "noise_std": nuis.noise_std.astype(np.float32),
         "resid_fir": np.stack([nuis.resid_fir.real, nuis.resid_fir.imag], axis=-1).astype(np.float32),
+        "reverb_tail": np.stack([nuis.reverb_tail.real, nuis.reverb_tail.imag],
+                                axis=-1).astype(np.float32),
     }
 
 
@@ -169,6 +180,7 @@ def spec_from_record(rec: dict, scene_index: int) -> SceneSpec:
 def nuisance_from_record(rec: dict) -> Nuisance:
     n = rec["link_gain"].shape[0]
     resid = rec["resid_fir"][..., 0] + 1j * rec["resid_fir"][..., 1]
+    reverb = rec["reverb_tail"][..., 0] + 1j * rec["reverb_tail"][..., 1]
     return Nuisance(
         gain=rec["link_gain"], phase=rec["link_phase"], noise_std=rec["noise_std"],
         dgc=rec["dgc"], accum=rec["accum"], cfo=rec["cfo"],
@@ -176,6 +188,7 @@ def nuisance_from_record(rec: dict) -> Nuisance:
         peak_offset=np.zeros(n),
         resid_fir=resid, missing=~rec["link_valid"],
         t_in_cycle=rec["t_in_cycle"],
+        reverb_tail=reverb,
     )
 
 
@@ -188,7 +201,7 @@ def write_shard(path: Path, records: list, manifest_lines: list) -> None:
     for lkey in ("prim_type", "prim_present", "prim_center", "prim_rot", "prim_scale",
                  "prim_rho", "prim_rough", "prim_atten", "prim_dynamic"):
         arrays[lkey] = np.stack([r["labels"][lkey] for r in records])
-    for nkey in ("link_gain", "link_phase", "noise_std", "resid_fir"):
+    for nkey in ("link_gain", "link_phase", "noise_std", "resid_fir", "reverb_tail"):
         arrays[nkey] = np.stack([r["nuisance"][nkey] for r in records])
     np.savez_compressed(path.with_suffix(".npz"), **arrays)
     with open(path.with_suffix(".manifest.jsonl"), "a", encoding="utf-8") as f:

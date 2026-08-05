@@ -1,6 +1,11 @@
-# Stage 4 (Algorithm 1 step 4): randomized non-degenerate N=5 layouts,
-# two layouts per scene (same objects, different node geometry); full
-# nuisance like stage 3.
+# Stage 4 (Algorithm 1 step 4): randomized non-degenerate N=5 layouts
+# (real deployment convention, 2026-08-05: nodes 0/1/2 share one height,
+# node 3 higher, node 4 typically lower, pairwise 0.5-4.0 m -- see
+# nrecon/sim/scenes.py::sample_nodes), two layouts per scene (same
+# objects, different node geometry); full nuisance like stage 3. tilt_deg
+# and hw.reverb/reverb_decay_taps are PROVISIONAL, single-dataset-
+# calibrated additions closing the measured sim-to-real CIR-density gap
+# -- see DECISIONS.md.
 stage: 4
 scenes: 10000
 base_seed: 300000
@@ -13,6 +18,7 @@ room:
   z_max: [2.2, 3.2]
   partitions: [0, 2]
   planes: true
+  tilt_deg: [0.0, 3.0]
 surfels: {count: [1, 4]}
 furniture: {count: [0, 3]}
 people: {count: [0, 2], height: [1.5, 1.95], radius: [0.12, 0.22]}
@@ -28,3 +34,5 @@ hw:
   resid: 0.05
   missing_link_p: 0.02
   false_fp_p: 0.005
+  reverb: [0.3, 1.0]
+  reverb_decay_taps: [15.0, 30.0]

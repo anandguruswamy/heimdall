@@ -53,6 +53,7 @@ SCHEMA = {
     "link_phase": (np.float32, (None, 20)),
     "noise_std": (np.float32, (None, 20)),
     "resid_fir": (np.float32, (None, 20, 5, 2)),
+    "reverb_tail": (np.float32, (None, 20, S_TAPS, 2)),
 }
 
 MANIFEST_KEYS = ("index", "scene_seed", "layout_index", "room_id", "layout_id",

@@ -1,9 +1,10 @@
 """Shard dataset and batched collate for the trainer.
 
-Produces network inputs (preprocessed channels, metadata, geometry),
-the ground-truth label dict, and the LOS-at-0 target CIRs for the
-renderer-in-the-loop loss. Stage 4 supports per-epoch node-label
-permutation augmentation (Algorithm 1 step 4).
+Produces network inputs (preprocessed channels, geometry -- no per-link
+scalar metadata, see nrecon/model/preprocess.py), the ground-truth label
+dict, and the LOS-at-0 target CIRs for the renderer-in-the-loop loss.
+Stage 4 supports per-epoch node-label permutation augmentation
+(Algorithm 1 step 4).
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import numpy as np
 import torch
 
 from nrecon.constants import directed_links
-from nrecon.model.preprocess import geometry_features, metadata_vector, preprocess_cirs
+from nrecon.model.preprocess import geometry_features, preprocess_cirs
 from nrecon.sim.export import read_shard
 from nrecon.sim.quantize import from_i16
 from nrecon.sim.delay import fractional_shift
@@ -63,7 +64,7 @@ class ShardDataset:
         return self._prepare(rec)
 
     def _prepare(self, rec: dict, perm: np.ndarray = None) -> dict:
-        """One record -> (x, meta, geom, valid, truth, target)."""
+        """One record -> (x, geom, valid, truth, target)."""
         node_pos = rec["node_pos"]
         link_order = list(range(20))
         links = self.links
@@ -77,12 +78,9 @@ class ShardDataset:
         dgc = rec["dgc"][idx]
         accum = rec["accum"][idx]
         fp = rec["fp_aligned"][idx]
-        cfo = rec["cfo"][idx]
-        tic = rec["t_in_cycle"][idx]
         valid = rec["link_valid"][idx]
 
         x = preprocess_cirs(cir, dgc, accum, fp, self.kernel).to(self.dtype)
-        meta = metadata_vector(fp, dgc, accum, cfo, tic, valid).to(self.dtype)
         geom = geometry_features(node_pos, links).to(self.dtype)
 
         h = torch.as_tensor(from_i16(cir, dgc, accum))
@@ -99,7 +97,7 @@ class ShardDataset:
             "prim_scale": torch.as_tensor(rec["prim_scale"], dtype=self.dtype),
             "prim_rho": torch.as_tensor(rec["prim_rho"], dtype=self.dtype),
         }
-        return {"x": x, "meta": meta, "geom": geom,
+        return {"x": x, "geom": geom,
                 "valid": torch.as_tensor(valid, dtype=torch.bool),
                 "truth": truth, "target": target,
                 "node_pos": torch.as_tensor(node_pos, dtype=self.dtype)}
@@ -118,7 +116,7 @@ class ShardDataset:
 
 def collate(samples: list) -> dict:
     out = {}
-    for k in ("x", "meta", "geom", "target", "node_pos"):
+    for k in ("x", "geom", "target", "node_pos"):
         out[k] = torch.stack([s[k] for s in samples])
     out["valid"] = torch.stack([s["valid"] for s in samples])
     t = samples[0]["truth"]

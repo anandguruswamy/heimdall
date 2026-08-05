@@ -10,7 +10,7 @@ loads the fixed live geometry with optional jitter.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -28,7 +28,8 @@ SURFEL_T = SURFEL
 CAPSULE_T = CAPSULE
 
 _COPLANAR_SV = 0.1  # smallest singular value threshold for non-coplanarity (PROVISIONAL)
-_MIN_SEPARATION = 0.6  # metres (PROVISIONAL)
+_MIN_SEPARATION = 0.5  # metres (PROVISIONAL; user-specified real deployment bound, 2026-08-05)
+_MAX_SEPARATION = 4.0  # metres (PROVISIONAL; user-specified real deployment bound, 2026-08-05)
 
 
 @dataclass
@@ -67,11 +68,16 @@ def _draw(rng: np.random.Generator, lo: float, hi: float) -> float:
     return float(rng.uniform(lo, hi))
 
 
-def _sample_room(rng: np.random.Generator, cfg: dict) -> list:
-    """4-8 finite planes: shoebox + optional partitions (PROVISIONAL sizes)."""
-    x = _draw(rng, cfg["x_range"][0], cfg["x_range"][1])
-    y = _draw(rng, cfg["y_range"][0], cfg["y_range"][1])
-    z = _draw(rng, cfg["z_max"][0], cfg["z_max"][1])
+def _sample_room(rng: np.random.Generator, cfg: dict, x: float, y: float,
+                 z: float) -> list:
+    """4-8 finite planes: shoebox + optional partitions (PROVISIONAL sizes).
+
+    `x`, `y`, `z` are the room's already-drawn extent (shared with
+    `_sample_furniture`/`_sample_people`/`_sample_surfel_cloud` -- this
+    function used to redraw its own independent x/y/z from the same
+    ranges, so the rendered walls and the furniture/people/surfel scatter
+    extent could silently disagree; fixed 2026-08-05).
+    """
     cx, cy, cz = x / 2.0, y / 2.0, z / 2.0
     planes = [
         PrimitiveSpec(PLANE_T, np.array([0.0, cy, cz]), rotation_from_normal(np.array([1.0, 0.0, 0.0])),
@@ -174,9 +180,59 @@ def _sample_surfel_cloud(rng: np.random.Generator, cfg: dict, x: float, y: float
     return surfels
 
 
+def _sample_room_tilt(rng: np.random.Generator, tilt_deg_range) -> np.ndarray:
+    """Small rigid tilt between the room's true vertical and the node
+    frame's z-axis (PROVISIONAL; user, 2026-08-05).
+
+    The board-derived frame (`deployment/radar-geometry.live-*.json`) has
+    no inherent connection to gravity: its z-axis is a pure artifact of
+    range-fitting nodes 0/1/2 as origin/+X-axis/+Y-plane (see DECISIONS.md)
+    -- there is no IMU or leveling step anywhere in the geometry pipeline.
+    Even with nodes 0/1/2 placed at matching heights by deployment
+    convention, hand-leveling is imprecise, so a real room's true walls
+    will be tilted from that frame's z-axis by a small, otherwise
+    unmodeled angle. `tilt_deg_range` is `[lo, hi]` degrees; `None`/an
+    upper bound of 0 disables the tilt (identity rotation, and no `rng`
+    draw is consumed, so untilted configs are unaffected by this feature).
+    """
+    if not tilt_deg_range or tilt_deg_range[1] <= 0.0:
+        return np.eye(3)
+    theta = np.radians(_draw(rng, tilt_deg_range[0], tilt_deg_range[1]))
+    axis_angle = rng.uniform(0.0, 2.0 * np.pi)
+    axis = np.array([np.cos(axis_angle), np.sin(axis_angle), 0.0])  # horizontal tilt axis
+    k = np.array([[0.0, -axis[2], axis[1]],
+                  [axis[2], 0.0, -axis[0]],
+                  [-axis[1], axis[0], 0.0]])
+    return np.eye(3) + np.sin(theta) * k + (1.0 - np.cos(theta)) * (k @ k)
+
+
+def _place_in_world(primitives: list, tilt_r: np.ndarray, pivot: np.ndarray) -> list:
+    """Apply the room tilt (rotation about `pivot`) to every primitive.
+
+    All primitives (walls, furniture, people, surfels) are built assuming
+    z is true vertical; `tilt_r` re-expresses that "true" scene in the
+    node/board frame, whose z-axis may be slightly off gravity (see
+    `_sample_room_tilt`). Identity `tilt_r` is a no-op copy.
+    """
+    out = []
+    for p in primitives:
+        center = pivot + tilt_r @ (p.center - pivot)
+        rot = tilt_r @ p.rot
+        out.append(replace(p, center=center, rot=rot))
+    return out
+
+
 def sample_nodes(rng: np.random.Generator, cfg: dict, mode: str = "random",
                  jitter_m: float = 0.0) -> np.ndarray:
-    """N=5 non-coplanar perimeter layouts (random) or fixed live geometry."""
+    """N=5 layouts: `mode="fixed_live"` loads the surveyed/range-derived
+    live geometry; `mode="random"` follows the real deployment convention
+    (user, 2026-08-05): nodes 0/1/2 are placed at the same height (they
+    are hand-leveled together and are the nodes that define the frame's
+    origin/+X-axis/+Y-plane -- see `_sample_room_tilt`), node 3 sits
+    higher, node 4 is placed anywhere but typically lower; every pairwise
+    distance stays within `[_MIN_SEPARATION, _MAX_SEPARATION]` (typical
+    tripod spacing for this deployment).
+    """
     if mode == "fixed_live":
         data = json.loads(LIVE_GEOMETRY.read_text(encoding="utf-8"))
         rows = sorted(data["nodes"], key=lambda r: r["node_id"])
@@ -186,27 +242,39 @@ def sample_nodes(rng: np.random.Generator, cfg: dict, mode: str = "random",
         return nodes
 
     n = 5
-    for _ in range(64):
-        radius = _draw(rng, 1.5, 3.5)
-        angles = np.sort(rng.uniform(0.0, 2.0 * np.pi, size=n))
-        nodes = np.stack([radius * np.cos(angles), radius * np.sin(angles),
-                          rng.uniform(0.0, 1.5, size=n)], axis=-1)
-        nodes = nodes - nodes.mean(axis=0)
-        if _min_sep(nodes) < _MIN_SEPARATION:
+    for _ in range(256):
+        # Positive-quadrant anchor (similar scale to the live deployment)
+        # rather than an origin-centered cluster, so random-mode nodes sit
+        # in roughly the same region of the configured room extent that
+        # fixed_live's node cluster does.
+        center = rng.uniform(0.5, 2.5, size=2)
+        z012 = _draw(rng, 0.2, 1.2)
+        radius012 = _draw(rng, 0.3, 1.3)
+        angles012 = rng.uniform(0.0, 2.0 * np.pi, size=3)
+        xy012 = center + radius012 * np.stack(
+            [np.cos(angles012), np.sin(angles012)], axis=-1)
+        z3 = z012 + _draw(rng, 0.3, 2.0)  # node 3: higher
+        xy3 = center + rng.uniform(-1.2, 1.2, size=2)
+        z4 = max(0.0, z012 + _draw(rng, -1.0, 0.4))  # node 4: typically lower
+        xy4 = center + rng.uniform(-1.3, 1.3, size=2)
+
+        nodes = np.array([
+            [xy012[0, 0], xy012[0, 1], z012],
+            [xy012[1, 0], xy012[1, 1], z012],
+            [xy012[2, 0], xy012[2, 1], z012],
+            [xy3[0], xy3[1], z3],
+            [xy4[0], xy4[1], z4],
+        ])
+
+        dist = np.linalg.norm(nodes[:, None, :] - nodes[None, :, :], axis=-1)
+        pair_d = dist[np.triu_indices(n, k=1)]
+        if pair_d.min() < _MIN_SEPARATION or pair_d.max() > _MAX_SEPARATION:
             continue
         centered = nodes - nodes.mean(axis=0)
         sv = np.linalg.svd(centered, compute_uv=False)
         if sv[-1] > _COPLANAR_SV and sv[1] > 0.5:
             return nodes
     raise RuntimeError("could not sample a non-coplanar layout")
-
-
-def _min_sep(nodes: np.ndarray) -> float:
-    best = np.inf
-    for i in range(len(nodes)):
-        for j in range(i + 1, len(nodes)):
-            best = min(best, float(np.linalg.norm(nodes[i] - nodes[j])))
-    return best
 
 
 def sample_scene(seed: int, cfg: dict, layout_index: int = 0) -> SceneSpec:
@@ -225,13 +293,21 @@ def sample_scene(seed: int, cfg: dict, layout_index: int = 0) -> SceneSpec:
 
     primitives = []
     if room_cfg.get("planes", True):
-        primitives += _sample_room(rng, room_cfg)
+        primitives += _sample_room(rng, room_cfg, x, y, z)
     primitives += _sample_furniture(rng, cfg.get("furniture", {"count": [0, 0]}), x, y, z)
     primitives += _sample_people(rng, cfg.get("people", {"count": [0, 0]}), x, y, z)
     primitives += _sample_surfel_cloud(rng, cfg.get("surfels", {"count": [0, 0]}), x, y, z)
 
     if len(primitives) > G_MAX:
         primitives = primitives[:G_MAX]
+
+    # Small optional room tilt (see _sample_room_tilt), drawn from the
+    # same object RNG as the primitives (not the per-layout RNG) so it
+    # stays fixed across layouts of one scene, matching the existing
+    # "same scene objects, different node layouts" contract.
+    tilt_r = _sample_room_tilt(rng, room_cfg.get("tilt_deg"))
+    pivot = np.array([x / 2.0, y / 2.0, z / 2.0])
+    primitives = _place_in_world(primitives, tilt_r, pivot)
 
     layout_rng = np.random.Generator(
         np.random.PCG64(seed ^ (0x9E3779B97F4A7C15 * (layout_index + 1)))

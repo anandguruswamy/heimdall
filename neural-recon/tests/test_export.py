@@ -42,25 +42,27 @@ CONFIGS = {
         "stage": 3, "scenes": 8, "base_seed": 200000, "node_mode": "fixed_live",
         "jitter_m": 0.03, "layouts_per_scene": 1,
         "room": {"x_range": [3, 8], "y_range": [3, 8], "z_max": [2.2, 3.2],
-                 "partitions": [0, 2], "planes": True},
+                 "partitions": [0, 2], "planes": True, "tilt_deg": [0.0, 3.0]},
         "surfels": {"count": [1, 4]}, "furniture": {"count": [0, 3]},
         "people": {"count": [0, 2], "height": [1.5, 1.95], "radius": [0.12, 0.22]},
         "hw": {"gain_db": [0.0, 1.5], "phase": True, "noise_std": [0.002, 0.6],
                "dgc": [3, 6], "accum": [40, 200], "cfo_ppm": [0.0, 10.0],
                "fp_jitter": 0.15, "peak_offset": [1.69, 0.2], "resid": 0.05,
-               "missing_link_p": 0.02, "false_fp_p": 0.005},
+               "missing_link_p": 0.02, "false_fp_p": 0.005,
+               "reverb": [0.3, 1.0], "reverb_decay_taps": [15.0, 30.0]},
     },
     4: {
         "stage": 4, "scenes": 8, "base_seed": 300000, "node_mode": "random",
         "jitter_m": 0.0, "layouts_per_scene": 2,
         "room": {"x_range": [3, 8], "y_range": [3, 8], "z_max": [2.2, 3.2],
-                 "partitions": [0, 2], "planes": True},
+                 "partitions": [0, 2], "planes": True, "tilt_deg": [0.0, 3.0]},
         "surfels": {"count": [1, 4]}, "furniture": {"count": [0, 3]},
         "people": {"count": [0, 2], "height": [1.5, 1.95], "radius": [0.12, 0.22]},
         "hw": {"gain_db": [0.0, 1.5], "phase": True, "noise_std": [0.002, 0.6],
                "dgc": [3, 6], "accum": [40, 200], "cfo_ppm": [0.0, 10.0],
                "fp_jitter": 0.15, "peak_offset": [1.69, 0.2], "resid": 0.05,
-               "missing_link_p": 0.02, "false_fp_p": 0.005},
+               "missing_link_p": 0.02, "false_fp_p": 0.005,
+               "reverb": [0.3, 1.0], "reverb_decay_taps": [15.0, 30.0]},
     },
 }
 
@@ -148,3 +150,39 @@ def test_missing_links_zeroed(tmp_path):
     missing = ~data["link_valid"]
     assert np.any(missing)
     assert np.all(data["cir_i16"][missing] == 0)
+
+
+def _density(data: dict) -> float:
+    """Mean fraction of the 64 taps with magnitude > 10% of that link's
+    peak (the sim-to-real CIR-density metric from DECISIONS.md 2026-08-05)."""
+    from nrecon.sim.quantize import from_i16
+
+    fracs = []
+    for s in range(data["cir_i16"].shape[0]):
+        h = from_i16(data["cir_i16"][s], data["dgc"][s], data["accum"][s])
+        mag = np.abs(h)
+        for l in range(mag.shape[0]):
+            if not data["link_valid"][s, l]:
+                continue
+            m = mag[l]
+            fracs.append(float((m > 0.1 * m.max()).sum()) / len(m))
+    return float(np.mean(fracs))
+
+
+def test_reverb_tail_increases_cir_density(tmp_path):
+    """The reverb-tail nuisance (DECISIONS.md 2026-08-05, closing the
+    measured sim-to-real CIR-density gap) must measurably densify the
+    exported CIRs, and its absence must leave the schema/shape unaffected
+    (all-zero reverb_tail array, matching stages 1/2 which never set
+    hw.reverb)."""
+    with_reverb = read_shard(_build_mini(3, tmp_path / "with") / "shard-000000")
+    cfg_no_reverb = dict(CONFIGS[3])
+    cfg_no_reverb["hw"] = {k: v for k, v in CONFIGS[3]["hw"].items()
+                           if k not in ("reverb", "reverb_decay_taps")}
+    out = tmp_path / "without" / "stage3"
+    build_dataset(cfg_no_reverb, out, _kernel())
+    without_reverb = read_shard(out / "shard-000000")
+
+    assert np.any(with_reverb["reverb_tail"] != 0.0)
+    assert np.all(without_reverb["reverb_tail"] == 0.0)
+    assert _density(with_reverb) > 2.0 * _density(without_reverb)

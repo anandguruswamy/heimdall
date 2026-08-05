@@ -110,7 +110,7 @@ def evaluate(model: torch.nn.Module, ds: ShardDataset, kernel: torch.Tensor,
             batch = collate([sample])
             if device is not None:
                 batch = to_device(batch, device)
-            pred = model(batch["x"], batch["meta"], batch["geom"], batch["valid"])
+            pred = model(batch["x"], batch["geom"], batch["valid"])
             h_hat = render_predicted(pred, batch, kernel)
             parts = total_loss(pred, batch["truth"], h_hat, batch["target"],
                                batch["valid"], weights)
@@ -288,8 +288,7 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
             def closure():
                 optim.zero_grad()
                 with torch.autocast("cuda", enabled=amp_enabled):
-                    pred = model(batch["x"], batch["meta"], batch["geom"],
-                                 batch["valid"])
+                    pred = model(batch["x"], batch["geom"], batch["valid"])
                 h_hat = render_predicted(pred, batch, kernel)
                 parts = total_loss(pred, batch["truth"], h_hat, batch["target"],
                                    batch["valid"], weights)

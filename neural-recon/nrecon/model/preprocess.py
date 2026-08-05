@@ -4,9 +4,23 @@ and real data.
 Synthetic path: `from_i16` scaling (Eq. (7)), fractional alignment of the
 first path to marker F0 = 16 (Eq. (8)), common-phase removal against the
 direct-path template with robust per-link amplitude normalization (Eq. (9)),
-then the three sample channels of Eq. (10) plus the metadata vector and
-geometry features of Eq. (11). Real-data source (Phase 8): the live UNO Q
-aligned/fitted CIR is accepted as-is with its fit metadata.
+then the three sample channels of Eq. (10) plus geometry features of
+Eq. (11). Real-data source (Phase 8): the live UNO Q aligned/fitted CIR is
+accepted as-is (its own gain/phase/timing fit already performs the
+alignment this module does for synthetic data).
+
+DEVIATION (2026-08-05, user directive; see DECISIONS.md): the paper's
+per-link scalar metadata (marker offset, log-gain, DGC, accum, CFO,
+observation time, missing-link flag) is dropped as a network input.
+Rationale: DGC/accum/CFO are hardware-transport artifacts with no
+equivalent in the real live-fitted CIR (see DECISIONS.md); the marker
+offset is already fully consumed by the alignment step above (every CIR,
+synthetic or real, is re-centered to the same fixed reference before the
+network ever sees it) and its raw value carries residual real-hardware fit
+error the network cannot interpret; the missing-link flag duplicates the
+`link_valid` mask already passed separately for attention masking. Network
+inputs are therefore CIR channels (`preprocess_cirs`) plus geometry
+(`geometry_features`) only.
 """
 
 from __future__ import annotations
@@ -60,25 +74,6 @@ def sample_kernel_1d(kernel: torch.Tensor, offsets: torch.Tensor) -> torch.Tenso
     from nrecon.sim.delay import sample_kernel
 
     return sample_kernel(kernel, offsets)
-
-
-def metadata_vector(fp_aligned: np.ndarray, dgc: np.ndarray, accum: np.ndarray,
-                    cfo: np.ndarray, t_in_cycle: np.ndarray,
-                    link_valid: np.ndarray, log_gain: np.ndarray = None) -> torch.Tensor:
-    """Scalar metadata [..., L, M]: marker f_ij, log a_ij, DGC, accum, CFO,
-    quality flags, normalized observation time, missing-link mask (paper
-    Sec. IV-B)."""
-    m_fp = torch.as_tensor(fp_aligned - F0_MARKER, dtype=torch.float32)[..., None]
-    if log_gain is None:
-        m_gain = torch.zeros_like(m_fp)
-    else:
-        m_gain = torch.as_tensor(np.log(log_gain), dtype=torch.float32)[..., None]
-    m_dgc = torch.as_tensor(dgc, dtype=torch.float32)[..., None] / 16.0
-    m_accum = torch.as_tensor(accum, dtype=torch.float32)[..., None] / 256.0
-    m_cfo = torch.as_tensor(cfo, dtype=torch.float32)[..., None] / 100.0
-    m_t = torch.as_tensor(t_in_cycle, dtype=torch.float32)[..., None] / 35e-3
-    m_valid = torch.as_tensor(~link_valid, dtype=torch.float32)[..., None]
-    return torch.cat([m_fp, m_gain, m_dgc, m_accum, m_cfo, m_t, m_valid], dim=-1)
 
 
 def geometry_features(node_pos: np.ndarray, links) -> torch.Tensor:
