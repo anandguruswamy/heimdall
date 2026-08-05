@@ -71,7 +71,7 @@
   let lastLiveUpdateAt = 0;
   const LIVE_UPDATE_INTERVAL_MS = 1_000;
   let displayChannel = $state<MapDisplayChannel>('confidence');
-  let minConfidence = $state(0.2);
+  let minConfidence = $state(0);
 
   const liveGeometry = $derived(geometryFromBoardFreeze(live.boardFreeze));
   const datasetGeometry = $derived(dataset?.geometry ?? null);
@@ -98,6 +98,7 @@
       : null
   );
   const nodes = $derived(geometry?.positions ?? []);
+  const hasLinkData = $derived((activeSnapshot?.profiles.length ?? 0) > 0);
   const voxelCount = $derived(
     activeSnapshot
       ? activeSnapshot.grid.shape[0] * activeSnapshot.grid.shape[1] * activeSnapshot.grid.shape[2]
@@ -478,10 +479,15 @@
         <strong>NO ANTENNA GEOMETRY</strong>
         <p>Radar mapping needs node antenna phase-centre coordinates. Freeze the board on the Board Positions tab to derive them from live ranging; the map will show the range-derived-geometry warning.</p>
       </div>
-    {:else if !cloud || !cloud.points.length}
+    {:else if !hasLinkData}
       <div class="prompt panel">
         <strong>WAITING FOR ALIGNED CIRS</strong>
         <p>The Radar Map tab is rebuilding from the live aligned-CIR stream. Keep this tab open while per-link histories fill, then use FREEZE MAP to hold a reconstructed window.</p>
+      </div>
+    {:else if !cloud || !cloud.points.length}
+      <div class="prompt panel">
+        <strong>NO VOXELS ABOVE DISPLAY THRESHOLD</strong>
+        <p>Aligned CIRs are streaming and {activeSnapshot?.profiles.length ?? 0} link{(activeSnapshot?.profiles.length ?? 0) === 1 ? '' : 's'} qualified, but nothing cleared the current display gate. {isSoftMode && displayChannel === 'confidence' ? 'Lower MIN CONFIDENCE or EVIDENCE PERCENTILE, or switch to the intensity channel.' : 'Lower EVIDENCE PERCENTILE, or relax the mode\'s support thresholds.'}</p>
       </div>
     {/if}
   {:else}
@@ -495,10 +501,15 @@
         <strong>DATASET HAS NO GEOMETRY</strong>
         <p>The imported zip does not contain a <code>board_positions</code> geometry block, so no map can be built.</p>
       </div>
-    {:else if !cloud || !cloud.points.length}
+    {:else if !hasLinkData}
       <div class="prompt panel">
         <strong>NO FRAMES AT THIS INSTANT</strong>
         <p>No qualified aligned CIR frames fall in the nearest-{frames}-frame window at the scrubbed time. Move the scrub bar or adjust the frame gate.</p>
+      </div>
+    {:else if !cloud || !cloud.points.length}
+      <div class="prompt panel">
+        <strong>NO VOXELS ABOVE DISPLAY THRESHOLD</strong>
+        <p>{activeSnapshot?.profiles.length ?? 0} link{(activeSnapshot?.profiles.length ?? 0) === 1 ? '' : 's'} qualified at this instant, but nothing cleared the current display gate. {isSoftMode && displayChannel === 'confidence' ? 'Lower MIN CONFIDENCE or EVIDENCE PERCENTILE, or switch to the intensity channel.' : 'Lower EVIDENCE PERCENTILE, or relax the mode\'s support thresholds.'}</p>
       </div>
     {/if}
   {/if}
