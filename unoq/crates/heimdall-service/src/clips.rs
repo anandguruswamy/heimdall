@@ -375,6 +375,7 @@ mod tests {
             marker_raw: 12.0,
             marker_aligned: 9.75,
             fit_algorithm: "robust_grid".to_owned(),
+            match_score: Some(0.9),
             magnitude: vec![1.0, 0.5],
             iq: vec![[1.0, 0.0], [0.5, -0.25]],
         };

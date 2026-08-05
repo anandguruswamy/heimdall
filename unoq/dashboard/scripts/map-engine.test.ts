@@ -3,16 +3,21 @@ import test from 'node:test';
 
 import {
   DEFAULT_MAP_CONFIG,
+  DEFAULT_RECONSTRUCTION_CONFIG,
   METRES_PER_TAP,
   backproject,
+  boundsFromPositions,
   buildGrid,
   buildLinkProfiles,
   geometryFromBoardFreeze,
+  geometryFromBoardPositions,
+  reconstruct,
   volumeToPoints,
   type LinkProfile,
   type MapGeometry,
   type Vec3,
 } from '../src/lib/map/map-engine.ts';
+import { nearestSamples, parseDatasetZip, type DatasetSample } from '../src/lib/map/dataset.ts';
 
 const gaussian = (length: number, centre: number, sigma: number, height: number): Float32Array => {
   const output = new Float32Array(length);
@@ -44,10 +49,10 @@ function framesForLink(
   const magnitude = new Float32Array(32);
   const frames: unknown[] = [];
   for (let n = 0; n < 8; n++) {
-    frames.push({ from, to, marker_aligned: marker + (Math.random() - 0.5) * 0.4, correlation: 0.92, quality: 0, magnitude, resampled });
+    frames.push({ from, to, marker_aligned: marker + (Math.random() - 0.5) * 0.4, correlation: 0.92, match_score: 0.85, quality: 0, magnitude, resampled });
   }
-  for (let n = 0; n < 2; n++) frames.push({ from, to, marker_aligned: marker, correlation: 0.1, quality: 0, magnitude, resampled });
-  frames.push({ from, to, marker_aligned: marker + 6, correlation: 0.9, quality: 0, magnitude, resampled });
+  for (let n = 0; n < 2; n++) frames.push({ from, to, marker_aligned: marker, correlation: 0.1, match_score: 0.1, quality: 0, magnitude, resampled });
+  frames.push({ from, to, marker_aligned: marker + 6, correlation: 0.9, match_score: 0.85, quality: 0, magnitude, resampled });
   return frames;
 }
 
@@ -171,4 +176,231 @@ test('board freeze geometry requires a solved position set', () => {
   assert.equal(geometryValue.positions.length, 2);
   assert.equal(geometryValue.revision, '7');
   assert.equal(geometryValue.provenance.calibration_status, 'range-derived');
+});
+
+test('match_score gate accepts strong frames and rejects weak ones', () => {
+  const strong = Array.from({ length: 8 }, () => ({
+    from: 0, to: 1, marker_aligned: 4, match_score: 0.85,
+    magnitude: new Float32Array(32), resampled: new Float32Array(497),
+  }));
+  assert.equal(buildLinkProfiles(strong, DEFAULT_MAP_CONFIG)?.acceptedFrames, 8);
+  const weak = strong.map((frame) => ({ ...frame, match_score: 0.2 }));
+  assert.equal(buildLinkProfiles(weak, DEFAULT_MAP_CONFIG), null);
+});
+
+test('match_score takes precedence over correlation', () => {
+  const frames = Array.from({ length: 8 }, () => ({
+    from: 0, to: 1, marker_aligned: 4, correlation: 0.92, match_score: 0.2,
+    magnitude: new Float32Array(32), resampled: new Float32Array(497),
+  }));
+  assert.equal(buildLinkProfiles(frames, DEFAULT_MAP_CONFIG), null);
+});
+
+test('correlation fallback gate applies when match_score is absent', () => {
+  const high = Array.from({ length: 8 }, () => ({
+    from: 0, to: 1, marker_aligned: 4, correlation: 0.9,
+    magnitude: new Float32Array(32), resampled: new Float32Array(497),
+  }));
+  assert.equal(buildLinkProfiles(high, DEFAULT_MAP_CONFIG)?.acceptedFrames, 8);
+  const low = high.map((frame) => ({ ...frame, correlation: 0.2 }));
+  assert.equal(buildLinkProfiles(low, DEFAULT_MAP_CONFIG), null);
+});
+
+test('dataset geometry parses board_positions blocks', () => {
+  assert.equal(geometryFromBoardPositions(null), null);
+  const geometryValue = geometryFromBoardPositions({
+    schema: 'heimdall-geometry/1',
+    units: 'm',
+    node_count: 2,
+    source: 'smoothed',
+    revision: 1109,
+    nodes: [
+      { node_id: 0, position_m: [0, 0, 0] },
+      { node_id: 1, position_m: [1.9, 0, 0] },
+    ],
+  });
+  assert.ok(geometryValue);
+  assert.equal(geometryValue.positions.length, 2);
+  assert.equal(geometryValue.revision, '1109');
+  assert.equal(geometryValue.provenance.calibration_status, 'range-derived');
+  assert.equal(geometryFromBoardPositions({ nodes: [{ node_id: 0, position_m: [0, 0, 0] }] }), null);
+});
+
+function crc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) {
+    crc ^= bytes[i];
+    for (let j = 0; j < 8; j++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function buildStoredZip(entries: [string, Uint8Array][]): Uint8Array {
+  const encoder = new TextEncoder();
+  const localParts: Uint8Array[] = [];
+  const centralParts: Uint8Array[] = [];
+  let offset = 0;
+  for (const [name, data] of entries) {
+    const nameBytes = encoder.encode(name);
+    const crc = crc32(data);
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true);
+    local.setUint16(4, 20, true);
+    local.setUint16(8, 0, true);
+    local.setUint32(14, crc, true);
+    local.setUint32(18, data.length, true);
+    local.setUint32(22, data.length, true);
+    local.setUint16(26, nameBytes.length, true);
+    local.setUint16(28, 0, true);
+    localParts.push(new Uint8Array(local.buffer), nameBytes, data);
+    const central = new DataView(new ArrayBuffer(46));
+    central.setUint32(0, 0x02014b50, true);
+    central.setUint16(4, 20, true);
+    central.setUint16(6, 20, true);
+    central.setUint16(10, 0, true);
+    central.setUint32(16, crc, true);
+    central.setUint32(20, data.length, true);
+    central.setUint32(24, data.length, true);
+    central.setUint16(28, nameBytes.length, true);
+    central.setUint32(42, offset, true);
+    centralParts.push(new Uint8Array(central.buffer), nameBytes);
+    offset += 30 + nameBytes.length + data.length;
+  }
+  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+  const eocd = new DataView(new ArrayBuffer(22));
+  eocd.setUint32(0, 0x06054b50, true);
+  eocd.setUint16(8, entries.length, true);
+  eocd.setUint16(10, entries.length, true);
+  eocd.setUint32(12, centralSize, true);
+  eocd.setUint32(16, offset, true);
+  const output = new Uint8Array(offset + centralSize + 22);
+  let at = 0;
+  for (const part of localParts) { output.set(part, at); at += part.length; }
+  for (const part of centralParts) { output.set(part, at); at += part.length; }
+  output.set(new Uint8Array(eocd.buffer), at);
+  return output;
+}
+
+test('dataset zip parses manifest, geometry, and aligned CIRs', async () => {
+  const manifest = JSON.stringify({ format: 'heimdall-capture-clip-v1', name: 'test-clip', duration_s: 15 });
+  const metadata = JSON.stringify({
+    board_positions: {
+      schema: 'heimdall-geometry/1', units: 'm', node_count: 2, source: 'smoothed',
+      nodes: [{ node_id: 0, position_m: [0, 0, 0] }, { node_id: 1, position_m: [3, 0, 0] }],
+    },
+  });
+  const lines = [
+    { from: 0, to: 1, event_s: 497.2, marker_aligned: 4, correlation: 0.9, match_score: 0.85, magnitude: [1, 0.5, 0.2] },
+    { from: 0, to: 1, event_s: 497.25, marker_aligned: 4.1, correlation: 0.88, match_score: 0.8, magnitude: [1.1, 0.4, 0.3] },
+    { from: 1, to: 0, event_s: 497.2, marker_aligned: 4, correlation: 0.7, magnitude: [0.9, 0.6, 0.1] },
+    { from: 1, to: 0, event_s: 497.3, marker_aligned: 4.2, correlation: 0.6, magnitude: [0.8, 0.5, 0.2] },
+  ].map((line) => JSON.stringify(line)).join('\n') + '\n';
+  const zip = buildStoredZip([
+    ['manifest.json', new TextEncoder().encode(manifest)],
+    ['metadata.json', new TextEncoder().encode(metadata)],
+    ['aligned-cirs.ndjson', new TextEncoder().encode(lines)],
+  ]);
+  const dataset = await parseDatasetZip(new Blob([zip]));
+  assert.equal(dataset.name, 'test-clip');
+  assert.equal(dataset.format, 'heimdall-capture-clip-v1');
+  assert.equal(dataset.sampleCount, 4);
+  assert.equal(dataset.links.length, 2);
+  assert.ok(dataset.geometry);
+  assert.equal(dataset.geometry.positions.length, 2);
+  assert.ok(dataset.eventMax > dataset.eventMin);
+});
+
+test('nearest samples selects the n closest to the scrub time', () => {
+  const samples: DatasetSample[] = [0, 1, 2, 3, 4, 5].map((event) => ({
+    from: 0, to: 1, event_s: event, marker_aligned: 4, magnitude: new Float32Array(4),
+  }));
+  const nearest = nearestSamples(samples, 2.4, 4);
+  assert.equal(nearest.length, 4);
+  const events = nearest.map((sample) => sample.event_s).sort((a, b) => a - b);
+  assert.deepEqual(events, [1, 2, 3, 4]);
+  assert.deepEqual(nearestSamples(samples, 0, 3).map((sample) => sample.event_s), [0, 1, 2]);
+  assert.deepEqual(nearestSamples(samples, 10, 3).map((sample) => sample.event_s), [5, 4, 3]);
+});
+
+test('bounds snap to node positions with padding', () => {
+  const positions: Vec3[] = [{ x: 0, y: 0, z: 0 }, { x: 2, y: 0, z: 0 }, { x: 0, y: 1, z: 0 }];
+  const auto = boundsFromPositions(positions);
+  assert.deepEqual([...auto.min], [-1, -1, -1]);
+  assert.deepEqual([...auto.max], [3, 2, 1]);
+  const padded = boundsFromPositions(positions, 0.5);
+  assert.deepEqual([...padded.min], [-0.5, -0.5, -0.5]);
+  assert.deepEqual([...padded.max], [2.5, 1.5, 0.5]);
+});
+
+test('buildGrid honors explicit bounds', () => {
+  const grid = buildGrid(geometry, 0.1, DEFAULT_MAP_CONFIG.maxVoxels, {
+    min: [0, 0, 0],
+    max: [4, 2, 0],
+  });
+  assert.equal(grid.shape[2], 41);
+  assert.equal(grid.shape[1], 21);
+  assert.equal(grid.min[0], 0);
+  assert.ok(Math.abs(grid.spacing[0] - 0.1) < 1e-9);
+});
+
+const fusionGrid = { min: [0, 0, 0] as [number, number, number], spacing: [1, 1, 1] as [number, number, number], shape: [1, 1, 1] as [number, number, number] };
+const fusionGeometry: MapGeometry = {
+  positions: [{ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }, { x: 0, y: 1, z: 0 }],
+  revision: 'fusion',
+  provenance: { calibration_status: 'surveyed-calibrated' },
+};
+
+function fusionProfiles(values: number[]): LinkProfile[] {
+  const links = [[0, 1], [1, 0], [0, 2], [2, 0], [1, 2], [2, 1]];
+  return links.map(([from, to], index) => ({
+    from,
+    to,
+    excessTaps: new Float32Array([0, 100]),
+    rawMagnitude: new Float32Array([1, 1]),
+    magnitude: new Float32Array([values[index], values[index]]),
+    medianCorrelation: 1,
+    acceptedFrames: 8,
+  }));
+}
+
+test('standard reconstruction remains equivalent to backprojection', () => {
+  const profiles = fusionProfiles([1, 2, 3, 4, 5, 6]);
+  const standard = backproject(profiles, fusionGeometry, fusionGrid);
+  const reconstructed = reconstruct(profiles, fusionGeometry, fusionGrid, DEFAULT_RECONSTRUCTION_CONFIG);
+  assert.deepEqual([...reconstructed.volume], [...standard.volume]);
+  assert.deepEqual([...reconstructed.confidence], [...standard.confidence]);
+});
+
+test('MGBP rejects an isolated link outlier and handles zero MAD', () => {
+  const profiles = fusionProfiles([1, 1, 1, 1, 1, 100]);
+  const volume = reconstruct(profiles, fusionGeometry, fusionGrid, {
+    ...DEFAULT_RECONSTRUCTION_CONFIG,
+    mode: 'mgbp',
+  });
+  assert.equal(volume.validLinks[0], 6);
+  assert.equal(volume.supportLinks[0], 5);
+  assert.equal(volume.volume[0], 1);
+  assert.ok(Math.abs(volume.consensus[0] - 5 / 6) < 1e-6);
+});
+
+test('CGBP requires distributed active evidence and supports baseline merging', () => {
+  const profiles = fusionProfiles([3, 3, 3, 3, 0.5, 0.5]);
+  const directed = reconstruct(profiles, fusionGeometry, fusionGrid, {
+    ...DEFAULT_RECONSTRUCTION_CONFIG,
+    mode: 'cgbp',
+  });
+  assert.equal(directed.validLinks[0], 6);
+  assert.equal(directed.supportLinks[0], 4);
+  assert.equal(directed.volume[0], 3);
+
+  const baselines = reconstruct(profiles, fusionGeometry, fusionGrid, {
+    ...DEFAULT_RECONSTRUCTION_CONFIG,
+    mode: 'cgbp',
+    cgbpVoteBasis: 'baseline',
+    cgbpMinValid: 3,
+    cgbpMinActive: 2,
+  });
+  assert.equal(baselines.validLinks[0], 3);
+  assert.equal(baselines.supportLinks[0], 2);
+  assert.equal(baselines.volume[0], 3);
 });

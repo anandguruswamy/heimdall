@@ -7,11 +7,13 @@
     nodes,
     valueRange,
     pointSize = 3,
+    fixedBounds,
   }: {
     points: MapPoint[];
     nodes: Vec3[];
     valueRange: [number, number];
     pointSize?: number;
+    fixedBounds?: { min: Vec3; max: Vec3 } | null;
   } = $props();
 
   let canvas: HTMLCanvasElement;
@@ -43,6 +45,10 @@
   }
 
   function computeBounds() {
+    if (fixedBounds) {
+      bounds = fixedBounds;
+      return;
+    }
     let min = { x: Infinity, y: Infinity, z: Infinity };
     let max = { x: -Infinity, y: -Infinity, z: -Infinity };
     for (const point of points) {
@@ -245,7 +251,7 @@
   });
 
   $effect(() => {
-    void points; void nodes; void valueRange; void pointSize;
+    void points; void nodes; void valueRange; void pointSize; void fixedBounds;
     computeBounds();
     scheduleRebuild();
   });

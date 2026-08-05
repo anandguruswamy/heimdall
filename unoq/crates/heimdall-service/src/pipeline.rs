@@ -9,7 +9,7 @@ use heimdall_dsp::{
     FftWindow, PairCalibrationObservation, QualityFlags, ReferenceMode, SsTwrInput,
     TimeMovingAverage, align_cir_hierarchical, asymmetric_ds_twr, calibrate_offsets, common_phase,
     fast_fft, fast_fft_complex, fractional_align_non_circular, hampel, interpolate_short_gaps,
-    normalized_correlation_delay, resample_cir_16x, scale_cir, ss_twr,
+    magnitude_match_score, normalized_correlation_delay, resample_cir_16x, scale_cir, ss_twr,
 };
 use heimdall_protocol::{
     CanonicalObservation, CanonicalProcessor, DecodedRecord, HelloRecord, ParserStats,
@@ -72,6 +72,7 @@ pub struct AlignedCirSample {
     pub marker_raw: f64,
     pub marker_aligned: f64,
     pub fit_algorithm: String,
+    pub match_score: Option<f64>,
     pub magnitude: Vec<f32>,
     pub iq: Vec<[f32; 2]>,
 }
@@ -761,6 +762,9 @@ impl Pipeline {
             robust_display.unwrap_or_else(|| aligned.clone())
         };
         let marker_aligned = marker_raw - delay_samples;
+        let match_score = reference
+            .as_deref()
+            .and_then(|reference| magnitude_match_score(reference, &aligned));
         let evidence_id = (observation.usb_sequence as u64) << 32 | observation.observed_k as u64;
         let resampled = if want_waterfall || want_cir {
             resample_cir_16x(&display)
@@ -813,6 +817,7 @@ impl Pipeline {
                 marker_raw,
                 marker_aligned: marker_raw - display_delay_samples,
                 fit_algorithm: fit_algorithm.to_owned(),
+                match_score,
                 magnitude: display.iter().map(|value| value.norm() as f32).collect(),
                 iq: display.iter().map(|value| [value.re as f32, value.im as f32]).collect(),
             });
@@ -872,6 +877,11 @@ impl Pipeline {
                 "magnitude": display.iter().map(|value| value.norm() as f32).collect::<Vec<_>>(),
                 "resampled": resampled.iter().map(|value| value.norm() as f32).collect::<Vec<_>>(),
             });
+            if let Some(score) = match_score {
+                if let Some(payload) = cir_payload.as_object_mut() {
+                    payload.insert("match_score".to_owned(), json!(score));
+                }
+            }
             if let (Some(payload), Some(diagnostics)) = (
                 cir_payload.as_object_mut(),
                 fit_diagnostics.as_ref().and_then(Value::as_object),

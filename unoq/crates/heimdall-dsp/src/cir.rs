@@ -662,6 +662,61 @@ pub fn common_phase(reference: &[Complex64], signal: &[Complex64]) -> Option<f64
     (z.norm() > 0.).then(|| z.arg())
 }
 
+/// Tap-tolerant magnitude-shape match score (0..1) of `signal` against the
+/// significant taps of `reference`.
+///
+/// Scores only reference taps above three times the reference noise floor and
+/// tolerates a per-tap relative error up to `ETA` after normalizing the signal
+/// to the reference's median significant-tap magnitude. A few taps changing
+/// (new objects, occlusions) therefore do not collapse the score the way a
+/// full-waveform correlation would. Mirrors the robust significant-tap
+/// philosophy of [`align_cir_hierarchical`] in magnitude space.
+pub fn magnitude_match_score(reference: &[Complex64], signal: &[Complex64]) -> Option<f64> {
+    const ETA: f64 = 0.25;
+    if reference.is_empty() || reference.len() != signal.len() {
+        return None;
+    }
+    let noise = &reference[..reference.len().min(14)];
+    let noise_mean = noise.iter().sum::<Complex64>() / noise.len() as f64;
+    let noise_sigma = (noise
+        .iter()
+        .map(|value| (*value - noise_mean).norm_sqr())
+        .sum::<f64>()
+        / noise.len() as f64)
+        .sqrt();
+    let threshold = 3.0 * noise_sigma;
+    let mut ratios = Vec::with_capacity(reference.len());
+    for (reference_value, signal_value) in reference.iter().zip(signal) {
+        let reference_norm = reference_value.norm();
+        if reference_norm >= threshold && reference_norm > 0.0 {
+            ratios.push(signal_value.norm() / reference_norm);
+        }
+    }
+    if ratios.is_empty() {
+        return None;
+    }
+    let mut sorted = ratios.clone();
+    sorted.sort_by(f64::total_cmp);
+    let middle = sorted.len() / 2;
+    let median = if sorted.len() % 2 == 1 {
+        sorted[middle]
+    } else {
+        (sorted[middle - 1] + sorted[middle]) / 2.0
+    };
+    if median <= 0.0 {
+        return None;
+    }
+    let mut score = 0.0;
+    for &ratio in &ratios {
+        let normalized = ratio / median;
+        let error = (normalized - 1.0).abs();
+        if error < ETA {
+            score += 1.0 - error / ETA;
+        }
+    }
+    Some(score / ratios.len() as f64)
+}
+
 pub fn scale_cir(
     input: &[Complex64],
     dgc_linear_gain: f64,
@@ -782,6 +837,24 @@ mod tests {
         let (v, q) = scale_cir(&[Complex64::new(10., 0.)], 2., 10);
         assert_eq!(v[0].re, 2.);
         assert!(q.contains(QualityFlags::LOW_ACCUMULATION));
+    }
+    #[test]
+    fn magnitude_match_score_tolerates_a_few_changed_taps() {
+        let reference = pulse(32, 20., 0.);
+        let identical = magnitude_match_score(&reference, &reference).unwrap();
+        assert!((identical - 1.0).abs() < 1e-9);
+        let mut changed = reference.clone();
+        for tap in [18, 22] {
+            changed[tap] = Complex64::from_polar(changed[tap].norm() * 2.5, 0.3);
+        }
+        let changed_score = magnitude_match_score(&reference, &changed).unwrap();
+        assert!(changed_score > 0.8, "changed taps score {changed_score}");
+        let garbage = pulse(32, 6., 0.);
+        let garbage_score = magnitude_match_score(&reference, &garbage).unwrap();
+        assert!(garbage_score < 0.3, "garbage score {garbage_score}");
+        let noise = vec![Complex64::new(0., 0.); 32];
+        assert_eq!(magnitude_match_score(&noise, &noise), None);
+        assert_eq!(magnitude_match_score(&reference, &reference[..16]), None);
     }
 
     fn synthetic_signal(t: f64) -> Complex64 {

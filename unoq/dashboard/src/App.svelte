@@ -7,6 +7,7 @@
   import { linksFor } from './lib/demo';
   import { LiveStore } from './lib/live';
   import type { MapSnapshot } from './lib/map/map-engine';
+  import type { Dataset } from './lib/map/dataset';
   import { tabs, type Link, type PlotFrame, type StreamStatus, type Tab, type TopicKey } from './lib/types';
 
   let active: Tab = $state('Network Health');
@@ -64,6 +65,7 @@
   let clipNote = $state('');
   let clipDurationS = $state(10);
   let mapSnapshot = $state<MapSnapshot | null>(null);
+  let mapDataset = $state.raw<Dataset | null>(null);
   let compactMode = $state(false);
   let uiCommitLatencyMs = $state(0);
   let waterfallSeconds = $state(5);
@@ -536,7 +538,7 @@
     </div>
   </header>
 
-  <nav class="tabs" aria-label="Analysis modes">
+  <nav class="tabs" aria-label="Analysis modes" style={`--tab-count:${tabs.length}`}>
     {#each tabs as tab, i}
       <button class:active={active === tab} onclick={() => setTab(tab)}><em>{String(i + 1).padStart(2, '0')}</em>{tab}</button>
     {/each}
@@ -598,7 +600,7 @@
         <article class="panel preview"><header><span>FIT PREVIEW</span><b>RESIDUAL / CENTIMETRES</b></header><div class="preview-plot"><PlotCanvas frame={calibrationPreview} revision={liveRevision} label="Calibration residual preview" /></div><div class="fit-stats"><div><span>RANK</span><b>{Number(calibrationSolution?.rank ?? 0)} / {Number(calibrationSolution?.columns ?? nodeCount)}</b></div><div><span>CONDITION</span><b>{Number(calibrationSolution?.condition_number ?? 0).toFixed(1)}</b></div><div><span>NEXT PAIR</span><b>{recommendedPair()}</b></div></div></article>
       </section>
     {:else if active === 'Radar Map'}
-      <RadarMap {live} snapshot={mapSnapshot} onSnapshot={(value) => mapSnapshot = value} onNavigate={(tab) => setTab(tab)} />
+      <RadarMap {live} snapshot={mapSnapshot} dataset={mapDataset} onSnapshot={(value) => mapSnapshot = value} onDataset={(value) => mapDataset = value} onNavigate={(tab) => setTab(tab)} />
     {:else}
       <section class="link-workspace">
         {#if compactMode}
