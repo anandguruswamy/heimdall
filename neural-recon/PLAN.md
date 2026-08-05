@@ -24,7 +24,7 @@ observed command result.
 - [x] **N2** UWBRender renders LOS + surfels + planes + capsules; analytic geometry tests pass; autograd matches finite differences (<1e-3 rel, float64); full 48-slot/20-link render completes on CPU.
 - [x] **N3** Stage 1-4 dataset builders deterministic and schema-validated; re-render-from-labels reproduces stored CIRs bit-exactly; splits are disjoint by scene seed.
 - [ ] **N4** Per-scene optimizer recovers a noiseless surfel from random init; the 2-4 plane + 1 surfel fixed-geometry experiment is run and its verdict (including failure modes) is written to `reports/N4-observability.md`.
-- [ ] **N5** Network builds at 5-8M params; node-relabel/link-permutation invariance verified; missing-link masking verified.
+- [x] **N5** Network builds at 5-8M params; node-relabel/link-permutation invariance verified; missing-link masking verified.
 - [ ] **N6** Curriculum runs 1-4 complete with logged metrics; run 1 overfits to near-zero loss proving end-to-end gradient flow; compute-host decision recorded.
 - [ ] **N7** Full evaluation report in `reports/N7-evaluation.md` comparing network, backprojection, ellipsoid voting, optimizer, and hybrid on held-out rooms and held-out links; explicit go/no-go for real transfer.
 - [ ] **N8** (post-approval) Hardware statistics fitted from real captures, measured link kernels installed, controlled real fine-tune evaluated.

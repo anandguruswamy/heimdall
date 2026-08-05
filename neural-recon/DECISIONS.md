@@ -214,3 +214,27 @@ Append dated entries. Never rewrite history; supersede with a new entry.
   rotation basins — the Phase 5 network's amortized search role.
 - Updated `reports/N4-observability.md` with the corrected tables and a
   revision note.
+
+## 2026-08-04 Phase 5 network implementation
+
+- `HeimdallSetNet` assembled per paper Fig. 1: shared link encoder
+  (4 residual 1D-CNN stages 32/64/96/128, kernels 7/5/5/3, GroupNorm,
+  GELU, attention pooling -> R^128), metadata MLP, Fourier-feature
+  geometry MLP, learned direction-role embedding keyed by a
+  label-invariant geometric quantity (baseline x-sign), 6 pre-norm set
+  transformer blocks with a pairwise geometry-bias MLP (baseline
+  cosines, midpoint separation, shared-node count from geometry,
+  link lengths), and a 48-query 4-block primitive decoder with heads:
+  type(4), presence, center(3), rot6d(6), log-scales(3), rho(2),
+  roughness, attenuation, dynamic, bounded log-variances(9).
+- Parameter count: 5.19M (in [5, 8]M). The paper's FFN 512 gave 2.55M;
+  FFN widened to 1536 for both the set encoder and decoder per the
+  plan's allowance ("adjust FFN width within Table II's spirit").
+- Attention masks: per-head [B*H, L, L] float masks (bias + -1e9 pad)
+  to avoid deprecated mixed mask types; key_padding_mask in the decoder.
+- Node-relabel invariance verified: the relabeled-input construction must
+  permute the position matrix by the INVERSE permutation
+  (new_positions[sigma(a)] == old_positions[a]); with that, outputs match
+  up to slot permutation (Hungarian, max distance < 1e-4, float64).
+- `torch.use_deterministic_algorithms(True)` holds for all model ops on
+  CPU; no op needed an exception.
