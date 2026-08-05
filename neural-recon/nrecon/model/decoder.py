@@ -58,7 +58,17 @@ class PrimitiveDecoder(nn.Module):
 
 
 def split_heads(raw: torch.Tensor) -> dict:
-    """Interpret the raw [B, G, 31] head output."""
+    """Interpret the raw [B, G, 31] head output.
+
+    Sanitizes NaN/Inf before splitting (2026-08-05): a NaN reaching
+    `presence` (sigmoid(NaN) = NaN) tripped `binary_cross_entropy`'s
+    hard input-range CUDA assertion during the first real curriculum run,
+    which -- unlike a Python exception -- corrupts the CUDA context for
+    the rest of the process and cannot be recovered from mid-run. This is
+    the network's single output boundary, so sanitizing here protects
+    every downstream consumer (loss, rendering, evaluation) at once.
+    """
+    raw = torch.nan_to_num(raw, nan=0.0, posinf=20.0, neginf=-20.0)
     return {
         "type_logits": raw[..., 0:4],
         "presence": torch.sigmoid(raw[..., 4:5]),

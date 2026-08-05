@@ -10,7 +10,7 @@ import torch
 from scipy.optimize import linear_sum_assignment
 
 from nrecon.constants import F0_MARKER, directed_links
-from nrecon.model.decoder import HEAD_DIM
+from nrecon.model.decoder import HEAD_DIM, split_heads
 from nrecon.model.net import HeimdallSetNet
 from nrecon.model.preprocess import geometry_features, preprocess_cirs
 from nrecon.seeding import seed_all
@@ -164,6 +164,27 @@ def test_preprocess_roundtrip_on_shard():
                 continue
             peak = int(torch.argmax(env[scene, li]))
             assert abs(peak - F0_MARKER) <= 1.5, (scene, li, peak)
+
+
+def test_split_heads_sanitizes_nan_inf():
+    """Regression test (2026-08-05): a NaN in the raw decoder output
+    reached `presence` (sigmoid(NaN) = NaN) and tripped
+    binary_cross_entropy's hard input-range CUDA assertion during the
+    first real curriculum run -- which, unlike a Python exception,
+    corrupts the CUDA context for the rest of the process. split_heads
+    must sanitize before splitting so every head output stays finite and
+    (for the sigmoid/softplus-bounded heads) in its valid range."""
+    raw = torch.zeros(2, 5, HEAD_DIM, dtype=torch.float64)
+    raw[0, 0, 4] = float("nan")  # presence pre-sigmoid
+    raw[0, 1, 0] = float("inf")  # a type logit
+    raw[1, 2, 17] = float("-inf")  # rho real part
+    out = split_heads(raw)
+    for k, v in out.items():
+        assert torch.isfinite(v).all(), k
+    assert (out["presence"] >= 0.0).all() and (out["presence"] <= 1.0).all()
+    assert (out["roughness"] >= 0.0).all() and (out["roughness"] <= 1.0).all()
+    assert (out["dynamic"] >= 0.0).all() and (out["dynamic"] <= 1.0).all()
+    assert (out["atten"] >= 0.0).all()
 
 
 def test_deterministic_algorithms_and_seeding():
