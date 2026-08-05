@@ -281,6 +281,8 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
     total_steps = cfg.max_steps or (cfg.epochs * len(indices))
     last_log = time.perf_counter()
     run_start = time.perf_counter()
+    nonfinite_streak = 0
+    NONFINITE_STREAK_LIMIT = 5
     for epoch in range(cfg.epochs):
         if cfg.permute_labels:
             train_ds.permute_epoch()
@@ -313,6 +315,26 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
                 return pred, parts
 
             pred, parts = closure()
+            total_val = float(parts["total"].detach())
+            if not (total_val == total_val) or total_val in (float("inf"), float("-inf")):
+                # Immediate, every-step guard (RunMonitor.check_loss only
+                # runs at log_every cadence, so a NaN/Inf loss could
+                # otherwise poison up to log_every optimizer steps before
+                # being noticed -- hit this exact scenario right after a
+                # curriculum warm-start into a new dataset). Skip the
+                # optimizer step entirely rather than applying a
+                # NaN-poisoned gradient update.
+                nonfinite_streak += 1
+                print(f"NON-FINITE LOSS at step {step + 1}: {total_val} "
+                      f"(streak {nonfinite_streak}/{NONFINITE_STREAK_LIMIT}); "
+                      f"skipping optimizer step", flush=True)
+                optim.zero_grad(set_to_none=True)
+                if nonfinite_streak >= NONFINITE_STREAK_LIMIT:
+                    monitor.stop_reason = (
+                        f"non-finite loss for {nonfinite_streak} consecutive steps")
+                    break
+                continue
+            nonfinite_streak = 0
             scaler.unscale_(optim)
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.clip)
             scaler.step(optim)
