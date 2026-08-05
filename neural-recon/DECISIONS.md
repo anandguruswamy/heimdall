@@ -238,3 +238,16 @@ Append dated entries. Never rewrite history; supersede with a new entry.
   up to slot permutation (Hungarian, max distance < 1e-4, float64).
 - `torch.use_deterministic_algorithms(True)` holds for all model ops on
   CPU; no op needed an exception.
+
+## 2026-08-04 Inference target constraint (user)
+
+- The trained model must be optimizable for CPU/GPU/NPU inference on
+  Snapdragon X Elite machines (e.g., this Windows ARM64 laptop). The
+  architecture therefore stays conventional and quantization-friendly:
+  only Conv1d/Linear/GroupNorm/LayerNorm/GELU/attention matmuls and
+  elementwise activations, all ONNX-exportable and QNN-int8/fp16
+  compatible. UWBRender is training-only and is never part of the
+  inference graph.
+- Phase 7 gains an export task: ONNX export plus an fp16/int8
+  quantization sanity check (metrics before/after quantization on the
+  evaluation suite) before the Phase 7 report.
