@@ -298,3 +298,57 @@ Append dated entries. Never rewrite history; supersede with a new entry.
   datasets") describes a variation that was never implemented anywhere in
   `hardware.py`/`export.py` — harmless (fixed gamma=2.0 is used throughout)
   but the comment should eventually be corrected or the feature added.
+
+## 2026-08-05 Vast.ai compute host: RTX 5070, torch/CUDA arch mismatch, YAML gotcha
+
+- Rented instance (RTX 5070, 12 GB VRAM, Texas US host, $0.104/hr,
+  `pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime` base image). SSH access was
+  blocked for an unrelated reason first: the default account SSH key
+  (`~/.ssh/id_ed25519`) is passphrase-protected, and non-interactive `ssh`
+  calls silently hang waiting for a passphrase prompt that never arrives
+  (looks identical to a broken network/relay from the outside — three
+  instances across three hosts/gateways were destroyed chasing that before
+  the actual cause was found). Fixed by generating a dedicated
+  passphrase-less automation key
+  (`.secrets/ssh/vastai_ed25519`, gitignored) and registering it on the
+  account via `vastai create ssh-key <path-to-.pub-file>` — note the CLI's
+  positional argument must be the **key content**, not a file path string;
+  passing a path string silently "succeeds" and stores the literal path text
+  as the public key (a vastai CLI foot-gun, not obvious from `--help`).
+- **RTX 5070/50-series (Blackwell, compute capability sm_120) is not
+  supported by the base image's bundled torch 2.6.0+cu124** (arch list tops
+  out at sm_90); `torch.cuda.is_available()` returns `True` (device
+  enumeration works) but any kernel launch fails with `CUDA error: no kernel
+  image is available for execution on the device`. Fixed by
+  `pip install --upgrade torch==2.13.0` (matches the local CPU pin), which
+  resolved to `torch 2.13.0+cu130` with `sm_120` in its arch list.
+  torchvision/torchaudio dependency-conflict warnings from the mismatched
+  base-image versions are harmless (unused by this project). Anyone renting
+  a Blackwell-class Vast.ai GPU should check `torch.cuda.get_arch_list()`
+  before trusting `torch.cuda.is_available()`.
+- Cross-platform note: `tests/test_pulse.py::test_export_manifest_hashes_match`
+  fails on Linux because the committed `artifacts/pulse/manifest.json` was
+  generated on Windows; transcendental functions (`sin`/`cos`/`i0` in the
+  SRRC template and Kaiser window) differ in their last bit between MSVC and
+  glibc `libm`, changing the SHA-256 hash even though the values agree to
+  ~15 decimal places. Not a bug — bit-exact determinism is guaranteed
+  *within* a platform/build (which is what dataset build/validate relies on),
+  not across platforms; datasets for GPU training are built and validated
+  entirely on the Linux instance rather than copied from the Windows
+  dev machine. 65/66 tests pass there; this one failure is expected and
+  platform-specific.
+- **Bug found on the first real GPU run:** the new `train-run1-gpu-sanity.yaml`
+  wrote `early_stop_min_delta: 1e-4`; PyYAML's default float regex does not
+  match bare scientific notation without a decimal point, so `yaml.safe_load`
+  parsed it as the *string* `"1e-4"`, and training crashed inside
+  `RunMonitor.check_loss` (`float - str`) after step 1. Fixed the immediate
+  config (`0.0001`) and hardened `nrecon/train/run.py` with a
+  `_coerce_types` helper that casts any YAML-loaded value to its declared
+  `TrainConfig` dataclass field type before construction, so this class of
+  mistake fails fast/silently-corrects instead of crashing mid-run.
+- GPU sanity results (stage-1, 100 scenes, batch 32, no AMP): ~0.08-0.09
+  s/step after warm-up at batch 8 on `stage1-mini`, ~35-40x faster than the
+  measured local CPU rate (~3.1 s/step); a 2-minute/340-step run on
+  `stage1-mini` early-stopped on a genuine loss plateau (loss 680 -> 1.25,
+  medCenter 4.7 -> 0.30 m), validating both the device fix and the
+  early-stop monitor end-to-end on real CUDA hardware.

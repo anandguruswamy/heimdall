@@ -19,7 +19,7 @@ permute_labels: false
 device: cuda
 eval_every: 50
 early_stop_patience: 6
-early_stop_min_delta: 1e-4
+early_stop_min_delta: 0.0001
 max_steps: 0
 max_minutes: 20
 weights:
