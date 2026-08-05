@@ -9,12 +9,15 @@
     boundsFromPositions,
     buildGrid,
     buildLinkProfiles,
+    estimateNoiseFloor,
+    estimateSoftBackground,
     geometryFromBoardFreeze,
     reconstruct,
     volumeToPoints,
     type LinkProfile,
     type LinkStats,
     type MapBounds,
+    type MapDisplayChannel,
     type MapSnapshot,
     type ReconstructionConfig,
   } from './map/map-engine';
@@ -63,9 +66,12 @@
   let recomputeRaf = 0;
   let liveFrozen = $state(false);
   let liveUpdateTimer: ReturnType<typeof setTimeout> | undefined;
+  let livePollTimer: ReturnType<typeof setInterval> | undefined;
   let liveUpdateRaf = 0;
   let lastLiveUpdateAt = 0;
-  const LIVE_UPDATE_INTERVAL_MS = 500;
+  const LIVE_UPDATE_INTERVAL_MS = 1_000;
+  let displayChannel = $state<MapDisplayChannel>('confidence');
+  let minConfidence = $state(0.2);
 
   const liveGeometry = $derived(geometryFromBoardFreeze(live.boardFreeze));
   const datasetGeometry = $derived(dataset?.geometry ?? null);
@@ -82,7 +88,15 @@
       : null
   );
   const activeSnapshot = $derived(mode === 'live' ? snapshot : datasetMap);
-  const cloud = $derived(activeSnapshot ? volumeToPoints(activeSnapshot.volume, percentile, 50_000) : null);
+  const isSoftMode = $derived(activeSnapshot?.reconstruction.mode === 'soft');
+  const cloud = $derived(
+    activeSnapshot
+      ? volumeToPoints(activeSnapshot.volume, percentile, 50_000, {
+          channel: isSoftMode ? displayChannel : 'intensity',
+          minValue: isSoftMode && displayChannel === 'confidence' ? minConfidence : undefined,
+        })
+      : null
+  );
   const nodes = $derived(geometry?.positions ?? []);
   const voxelCount = $derived(
     activeSnapshot
@@ -101,6 +115,11 @@
       }
     }
     return index < 0 ? '—' : `${supportLinks[index]}/${validLinks[index]} · ${(consensus[index] * 100).toFixed(0)}%`;
+  });
+  const peakDisplay = $derived.by(() => {
+    if (!cloud?.points.length) return '—';
+    const asConfidence = isSoftMode && displayChannel === 'confidence';
+    return asConfidence ? cloud.valueRange[1].toFixed(2) : cloud.valueRange[1].toExponential(2);
   });
   const timeDisplay = $derived.by(() => {
     if (!dataset || dataset.eventMax <= dataset.eventMin) return '—';
@@ -136,6 +155,12 @@
     void reconstruction.cgbpMinValid;
     void reconstruction.cgbpMinActive;
     void reconstruction.cgbpVoteBasis;
+    void reconstruction.softNoiseStartTap;
+    void reconstruction.softNoiseEndTap;
+    void reconstruction.softScoreSharpness;
+    void reconstruction.softScoreCenter;
+    void reconstruction.softCountSlope;
+    void reconstruction.softCountCenter;
     if (mode !== 'dataset') return;
     scheduleDatasetCompute();
   });
@@ -155,12 +180,20 @@
     void reconstruction.cgbpMinValid;
     void reconstruction.cgbpMinActive;
     void reconstruction.cgbpVoteBasis;
+    void reconstruction.softNoiseStartTap;
+    void reconstruction.softNoiseEndTap;
+    void reconstruction.softScoreSharpness;
+    void reconstruction.softScoreCenter;
+    void reconstruction.softCountSlope;
+    void reconstruction.softCountCenter;
     if (mode !== 'live') return;
     if (liveFrozen) scheduleLiveRecompute();
     else scheduleLiveUpdate();
   });
 
   $effect(() => {
+    const key = geometryKey;
+    void key;
     void liveRevision;
     if (mode !== 'live' || liveFrozen) return;
     scheduleLiveUpdate();
@@ -173,6 +206,21 @@
 
   function reconstructionConfig(): ReconstructionConfig {
     return { ...reconstruction };
+  }
+
+  function computeDisplayFloor(profile: LinkProfile): number | undefined {
+    if (reconstruction.mode === 'soft') {
+      return estimateSoftBackground(profile, reconstruction.softNoiseStartTap, reconstruction.softNoiseEndTap);
+    }
+    if (reconstruction.mode === 'cgbp') {
+      return estimateNoiseFloor(
+        profile,
+        reconstruction.cgbpNoiseStartTap,
+        reconstruction.cgbpNoiseEndTap,
+        reconstruction.cgbpNoiseMargin
+      );
+    }
+    return undefined;
   }
 
   function resetBounds(): void {
@@ -260,6 +308,7 @@
           frames: samples.length,
           accepted: profile.acceptedFrames,
           medianCorrelation: profile.medianCorrelation,
+          noiseFloor: computeDisplayFloor(profile),
         });
       }
     }
@@ -350,6 +399,7 @@
             frames: samples.length,
             accepted: profile.acceptedFrames,
             medianCorrelation: profile.medianCorrelation,
+            noiseFloor: computeDisplayFloor(profile),
           });
         }
       }
@@ -376,11 +426,16 @@
   }
 
   onMount(() => {
+    livePollTimer = setInterval(() => {
+      if (mode === 'live' && !liveFrozen) scheduleLiveUpdate();
+    }, LIVE_UPDATE_INTERVAL_MS);
+    scheduleLiveUpdate();
     return () => {
       cancelAnimationFrame(computeRaf);
       cancelAnimationFrame(playRaf);
       cancelAnimationFrame(recomputeRaf);
       if (liveUpdateTimer) clearTimeout(liveUpdateTimer);
+      if (livePollTimer) clearInterval(livePollTimer);
       cancelAnimationFrame(liveUpdateRaf);
     };
   });
@@ -449,7 +504,7 @@
   {/if}
 
   <div class="controls panel">
-    <label class="mode"><span>RECONSTRUCTION</span><select value={reconstruction.mode} onchange={(e) => reconstruction.mode = e.currentTarget.value as ReconstructionConfig['mode']} aria-label="Reconstruction mode"><option value="standard">Standard BP</option><option value="mgbp">MGBP</option><option value="cgbp">CGBP</option></select></label>
+    <label class="mode"><span>RECONSTRUCTION</span><select value={reconstruction.mode} onchange={(e) => reconstruction.mode = e.currentTarget.value as ReconstructionConfig['mode']} aria-label="Reconstruction mode"><option value="standard">Standard BP</option><option value="soft">Soft Consensus</option><option value="mgbp">MGBP</option><option value="cgbp">CGBP</option></select></label>
     {#if mode === 'dataset' && dataset}
       <label class="scrub"><span>TIME <output>{timeDisplay}</output></span><input type="range" min="0" max="100" step="0.1" bind:value={timePct} aria-label="Dataset scrub position" /></label>
       <button class="play" onclick={togglePlay}>{playing ? 'PAUSE' : 'PLAY'}</button>
@@ -459,7 +514,21 @@
     <label><span>GRID SPACING</span><select value={spacing} onchange={(e) => spacing = Number(e.currentTarget.value)} aria-label="Voxel grid spacing"><option value="0.05">0.05 m</option><option value="0.1">0.1 m</option><option value="0.2">0.2 m</option></select></label>
     <label><span>EVIDENCE PERCENTILE <output>{percentile.toFixed(1)}%</output></span><input type="range" min="50" max="99.5" step="0.5" bind:value={percentile} aria-label="Evidence percentile threshold" /></label>
     <label><span>POINT SCALE <output>{pointSize.toFixed(1)}</output></span><input type="range" min="1" max="8" step="0.5" bind:value={pointSize} aria-label="Point size" /></label>
-    {#if reconstruction.mode === 'mgbp'}
+    {#if reconstruction.mode === 'soft'}
+      <div class="mode-settings">
+        <header>SOFT CONSENSUS · continuous confidence</header>
+        <label><span>SCORE SHARPNESS</span><input type="number" min="0.5" max="10" step="0.5" bind:value={reconstruction.softScoreSharpness} aria-label="Soft score sharpness" /></label>
+        <label><span>SCORE CENTER</span><input type="number" min="1" max="5" step="0.1" bind:value={reconstruction.softScoreCenter} aria-label="Soft score center ratio above background" /></label>
+        <label><span>COUNT SLOPE</span><input type="number" min="0.2" max="5" step="0.1" bind:value={reconstruction.softCountSlope} aria-label="Soft confidence ramp slope" /></label>
+        <label><span>COUNT CENTER</span><input type="number" min="1" max="20" step="0.5" bind:value={reconstruction.softCountCenter} aria-label="Soft confidence ramp center count" /></label>
+        <label><span>NOISE START</span><input type="number" min="0" step="0.5" bind:value={reconstruction.softNoiseStartTap} aria-label="Soft noise reference start tap" /></label>
+        <label><span>NOISE END</span><input type="number" min="0" step="0.5" bind:value={reconstruction.softNoiseEndTap} aria-label="Soft noise reference end tap" /></label>
+        <label><span>CHANNEL</span><select value={displayChannel} onchange={(e) => displayChannel = e.currentTarget.value as MapDisplayChannel} aria-label="Display channel"><option value="confidence">Confidence</option><option value="intensity">Intensity</option></select></label>
+        {#if displayChannel === 'confidence'}
+          <label><span>MIN CONFIDENCE</span><input type="number" min="0" max="1" step="0.05" bind:value={minConfidence} aria-label="Minimum confidence floor" /></label>
+        {/if}
+      </div>
+    {:else if reconstruction.mode === 'mgbp'}
       <div class="mode-settings">
         <header>MGBP · median/MAD gate</header>
         <label><span>MAD K</span><input type="number" min="0.5" max="10" step="0.5" bind:value={reconstruction.mgbpMadMultiplier} aria-label="MGBP MAD multiplier" /></label>
@@ -503,7 +572,7 @@
     <div><span>VOXELS</span><strong>{voxelCount ? voxelCount.toLocaleString() : '—'}</strong></div>
     <div><span>SPACING</span><strong>{activeSnapshot ? `${activeSnapshot.spacingM.toFixed(2)} m` : '—'}</strong></div>
     <div><span>LINKS USED</span><strong>{activeSnapshot ? activeSnapshot.profiles.length : '—'}</strong></div>
-    <div><span>PEAK</span><strong>{cloud?.valueRange[1] ? cloud.valueRange[1].toExponential(2) : '—'}</strong></div>
+    <div><span>PEAK</span><strong>{peakDisplay}</strong></div>
     <div><span>MODE</span><strong>{activeSnapshot?.reconstruction.mode?.toUpperCase() ?? '—'}</strong></div>
     <div><span>PEAK SUPPORT</span><strong>{peakSupport}</strong></div>
     <div><span>GEOMETRY</span><strong class:unsafe={activeSnapshot !== null}>{activeSnapshot ? 'RANGE-DERIVED' : '—'}</strong></div>
@@ -520,10 +589,10 @@
       </button>
       <aside class:open={linkStatsOpen} class="link-drawer">
         <header><span>PER-LINK ACCEPTANCE</span><button onclick={() => linkStatsOpen = false} aria-label="Close link details">×</button></header>
-        <p>accepted / sampled · median correlation</p>
+        <p>accepted / sampled · median correlation{activeSnapshot.reconstruction.mode === 'soft' || activeSnapshot.reconstruction.mode === 'cgbp' ? ' · background floor' : ''}</p>
         <div class="link-drawer-list">
           {#each activeSnapshot.profiles as stat}
-            <div class="link-stat"><span>N{stat.from}→N{stat.to}</span><i style={`width:${stat.accepted / Math.max(1, stat.frames) * 100}%`}></i><b>{stat.accepted}/{stat.frames}</b><small>r {stat.medianCorrelation.toFixed(2)}</small></div>
+            <div class="link-stat"><span>N{stat.from}→N{stat.to}</span><i style={`width:${stat.accepted / Math.max(1, stat.frames) * 100}%`}></i><b>{stat.accepted}/{stat.frames}</b><small>r {stat.medianCorrelation.toFixed(2)}{stat.noiseFloor !== undefined ? ` · n ${stat.noiseFloor.toFixed(2)}` : ''}</small></div>
           {/each}
         </div>
       </aside>

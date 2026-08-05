@@ -9,6 +9,8 @@ import {
   boundsFromPositions,
   buildGrid,
   buildLinkProfiles,
+  estimateNoiseFloor,
+  estimateSoftBackground,
   geometryFromBoardFreeze,
   geometryFromBoardPositions,
   reconstruct,
@@ -366,9 +368,13 @@ function fusionProfiles(values: number[]): LinkProfile[] {
 test('standard reconstruction remains equivalent to backprojection', () => {
   const profiles = fusionProfiles([1, 2, 3, 4, 5, 6]);
   const standard = backproject(profiles, fusionGeometry, fusionGrid);
-  const reconstructed = reconstruct(profiles, fusionGeometry, fusionGrid, DEFAULT_RECONSTRUCTION_CONFIG);
+  const reconstructed = reconstruct(profiles, fusionGeometry, fusionGrid, {
+    ...DEFAULT_RECONSTRUCTION_CONFIG,
+    mode: 'standard',
+  });
   assert.deepEqual([...reconstructed.volume], [...standard.volume]);
   assert.deepEqual([...reconstructed.confidence], [...standard.confidence]);
+  assert.deepEqual([...reconstructed.intensity], [...standard.intensity]);
 });
 
 test('MGBP rejects an isolated link outlier and handles zero MAD', () => {
@@ -403,4 +409,113 @@ test('CGBP requires distributed active evidence and supports baseline merging', 
   assert.equal(baselines.validLinks[0], 3);
   assert.equal(baselines.supportLinks[0], 2);
   assert.equal(baselines.volume[0], 3);
+});
+
+// --- Soft-consensus confidence -------------------------------------------------
+
+const fusionVoxel: Vec3 = { x: fusionGrid.min[0], y: fusionGrid.min[1], z: fusionGrid.min[2] };
+
+function excessTapFor(from: number, to: number): number {
+  const tx = fusionGeometry.positions[from];
+  const rx = fusionGeometry.positions[to];
+  const direct = distance(tx, rx);
+  const excess = distance(fusionVoxel, tx) + distance(fusionVoxel, rx) - direct;
+  return excess / METRES_PER_TAP;
+}
+
+function softLinkProfile(
+  from: number,
+  to: number,
+  background: number,
+  targetTap: number,
+  targetHeight: number
+): LinkProfile {
+  const tapCount = 401; // 0.0 .. 40.0 in 0.1-tap steps
+  const excessTaps = new Float32Array(tapCount);
+  const rawMagnitude = new Float32Array(tapCount);
+  for (let i = 0; i < tapCount; i++) {
+    const tap = i * 0.1;
+    excessTaps[i] = tap;
+    const d = (tap - targetTap) / 0.5;
+    rawMagnitude[i] = background + targetHeight * Math.exp(-0.5 * d * d);
+  }
+  return {
+    from,
+    to,
+    excessTaps,
+    rawMagnitude,
+    magnitude: rawMagnitude.slice(),
+    medianCorrelation: 0.9,
+    acceptedFrames: 16,
+  };
+}
+
+const softDirectedLinks: [number, number][] = [[0, 1], [1, 0], [0, 2], [2, 0], [1, 2], [2, 1]];
+
+function buildSoftScenario(
+  bumpedLinks: Set<string>,
+  height: number,
+  scales: Partial<Record<string, number>> = {}
+): LinkProfile[] {
+  return softDirectedLinks.map(([from, to]) => {
+    const key = `${from}>${to}`;
+    const scale = scales[key] ?? 1;
+    const tap = excessTapFor(from, to);
+    const bumped = bumpedLinks.has(key);
+    return softLinkProfile(from, to, 1 * scale, tap, (bumped ? height : 0) * scale);
+  });
+}
+
+const softConfig = {
+  ...DEFAULT_RECONSTRUCTION_CONFIG,
+  mode: 'soft' as const,
+  softNoiseStartTap: 5,
+  softNoiseEndTap: 15,
+};
+
+test('estimateSoftBackground and estimateNoiseFloor read the configured tap window', () => {
+  const profile = softLinkProfile(0, 1, 2, 20, 8);
+  const background = estimateSoftBackground(profile, 5, 15);
+  assert.ok(Math.abs(background - 2) < 0.05, `background estimate ${background}`);
+  const floor = estimateNoiseFloor(profile, 5, 15, 3);
+  assert.ok(floor >= background, `noise floor ${floor} should be >= plain background ${background}`);
+  assert.equal(estimateSoftBackground(profile, 50, 60), Infinity);
+});
+
+test('soft consensus stays near zero when no link shows evidence above its own background', () => {
+  const profiles = buildSoftScenario(new Set(), 0);
+  const volume = reconstruct(profiles, fusionGeometry, fusionGrid, softConfig);
+  assert.equal(volume.validLinks[0], 6);
+  assert.ok(volume.volume[0] < 0.05, `confidence ${volume.volume[0]}`);
+});
+
+test('soft consensus suppresses a single dominant link regardless of its amplitude', () => {
+  const profiles = buildSoftScenario(new Set(['0>1']), 50);
+  const volume = reconstruct(profiles, fusionGeometry, fusionGrid, softConfig);
+  assert.ok(volume.volume[0] < 0.1, `confidence ${volume.volume[0]}`);
+});
+
+test('soft consensus confidence rises continuously as more links agree', () => {
+  const at = (links: string[]) =>
+    reconstruct(buildSoftScenario(new Set(links), 5), fusionGeometry, fusionGrid, softConfig).volume[0];
+  const zero = at([]);
+  const one = at(['0>1']);
+  const three = at(['0>1', '1>0', '0>2']);
+  const six = at(['0>1', '1>0', '0>2', '2>0', '1>2', '2>1']);
+  assert.ok(zero < one, `zero ${zero} should be < one ${one}`);
+  assert.ok(one < three, `one ${one} should be < three ${three}`);
+  assert.ok(three < six, `three ${three} should be < six ${six}`);
+  assert.ok(six > 0.8, `six-link agreement confidence ${six} should be high`);
+});
+
+test('soft consensus is invariant to per-link amplitude scale (unequal link powers)', () => {
+  const bumped = new Set(['0>1', '1>0', '0>2']);
+  const baseline = reconstruct(buildSoftScenario(bumped, 5), fusionGeometry, fusionGrid, softConfig).volume[0];
+  const scaled = reconstruct(
+    buildSoftScenario(bumped, 5, { '0>1': 100, '1>0': 0.01, '0>2': 7, '2>0': 250, '1>2': 0.3, '2>1': 40 }),
+    fusionGeometry,
+    fusionGrid,
+    softConfig
+  ).volume[0];
+  assert.ok(Math.abs(baseline - scaled) < 1e-3, `baseline=${baseline} scaled=${scaled}`);
 });

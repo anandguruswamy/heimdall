@@ -75,10 +75,10 @@
     if (!gl || !program) return;
     const vertices: number[] = [];
     for (const point of points) {
-      vertices.push(...normalizedPosition(point), normalized(point.magnitude), 0);
+      vertices.push(...normalizedPosition(point), normalized(point.magnitude), 0, point.sizeScale ?? 1);
     }
     for (const node of nodes) {
-      vertices.push(...normalizedPosition(node), 1, 1);
+      vertices.push(...normalizedPosition(node), 1, 1, 1);
     }
     const b = bounds;
     const corners = [
@@ -87,17 +87,19 @@
     ].map((point) => normalizedPosition({ x: point[0], y: point[1], z: point[2] }));
     const edges = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
     for (const [a, c] of edges) {
-      vertices.push(...corners[a], 0, 2, ...corners[c], 0, 2);
+      vertices.push(...corners[a], 0, 2, 1, ...corners[c], 0, 2, 1);
     }
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
-    const stride = 5 * Float32Array.BYTES_PER_ELEMENT;
+    const stride = 6 * Float32Array.BYTES_PER_ELEMENT;
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, stride, 0);
     gl.enableVertexAttribArray(1);
     gl.vertexAttribPointer(1, 1, gl.FLOAT, false, stride, 3 * 4);
     gl.enableVertexAttribArray(2);
     gl.vertexAttribPointer(2, 1, gl.FLOAT, false, stride, 4 * 4);
+    gl.enableVertexAttribArray(3);
+    gl.vertexAttribPointer(3, 1, gl.FLOAT, false, stride, 5 * 4);
   }
 
   function render() {
@@ -158,6 +160,7 @@
       layout(location=0) in vec3 aPosition;
       layout(location=1) in float aIntensity;
       layout(location=2) in float aKind;
+      layout(location=3) in float aSize;
       uniform float uYaw;
       uniform float uPitch;
       uniform float uDistance;
@@ -172,7 +175,7 @@
         pitched.z -= uDistance;
         float near = 0.1, far = 20.0, f = 1.75;
         gl_Position = vec4(pitched.x*f/uAspect, pitched.y*f, ((far+near)/(near-far))*pitched.z + (2.0*far*near)/(near-far), -pitched.z);
-        gl_PointSize = aKind > 0.5 ? 15.0 : uPointSize * (1.0 + 1.8*aIntensity);
+        gl_PointSize = aKind > 0.5 ? 15.0 : uPointSize * (0.6 + 1.2*aSize);
         vIntensity = aIntensity;
         vKind = aKind;
       }

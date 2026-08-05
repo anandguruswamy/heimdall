@@ -38,8 +38,9 @@ export const DEFAULT_MAP_CONFIG: MapConfig = {
   maxVoxels: 200_000,
 };
 
-export type ReconstructionMode = 'standard' | 'mgbp' | 'cgbp';
+export type ReconstructionMode = 'standard' | 'soft' | 'mgbp' | 'cgbp';
 export type CgbpVoteBasis = 'directed' | 'baseline';
+export type MapDisplayChannel = 'confidence' | 'intensity';
 
 export type ReconstructionConfig = {
   mode: ReconstructionMode;
@@ -53,10 +54,16 @@ export type ReconstructionConfig = {
   cgbpMinValid: number;
   cgbpMinActive: number;
   cgbpVoteBasis: CgbpVoteBasis;
+  softNoiseStartTap: number;
+  softNoiseEndTap: number;
+  softScoreSharpness: number;
+  softScoreCenter: number;
+  softCountSlope: number;
+  softCountCenter: number;
 };
 
 export const DEFAULT_RECONSTRUCTION_CONFIG: ReconstructionConfig = {
-  mode: 'standard',
+  mode: 'soft',
   mgbpMadMultiplier: 3,
   mgbpMinValid: 6,
   mgbpMinRetained: 4,
@@ -67,6 +74,12 @@ export const DEFAULT_RECONSTRUCTION_CONFIG: ReconstructionConfig = {
   cgbpMinValid: 6,
   cgbpMinActive: 4,
   cgbpVoteBasis: 'directed',
+  softNoiseStartTap: 2,
+  softNoiseEndTap: 12,
+  softScoreSharpness: 3,
+  softScoreCenter: 1.8,
+  softCountSlope: 1.5,
+  softCountCenter: 4,
 };
 
 export type GridSpec = {
@@ -109,10 +122,11 @@ export type MapVolume = {
   validLinks: Uint8Array;
   supportLinks: Uint8Array;
   consensus: Float32Array;
+  intensity: Float32Array;
   grid: GridSpec;
 };
 
-export type MapPoint = { x: number; y: number; z: number; magnitude: number; confidence: number };
+export type MapPoint = { x: number; y: number; z: number; magnitude: number; confidence: number; sizeScale: number };
 
 export type PointCloud = {
   points: MapPoint[];
@@ -126,6 +140,7 @@ export type LinkStats = {
   frames: number;
   accepted: number;
   medianCorrelation: number;
+  noiseFloor?: number;
 };
 
 export type MapSnapshot = {
@@ -442,7 +457,7 @@ export function backproject(
       consensus[i] = 1;
     }
   }
-  return { volume, confidence, validLinks, supportLinks, consensus, grid };
+  return { volume, confidence, validLinks, supportLinks, consensus, intensity: volume, grid };
 }
 
 type PreparedProfile = {
@@ -452,20 +467,43 @@ type PreparedProfile = {
   direct: number;
   weight: number;
   noiseFloor: number;
+  softFloor: number;
   group: number;
 };
 
-const noiseFloor = (profile: LinkProfile, startTap: number, endTap: number, margin: number): number => {
+const collectWindow = (profile: LinkProfile, startTap: number, endTap: number): number[] => {
   const low = Math.min(startTap, endTap);
   const high = Math.max(startTap, endTap);
   const samples: number[] = [];
   for (let i = 0; i < profile.excessTaps.length; i++) {
     if (profile.excessTaps[i] >= low && profile.excessTaps[i] <= high) samples.push(profile.rawMagnitude[i]);
   }
+  return samples;
+};
+
+/** Median + margin*1.4826*MAD noise-reference estimate used by CGBP's activity gate. */
+export const estimateNoiseFloor = (
+  profile: LinkProfile,
+  startTap: number,
+  endTap: number,
+  margin: number
+): number => {
+  const samples = collectWindow(profile, startTap, endTap);
   if (!samples.length) return Infinity;
   const centre = median(samples);
   const deviations = samples.map((value) => Math.abs(value - centre));
   return Math.max(0, centre + Math.max(0, margin) * 1.4826 * median(deviations));
+};
+
+/**
+ * Plain robust background level (no margin) used to form the soft-consensus
+ * ratio x/n. The score's own centre (softScoreCenter) supplies the margin
+ * above background, so this stays unmargined to avoid double-counting it.
+ */
+export const estimateSoftBackground = (profile: LinkProfile, startTap: number, endTap: number): number => {
+  const samples = collectWindow(profile, startTap, endTap);
+  if (!samples.length) return Infinity;
+  return Math.max(median(samples), 1e-6);
 };
 
 const prepareProfiles = (
@@ -499,12 +537,13 @@ const prepareProfiles = (
         transmitter.z - receiver.z
       ),
       weight: Math.max(0.05, profile.medianCorrelation),
-      noiseFloor: noiseFloor(
+      noiseFloor: estimateNoiseFloor(
         profile,
         config.cgbpNoiseStartTap,
         config.cgbpNoiseEndTap,
         config.cgbpNoiseMargin
       ),
+      softFloor: estimateSoftBackground(profile, config.softNoiseStartTap, config.softNoiseEndTap),
       group,
     });
   }
@@ -527,6 +566,7 @@ export function reconstruct(
   const validLinks = new Uint8Array(total);
   const supportLinks = new Uint8Array(total);
   const consensus = new Float32Array(total);
+  const intensity = new Float32Array(total);
   const values = new Float64Array(prepared.profiles.length);
   const valid = new Uint8Array(prepared.profiles.length);
   const coordinates = [
@@ -583,7 +623,35 @@ export function reconstruct(
           consensus[index] = retained / linkCount;
           if (retained >= config.mgbpMinRetained && weightTotal > 0) {
             volume[index] = weighted / weightTotal;
+            intensity[index] = volume[index];
             confidence[index] = weightTotal;
+          }
+          continue;
+        }
+
+        if (config.mode === 'soft') {
+          validLinks[index] = linkCount;
+          let softCount = 0;
+          let weighted = 0;
+          let weightTotal = 0;
+          for (let p = 0; p < valid.length; p++) {
+            if (!valid[p]) continue;
+            const item = prepared.profiles[p];
+            const ratio = values[p] / item.softFloor;
+            const score =
+              1 / (1 + Math.exp(-config.softScoreSharpness * (ratio - config.softScoreCenter)));
+            softCount += score;
+            weighted += values[p] * item.weight;
+            weightTotal += item.weight;
+          }
+          const confidenceValue =
+            1 / (1 + Math.exp(-config.softCountSlope * (softCount - config.softCountCenter)));
+          volume[index] = confidenceValue;
+          if (weightTotal > 0) intensity[index] = weighted / weightTotal;
+          if (linkCount > 0) {
+            confidence[index] = Math.max(softCount, 1e-6);
+            supportLinks[index] = Math.max(0, Math.min(255, Math.round(softCount)));
+            consensus[index] = Math.min(1, softCount / linkCount);
           }
           continue;
         }
@@ -605,6 +673,7 @@ export function reconstruct(
           consensus[index] = active / linkCount;
           if (active >= config.cgbpMinActive && consensus[index] >= config.cgbpConsensusFraction && weightTotal > 0) {
             volume[index] = weighted / weightTotal;
+            intensity[index] = volume[index];
             confidence[index] = weightTotal;
           }
           continue;
@@ -644,16 +713,23 @@ export function reconstruct(
           weightTotal > 0
         ) {
           volume[index] = weighted / weightTotal;
+          intensity[index] = volume[index];
           confidence[index] = weightTotal;
         }
       }
     }
   }
-  return { volume, confidence, validLinks, supportLinks, consensus, grid };
+  return { volume, confidence, validLinks, supportLinks, consensus, intensity, grid };
 }
 
-export function volumeToPoints(volume: MapVolume, percentile: number, limit = 50_000): PointCloud {
-  const values = volume.volume;
+export function volumeToPoints(
+  volume: MapVolume,
+  percentile: number,
+  limit = 50_000,
+  options?: { channel?: MapDisplayChannel; minValue?: number }
+): PointCloud {
+  const channel = options?.channel ?? 'intensity';
+  const values = channel === 'confidence' ? volume.volume : volume.intensity;
   const confidence = volume.confidence;
   const total = values.length;
   const valid: number[] = [];
@@ -667,7 +743,10 @@ export function volumeToPoints(volume: MapVolume, percentile: number, limit = 50
   const lower = Math.floor(rank);
   const fraction = rank - lower;
   const upper = Math.min(sorted.length - 1, lower + 1);
-  const threshold = sorted[lower] + (sorted[upper] - sorted[lower]) * fraction;
+  const threshold = Math.max(
+    sorted[lower] + (sorted[upper] - sorted[lower]) * fraction,
+    options?.minValue ?? -Infinity
+  );
 
   const selected: number[] = [];
   for (let i = 0; i < total; i++) {
@@ -686,12 +765,14 @@ export function volumeToPoints(volume: MapVolume, percentile: number, limit = 50
     const remainder = index - iz * ny * nx;
     const iy = Math.floor(remainder / nx);
     const ix = remainder - iy * nx;
+    const rawSize = volume.consensus[index];
     points[k] = {
       x: min[0] + ix * spacing[0],
       y: min[1] + iy * spacing[1],
       z: min[2] + iz * spacing[2],
       magnitude: values[index],
       confidence: confidence[index],
+      sizeScale: Number.isFinite(rawSize) ? Math.max(0, Math.min(1, rawSize)) : 1,
     };
   }
   return { points, threshold, valueRange };

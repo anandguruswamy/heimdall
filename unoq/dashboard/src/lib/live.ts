@@ -102,6 +102,7 @@ export class LiveStore {
   settings: Record<string, unknown> | null = null;
   calibration: Record<string, unknown> | null = null;
   currentRound: number | undefined;
+  cirRevision = 0;
   latestReceivedAtMs = 0;
   lastError = '';
   private histories = new Map<string, Float32Array>();
@@ -129,6 +130,7 @@ export class LiveStore {
     this.dirtyFrames.clear();
     this.framePayloads.clear();
     this.cirHistory.clear();
+    this.cirRevision++;
     if (!this.boardFreeze) this.cirReference.clear();
     this.currentRound = undefined;
     this.lastError = '';
@@ -147,6 +149,7 @@ export class LiveStore {
       this.dirtyFrames.clear();
       this.framePayloads.clear();
       this.cirHistory.clear();
+      this.cirRevision++;
       if (!this.boardFreeze) this.cirReference.clear();
     }
     this.processingEpoch = envelope.processingEpoch;
@@ -198,6 +201,7 @@ export class LiveStore {
       history.push(payload);
       if (history.length > 64) history.shift();
       this.cirHistory.set(id, history);
+      this.cirRevision++;
     }
     current.updatedAt = Date.now(); current.payloads ??= {}; current.payloads[topic] = payload;
     current.quality = number(payload.quality) ?? number(record(payload.sample).quality) ?? current.quality;
