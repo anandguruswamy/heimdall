@@ -1,0 +1,30 @@
+# Run 1, GPU sanity variant: same stage-1 dataset and objective as
+# train-run1.yaml, but larger batch size and a wall-clock cap for the
+# Vast.ai size-ramp sanity checks (plan Phase 6 step "monitor and decide").
+# epochs is set high; max_minutes is the real stop condition.
+name: train-run1-gpu-sanity
+dataset_dir: datasets/stage1
+epochs: 100000
+batch_size: 32
+lr: 0.0003
+wd: 0.01
+warmup_steps: 100
+clip: 1.0
+seed: 0
+log_every: 10
+checkpoint_every: 200
+balance_every: 0
+amp: false
+permute_labels: false
+device: cuda
+eval_every: 50
+early_stop_patience: 6
+early_stop_min_delta: 1e-4
+max_steps: 0
+max_minutes: 20
+weights:
+  set_: 1.0
+  cpx: 1.0
+  env: 0.5
+  fft: 0.1
+  reg: 0.01
