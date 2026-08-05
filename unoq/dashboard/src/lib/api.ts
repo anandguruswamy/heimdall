@@ -14,6 +14,7 @@ const tabTopics = (tab: Tab): string[] => {
     case 'Network Health': return ['network-health'];
     case 'Distance Calibration': return ['distance-calibration'];
     case 'CFO': return ['cfo'];
+    case 'Radar Map': return ['instantaneous-cir'];
   }
 };
 

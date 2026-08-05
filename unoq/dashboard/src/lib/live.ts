@@ -232,6 +232,12 @@ export class LiveStore {
     this.dirtyFrames.clear();
   }
 
+  cirSamples(id: string, count: number): Record<string, unknown>[] {
+    const history = this.cirHistory.get(id);
+    if (!history || count <= 0) return [];
+    return history.slice(-count);
+  }
+
   setWaterfallSeconds(seconds: number): void { this.waterfallSeconds=Math.max(1,Math.min(30,seconds)); }
 
   setShowBridgedDs(value: boolean): void {

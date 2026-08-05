@@ -2,9 +2,11 @@
   import { onMount } from 'svelte';
   import PlotCanvas from './lib/PlotCanvas.svelte';
   import BoardPositions from './lib/BoardPositions.svelte';
+  import RadarMap from './lib/RadarMap.svelte';
   import { HeimdallApi } from './lib/api';
   import { linksFor } from './lib/demo';
   import { LiveStore } from './lib/live';
+  import type { MapSnapshot } from './lib/map/map-engine';
   import { tabs, type Link, type PlotFrame, type StreamStatus, type Tab, type TopicKey } from './lib/types';
 
   let active: Tab = $state('Network Health');
@@ -61,6 +63,7 @@
   let clipName = $state('');
   let clipNote = $state('');
   let clipDurationS = $state(10);
+  let mapSnapshot = $state<MapSnapshot | null>(null);
   let compactMode = $state(false);
   let uiCommitLatencyMs = $state(0);
   let waterfallSeconds = $state(5);
@@ -214,7 +217,7 @@
   }
 
   function topicFor(tab: Tab): TopicKey {
-    return ({ 'Network Health':'health','Live Distance':'distance','Board Positions':'distance','Live CIR':'cir','CIR Waterfall':'waterfall','Slow-Time FFT':'slow-fft','Fast-Time FFT':'fast-fft','CFO':'cfo','Distance Calibration':'calibration' } as const)[tab];
+    return ({ 'Network Health':'health','Live Distance':'distance','Board Positions':'distance','Live CIR':'cir','CIR Waterfall':'waterfall','Slow-Time FFT':'slow-fft','Fast-Time FFT':'fast-fft','CFO':'cfo','Distance Calibration':'calibration','Radar Map':'cir' } as const)[tab];
   }
 
   function linkMetric(link: Link) {
@@ -594,6 +597,8 @@
         <article class="panel editor"><header><span>CALIBRATION CAPTURE</span><b>{snapshotState.toUpperCase()}</b></header><button class="snapshot" onclick={takeSnapshot} disabled={snapshotState === 'capturing'}>START ONE 10 SECOND SNAPSHOT</button><div class="capture-progress"><i style={`width:${snapshotProgress}%`}></i></div><div class="pair-label">PAIR <span>{calibrationPair.replace('>', ' ↔ ')}</span></div><label>TAPE REFERENCE <span>metres</span><input value={referencesM[calibrationPair] ?? ''} oninput={(e)=>referencesM={...referencesM,[calibrationPair]:e.currentTarget.value}} inputmode="decimal" min="0.01" type="number" step="0.001" placeholder="5.000" /></label><button class="snapshot" onclick={solveCalibration} disabled={snapshotState !== 'complete'}>SOLVE REFERENCES</button><div class="offset-readout"><span>BOARD OFFSETS</span><b>{boardOffsets() || 'Solve to calculate offsets'}</b><span>RESIDUALS</span><b>{residualSummary() || 'No solved residuals'}</b><span>FIT RMSE / REGULARIZATION</span><b>{calibrationSolution ? `${(Number(calibrationSolution.residual_rmse_m)*100).toFixed(2)} cm${calibrationSolution.poor_fit ? ' · WARNING > 5 cm' : ''} · λ ${Number(calibrationSolution.regularization).toExponential(1)}` : 'Not solved'}</b></div><button class="primary" onclick={applyCalibration} disabled={!calibrationSolution || calibrationSolution.has_full_rank !== true}>REVIEW AND APPLY FULL-RANK SOLUTION</button><button class="snapshot" onclick={rollbackCalibration}>ROLL BACK PREVIOUS CALIBRATION</button><p class:error={snapshotState === 'error' || calibrationSolution?.poor_fit === true || (calibrationSolution !== null && calibrationSolution.has_full_rank !== true)}>{calibrationSolution !== null && calibrationSolution.has_full_rank !== true ? 'More independent pair references are required before apply.' : backendMessage}</p></article>
         <article class="panel preview"><header><span>FIT PREVIEW</span><b>RESIDUAL / CENTIMETRES</b></header><div class="preview-plot"><PlotCanvas frame={calibrationPreview} revision={liveRevision} label="Calibration residual preview" /></div><div class="fit-stats"><div><span>RANK</span><b>{Number(calibrationSolution?.rank ?? 0)} / {Number(calibrationSolution?.columns ?? nodeCount)}</b></div><div><span>CONDITION</span><b>{Number(calibrationSolution?.condition_number ?? 0).toFixed(1)}</b></div><div><span>NEXT PAIR</span><b>{recommendedPair()}</b></div></div></article>
       </section>
+    {:else if active === 'Radar Map'}
+      <RadarMap {live} snapshot={mapSnapshot} onSnapshot={(value) => mapSnapshot = value} onNavigate={(tab) => setTab(tab)} />
     {:else}
       <section class="link-workspace">
         {#if compactMode}

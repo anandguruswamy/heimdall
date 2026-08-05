@@ -1,5 +1,12 @@
 # Heimdall Radar Map
 
+> **RETIRED (2026-08-05).** This Windows-host replay tool is no longer
+> maintained. Live bistatic mapping now runs in the UNO Q dashboard as the
+> **Radar Map** tab, which backprojects the aligned CIRs from the
+> `instantaneous-cir` stream directly (no raw CIR blob/DGC scaling needed).
+> This directory is retained as reference-only; do not build on it for new
+> work. The content below describes the frozen behaviour.
+
 This experimental Windows-host tool replays `.husb` captures into a 3D
 bistatic backprojection volume. The UNO Q remains the system of record and owns
 live USB ingestion, validation, archival, fusion, and its dashboard.

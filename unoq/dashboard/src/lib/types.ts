@@ -7,7 +7,8 @@ export const tabs = [
   'Slow-Time FFT',
   'Fast-Time FFT',
   'CFO',
-  'Distance Calibration'
+  'Distance Calibration',
+  'Radar Map'
 ] as const;
 
 export type Tab = (typeof tabs)[number];
