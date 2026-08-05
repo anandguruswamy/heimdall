@@ -56,3 +56,7 @@ hardware-validation records.
 
 - [Offset-Free Joint Time-of-Flight, Clock-Rate, and Clock-Drift Estimation](docs/papers/joint-tof-clock-estimation.html)
 - [Geometry-Conditioned Neural 3D Scene Reconstruction from Multistatic UWB Channel Impulse Responses](docs/papers/neural-uwb-scene-reconstruction.html)
+
+## License
+
+Heimdall is licensed under the [MIT License](LICENSE).
