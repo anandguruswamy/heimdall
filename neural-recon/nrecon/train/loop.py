@@ -243,14 +243,20 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
     start_step = 0
     ckpt = out / "checkpoint.pt"
     if ckpt.exists():
-        state = torch.load(ckpt, map_location="cpu")
+        # weights_only=False: PyTorch >=2.6 defaults torch.load to
+        # weights_only=True, which cannot unpickle our checkpoint (its
+        # "config" dict, saved from cfg.__dict__, trips the stricter
+        # unpickler on a numpy scalar). Our own checkpoints are trusted
+        # (never loaded from an untrusted source).
+        state = torch.load(ckpt, map_location="cpu", weights_only=False)
         model.load_state_dict(state["model"])
         optim.load_state_dict(state["optim"])
         _optimizer_state_to_device(optim, device)
         start_step = state["step"]
         print(f"resumed from step {start_step}")
     elif cfg.init_checkpoint:
-        init_state = torch.load(cfg.init_checkpoint, map_location="cpu")
+        init_state = torch.load(cfg.init_checkpoint, map_location="cpu",
+                                weights_only=False)
         model.load_state_dict(init_state["model"])
         print(f"curriculum warm-start: loaded weights from "
               f"{cfg.init_checkpoint} (its step {init_state['step']}); "
