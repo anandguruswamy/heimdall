@@ -47,6 +47,8 @@ def main(argv: list = None) -> None:
                     help="override config device, e.g. cpu, cuda, cuda:0")
     ap.add_argument("--max-minutes", type=float, default=None,
                     help="override config max_minutes (wall-clock cap)")
+    ap.add_argument("--init-checkpoint", default=None,
+                    help="override config init_checkpoint (curriculum warm-start)")
     args = ap.parse_args(argv)
 
     raw = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
@@ -56,6 +58,8 @@ def main(argv: list = None) -> None:
         raw["device"] = args.device
     if args.max_minutes is not None:
         raw["max_minutes"] = args.max_minutes
+    if args.init_checkpoint is not None:
+        raw["init_checkpoint"] = args.init_checkpoint
     raw = _coerce_types(raw, TrainConfig)
     cfg = TrainConfig(**raw)
     rev = "unknown"

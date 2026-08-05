@@ -54,6 +54,10 @@ class TrainConfig:
     max_steps: int = 0  # hard step cap; 0 = epochs * batches
     max_minutes: float = 0.0  # wall-clock cap; 0 disables
     device: str = "cpu"  # "cpu" or "cuda" (or "cuda:N"); model/kernel/batches moved here
+    init_checkpoint: str = ""  # curriculum warm-start: load model weights only
+                               # (fresh optimizer/step=0) from a PRIOR run's
+                               # checkpoint.pt; ignored if this run already
+                               # has its own checkpoint to resume from
 
 
 class RunMonitor:
@@ -245,6 +249,12 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
         _optimizer_state_to_device(optim, device)
         start_step = state["step"]
         print(f"resumed from step {start_step}")
+    elif cfg.init_checkpoint:
+        init_state = torch.load(cfg.init_checkpoint, map_location="cpu")
+        model.load_state_dict(init_state["model"])
+        print(f"curriculum warm-start: loaded weights from "
+              f"{cfg.init_checkpoint} (its step {init_state['step']}); "
+              f"optimizer and step count start fresh")
 
     weights = LossWeights(**cfg.weights)
     balancer = GradNormBalancer(weights, power=cfg.balance_power) if cfg.balance_every else None
