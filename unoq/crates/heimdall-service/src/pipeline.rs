@@ -553,7 +553,9 @@ impl Pipeline {
         }
         let cir_topics =
             Topic::Cir.bit() | Topic::Waterfall.bit() | Topic::FastFft.bit() | Topic::SlowFft.bit();
-        if observation.obs_flags & 0x01 != 0 && topics & cir_topics != 0 {
+        if observation.obs_flags & 0x01 != 0
+            && (topics & cir_topics != 0 || self.capture_cir_active)
+        {
             messages.extend(self.consume_cir(
                 &observation,
                 event_tick,
@@ -659,7 +661,8 @@ impl Pipeline {
         let want_waterfall = topics & Topic::Waterfall.bit() != 0;
         let want_fast = topics & Topic::FastFft.bit() != 0;
         let want_slow = topics & Topic::SlowFft.bit() != 0;
-        if fit_algorithm == "robust_grid" && (want_cir || want_waterfall || want_fast || want_slow)
+        if fit_algorithm == "robust_grid"
+            && (want_cir || want_waterfall || want_fast || want_slow || self.capture_cir_active)
         {
             let requested = self.settings.cir_grid_reference_mode.as_str();
             let (grid_reference, effective) = if requested == "frozen" {
@@ -2702,6 +2705,21 @@ mod tests {
                 .all(|message| crate::telemetry::envelope_topic(message) == Some(Topic::Distance))
         );
         assert_eq!(pipeline.summary().current_round, Some(11));
+    }
+
+    #[test]
+    fn active_capture_processes_cir_without_topic_demand() {
+        let mut pipeline = Pipeline::new();
+        pipeline.configure(&hello_record());
+        pipeline.set_capture_active(true);
+        let messages = pipeline.consume_canonical_inner(observation(0, 1, 10, 0, 100, 1), 0);
+        assert!(messages.is_empty());
+        assert_eq!(pipeline.links[&(0, 1)].cir.len(), 1);
+        let samples = pipeline.drain_capture_cir_samples();
+        assert_eq!(samples.len(), 1);
+        assert_eq!((samples[0].from, samples[0].to), (0, 1));
+        assert!(!samples[0].magnitude.is_empty());
+        assert_eq!(samples[0].magnitude.len(), samples[0].iq.len());
     }
 
     #[test]
