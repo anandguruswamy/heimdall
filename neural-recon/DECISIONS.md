@@ -643,10 +643,10 @@ Append dated entries. Never rewrite history; supersede with a new entry.
   evaluated against Phase 7's held-out suite.
 - Cost: this session (instance churn + the full curriculum) used roughly
   2.5-3 hours of RTX 4070 Ti time (~$0.10-0.11/hr, mostly wasted on
-  stuck-host and debugging churn) plus ~1.5 hours of Threadripper+RTX 4090
-  time (~$0.356/hr) -- call it under $1 total. Instance left **running**
-  (not stopped) at the end of this session pending the user's review in
-  the morning.
+  stuck-host and debugging churn) plus ~1.5-2 hours of Threadripper+RTX
+  4090 time (~$0.356/hr) -- call it under $1 total. Instance **stopped**
+  (not destroyed -- checkpoints/environment preserved, storage-only
+  billing) at the end of this session.
 - Not yet done: re-running run 1 with a longer `early_stop_patience`
   before trusting the curriculum's starting point fully; Phase 7
   evaluation of the run 4 checkpoint; a decision on whether the loss
@@ -654,3 +654,49 @@ Append dated entries. Never rewrite history; supersede with a new entry.
   reflects a specific reproducible stage-2 data pathology worth
   investigating further, or was simply optimizer noise now adequately
   guarded against.
+
+## 2026-08-05 Phase 7 evaluation, first pass: no-go, checkpoint is undertrained
+
+- User: "let's do it" (proceed with Phase 7 evaluation of the run 4
+  checkpoint). `plan/phase-7-evaluation.md`'s full protocol (3 metric
+  families, 6 systems, 4 stratified test sets, decisive experiment D1,
+  ablations, calibration diagrams) is a large undertaking; given the
+  checkpoint was trained on a deliberately slimmed step budget (see the
+  curriculum entry above), a full academic-grade pass was deferred in
+  favor of getting concrete numbers in front of the user quickly. Full
+  scope/rationale/deferred-items list in `reports/N7-evaluation.md`.
+- Implemented: `nrecon/eval/metrics.py` (primitive-recovery metrics --
+  type accuracy, plane normal/offset error, surfel center/covariance
+  error, capsule center/size error, matched via the Phase 6 Hungarian
+  cost; a held-out-link physical-consistency check), unit-tested on
+  hand-built scenes with known errors (6 tests,
+  `tests/test_eval_metrics.py`); `nrecon/eval/protocol.py` (the
+  "network" system only, one test set, per-scene runtime);
+  `configs/eval-test-fixed.yaml` (500 scenes, fixed live geometry,
+  stage-3/4-equivalent complexity, `base_seed: 900000` disjoint from
+  every training stage's seed range).
+- **Results (500 scenes): far from the plan's targets across every
+  metric** -- plane normal error median 17.3 deg (target <5), plane
+  offset median 0.70 m (target <5 cm), surfel/capsule center error
+  median 0.64 m (target <10 cm), type accuracy 38.9% (~33% chance level
+  for 3 non-empty types), held-out-link envelope error median 1.05
+  (roughly a factor-of-e log-magnitude mismatch). Full table in
+  `reports/N7-evaluation.md` / `reports/eval-network-test-fixed.json`.
+- **Expected, not a surprising failure**: the full curriculum
+  (runs 1-4) totaled 2760 optimizer steps; the paper (`plan/phase-6-
+  training.md`, Sec. VIII-D) specifies 150k-300k steps *per run*
+  (600k-1.2M total) -- this checkpoint saw ~0.2-0.5% of the reference
+  budget, deliberately slimmed to validate the training *pipeline*
+  (which it did: curriculum warm-starting worked end-to-end, plus the
+  five infrastructure bugs above only surface with many real optimizer
+  steps) within a practical overnight budget, not to produce a converged
+  model.
+- **Verdict: no-go for Phase 8** with the current checkpoint -- not a
+  concern about the architecture or tonight's fixes (the pipeline is now
+  validated and stable), purely a training-budget gap. Recommended next
+  step: train substantially longer (full reference budget or a
+  deliberately larger slimmed budget, a cost/time decision for the user)
+  and re-run this same `test-fixed` evaluation for a direct before/after
+  comparison before investing in the deferred protocol breadth (other
+  systems, remaining test sets, ablations, D1, calibration).
+- Verified: 77/77 tests pass (6 new in `test_eval_metrics.py`).

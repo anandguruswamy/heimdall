@@ -1,0 +1,62 @@
+{
+  "checkpoint": "runs\\train-run4\\checkpoint.pt",
+  "dataset_dir": "datasets\\eval-test-fixed",
+  "n_scenes": 500,
+  "device": "cpu",
+  "mean_runtime_s": 0.02238840140053071,
+  "primitive_recovery": {
+    "n_truth": 6827,
+    "n_matched": 6827,
+    "n_pred_unmatched": 1124,
+    "type_correct": 2659,
+    "recall": 1.0,
+    "type_accuracy": 0.3894829354035447,
+    "plane_normal_err_deg": {
+      "median": 17.26194953918457,
+      "mean": 32.15623066549622,
+      "n": 4673
+    },
+    "plane_offset_err_m": {
+      "median": 0.6983623504638672,
+      "mean": 0.7716250429948341,
+      "n": 4673
+    },
+    "surfel_center_err_m": {
+      "median": 0.6354507803916931,
+      "mean": 0.6813067504759955,
+      "n": 1634
+    },
+    "surfel_cov_frobenius_err": {
+      "median": 0.14051677286624908,
+      "mean": 0.3083803498276225,
+      "n": 1634
+    },
+    "capsule_center_err_m": {
+      "median": 0.6422529220581055,
+      "mean": 0.6797890843823552,
+      "n": 520
+    },
+    "capsule_halflen_err_m": {
+      "median": 0.41444478929042816,
+      "mean": 0.4334439914387006,
+      "n": 520
+    },
+    "capsule_radius_err_m": {
+      "median": 0.12030801922082901,
+      "mean": 0.12352079700392027,
+      "n": 520
+    }
+  },
+  "held_out_link_consistency": {
+    "complex_err": {
+      "median": 0.009644148871302605,
+      "mean": 0.01033426597295329,
+      "n": 500
+    },
+    "envelope_err": {
+      "median": 1.0546775460243225,
+      "mean": 1.0540702238678932,
+      "n": 500
+    }
+  }
+}
