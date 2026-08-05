@@ -22,6 +22,7 @@
 
   let {
     live,
+    liveRevision,
     snapshot,
     dataset,
     onSnapshot,
@@ -29,6 +30,7 @@
     onNavigate,
   }: {
     live: LiveStore;
+    liveRevision: number;
     snapshot: MapSnapshot | null;
     dataset: Dataset | null;
     onSnapshot: (snapshot: MapSnapshot) => void;
@@ -41,7 +43,6 @@
   let spacing = $state(0.1);
   let percentile = $state(85);
   let pointSize = $state(3);
-  let busy = $state(false);
   let message = $state('Waiting for aligned CIR samples on this tab…');
   let timePct = $state(50);
   let playing = $state(false);
@@ -60,6 +61,11 @@
   let currentGeometryKey = '';
   const perGeometryBounds = new Map<string, MapBounds>();
   let recomputeRaf = 0;
+  let liveFrozen = $state(false);
+  let liveUpdateTimer: ReturnType<typeof setTimeout> | undefined;
+  let liveUpdateRaf = 0;
+  let lastLiveUpdateAt = 0;
+  const LIVE_UPDATE_INTERVAL_MS = 500;
 
   const liveGeometry = $derived(geometryFromBoardFreeze(live.boardFreeze));
   const datasetGeometry = $derived(dataset?.geometry ?? null);
@@ -136,6 +142,8 @@
 
   $effect(() => {
     void mapBounds;
+    void frames;
+    void spacing;
     void reconstruction.mode;
     void reconstruction.mgbpMadMultiplier;
     void reconstruction.mgbpMinValid;
@@ -148,7 +156,14 @@
     void reconstruction.cgbpMinActive;
     void reconstruction.cgbpVoteBasis;
     if (mode !== 'live') return;
-    scheduleLiveRecompute();
+    if (liveFrozen) scheduleLiveRecompute();
+    else scheduleLiveUpdate();
+  });
+
+  $effect(() => {
+    void liveRevision;
+    if (mode !== 'live' || liveFrozen) return;
+    scheduleLiveUpdate();
   });
 
   function applyBounds(next: MapBounds): void {
@@ -181,11 +196,37 @@
     recomputeRaf = requestAnimationFrame(() => {
       recomputeRaf = 0;
       if (mode !== 'live' || !snapshot?.linkProfiles?.length || !geometry) return;
-      const grid = buildGrid(geometry, snapshot.spacingM, DEFAULT_MAP_CONFIG.maxVoxels, mapBounds ?? undefined);
+      const grid = buildGrid(geometry, spacing, DEFAULT_MAP_CONFIG.maxVoxels, mapBounds ?? undefined);
       const nextReconstruction = reconstructionConfig();
       const volume = reconstruct(snapshot.linkProfiles, geometry, grid, nextReconstruction);
-      onSnapshot({ ...snapshot, grid, reconstruction: nextReconstruction, volume });
+      onSnapshot({ ...snapshot, grid, spacingM: spacing, reconstruction: nextReconstruction, volume });
     });
+  }
+
+  function scheduleLiveUpdate(): void {
+    if (liveFrozen || liveUpdateTimer || liveUpdateRaf) return;
+    const delay = Math.max(0, LIVE_UPDATE_INTERVAL_MS - (performance.now() - lastLiveUpdateAt));
+    liveUpdateTimer = setTimeout(() => {
+      liveUpdateTimer = undefined;
+      liveUpdateRaf = requestAnimationFrame(() => {
+        liveUpdateRaf = 0;
+        rebuildLiveMap();
+      });
+    }, delay);
+  }
+
+  function toggleLiveFreeze(): void {
+    liveFrozen = !liveFrozen;
+    if (liveFrozen) {
+      if (liveUpdateTimer) clearTimeout(liveUpdateTimer);
+      liveUpdateTimer = undefined;
+      cancelAnimationFrame(liveUpdateRaf);
+      liveUpdateRaf = 0;
+      message = snapshot ? 'Map frozen at the latest reconstructed live window' : 'Map frozen before a qualified live window was available';
+      return;
+    }
+    message = 'Live map updates enabled';
+    scheduleLiveUpdate();
   }
 
   function scheduleDatasetCompute(): void {
@@ -284,16 +325,14 @@
     }
   }
 
-  async function takeSnapshot(): Promise<void> {
-    if (busy) return;
+  function rebuildLiveMap(): void {
+    if (liveFrozen || mode !== 'live') return;
+    lastLiveUpdateAt = performance.now();
     const currentGeometry = liveGeometry;
     if (!currentGeometry) {
       message = 'Freeze the board on the Board Positions tab to supply antenna geometry';
       return;
     }
-    busy = true;
-    message = 'Collecting aligned CIRs and backprojecting…';
-    await new Promise((resolve) => setTimeout(resolve, 0));
     const config = { ...DEFAULT_MAP_CONFIG, frames, spacingM: spacing };
     const profiles: LinkProfile[] = [];
     const stats: LinkStats[] = [];
@@ -315,9 +354,8 @@
         }
       }
     }
-    busy = false;
     if (!profiles.length) {
-      message = 'No qualified aligned CIRs captured yet — stay on this tab while samples stream in';
+      message = 'Waiting for qualified aligned CIRs on the live feed';
       return;
     }
     const grid = buildGrid(currentGeometry, spacing, DEFAULT_MAP_CONFIG.maxVoxels, mapBounds ?? undefined);
@@ -334,7 +372,7 @@
       takenAt: Date.now(),
       volume,
     });
-    message = `Snapshot complete · ${stats.length} link${stats.length === 1 ? '' : 's'} used · ${grid.shape[0]}×${grid.shape[1]}×${grid.shape[2]} voxels`;
+    message = `Live · ${stats.length} link${stats.length === 1 ? '' : 's'} · ${grid.shape[0]}×${grid.shape[1]}×${grid.shape[2]} voxels`;
   }
 
   onMount(() => {
@@ -342,6 +380,8 @@
       cancelAnimationFrame(computeRaf);
       cancelAnimationFrame(playRaf);
       cancelAnimationFrame(recomputeRaf);
+      if (liveUpdateTimer) clearTimeout(liveUpdateTimer);
+      cancelAnimationFrame(liveUpdateRaf);
     };
   });
 </script>
@@ -350,10 +390,10 @@
   <div class="map-side">
   <div class="map-head">
     <div>
-      <p>RADAR MAP / {mode === 'live' ? 'STATIC ENVIRONMENT SNAPSHOT' : 'DATASET SCRUB'}</p>
+      <p>RADAR MAP / {mode === 'live' ? (liveFrozen ? 'LIVE WINDOW FROZEN' : 'LIVE ALIGNED-CIR FEED') : 'DATASET SCRUB'}</p>
       <h2>
         {#if mode === 'live'}
-          {snapshot ? `Taken ${new Date(snapshot.takenAt).toLocaleTimeString()}` : 'No snapshot yet'}
+          {snapshot ? (liveFrozen ? `Frozen ${new Date(snapshot.takenAt).toLocaleTimeString()}` : `Live ${new Date(snapshot.takenAt).toLocaleTimeString()}`) : 'Waiting for live CIRs'}
         {:else}
           {dataset ? `${dataset.name || 'dataset'} · ${timeDisplay}` : 'Import a dataset zip to scrub'}
         {/if}
@@ -368,7 +408,7 @@
         {#if !liveGeometry}
           <button class="primary" onclick={() => onNavigate('Board Positions')}>FREEZE BOARD ON BOARD POSITIONS TAB</button>
         {:else}
-          <button class="primary" onclick={takeSnapshot} disabled={busy}>{busy ? 'BACKPROJECTING…' : 'TAKE SNAPSHOT'}</button>
+          <button class="primary" class:frozen={liveFrozen} onclick={toggleLiveFreeze}>{liveFrozen ? 'UNFREEZE MAP' : 'FREEZE MAP'}</button>
         {/if}
       {:else}
         <button class="primary" onclick={() => fileInput?.click()} disabled={importBusy}>{importBusy ? 'IMPORTING…' : dataset ? 'REPLACE DATASET' : 'IMPORT DATASET ZIP'}</button>
@@ -386,7 +426,7 @@
     {:else if !cloud || !cloud.points.length}
       <div class="prompt panel">
         <strong>WAITING FOR ALIGNED CIRS</strong>
-        <p>The Radar Map tab subscribes to the live aligned-CIR stream. Keep this tab open so per-link samples accumulate, then take a snapshot.</p>
+        <p>The Radar Map tab is rebuilding from the live aligned-CIR stream. Keep this tab open while per-link histories fill, then use FREEZE MAP to hold a reconstructed window.</p>
       </div>
     {/if}
   {:else}
@@ -437,9 +477,6 @@
         <label><span>MIN VALID</span><input type="number" min="1" max="20" step="1" bind:value={reconstruction.cgbpMinValid} aria-label="CGBP minimum valid votes" /></label>
         <label><span>MIN ACTIVE</span><input type="number" min="1" max="20" step="1" bind:value={reconstruction.cgbpMinActive} aria-label="CGBP minimum active votes" /></label>
       </div>
-    {/if}
-    {#if mode === 'live' && snapshot}
-      <button class="snapshot" onclick={takeSnapshot} disabled={busy}>RE-SNAPSHOT</button>
     {/if}
   </div>
 
@@ -509,6 +546,7 @@
   .map-actions .segmented button.active { background: #0e2a27; color: #45e0c1; }
   .map-actions button.primary { font: 8px DM Mono, monospace; letter-spacing: .08em; padding: 9px 10px; border: 1px solid #2c6a5c; background: #0e2a27; color: #45e0c1; cursor: pointer; }
   .map-actions button.primary:disabled { opacity: .5; cursor: wait; }
+  .map-actions button.primary.frozen { border-color: #6b5732; background: #241d0d; color: #f4bd62; }
   .prompt { padding: 28px 24px; text-align: center; }
   .prompt strong { display: block; color: #f4bd62; font: 11px DM Mono, monospace; letter-spacing: .14em; margin-bottom: 8px; }
   .prompt p { margin: 0; color: #9fb0b4; font: 12px DM Mono, monospace; line-height: 1.6; max-width: 560px; }
@@ -521,14 +559,12 @@
   .controls label.mode { grid-column: 1 / -1; }
   .controls input[type="range"] { width: 100%; }
   .controls select { box-sizing: border-box; height: 28px; background: #0b1215; color: #dbe5e7; border: 1px solid #385056; font: 9px DM Mono, monospace; padding: 4px; width: 100%; }
-  .controls button.play, .controls button.snapshot { width: 100%; }
-  .controls button.snapshot { grid-column: 1 / -1; }
+  .controls button.play { width: 100%; }
   .mode-settings { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 10px; padding: 8px; border: 1px solid #304147; background: #0b1215; }
   .mode-settings header { grid-column: 1 / -1; color: #f4bd62; font: 8px DM Mono, monospace; letter-spacing: .1em; }
   .mode-settings label { min-width: 0; }
   .mode-settings input { width: 100%; box-sizing: border-box; padding: 4px; color: #dbe5e7; background: #071013; border: 1px solid #304147; font: 9px DM Mono, monospace; }
   .controls button.play { border: 1px solid #2c6a5c; background: #0e2a27; color: #45e0c1; padding: 8px 12px; font: 9px DM Mono, monospace; letter-spacing: .1em; cursor: pointer; }
-  .controls button.snapshot { border: 1px solid #6b5732; background: #241d0d; color: #f4bd62; padding: 8px 12px; font: 9px DM Mono, monospace; letter-spacing: .1em; cursor: pointer; }
   .bounds { padding: 0 0 8px; }
   .bounds header { height: 32px; padding: 0 11px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; font: 9px DM Mono, monospace; letter-spacing: .1em; }
   .bounds header span { color: #91a1a6; }

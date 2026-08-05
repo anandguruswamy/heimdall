@@ -600,7 +600,7 @@
         <article class="panel preview"><header><span>FIT PREVIEW</span><b>RESIDUAL / CENTIMETRES</b></header><div class="preview-plot"><PlotCanvas frame={calibrationPreview} revision={liveRevision} label="Calibration residual preview" /></div><div class="fit-stats"><div><span>RANK</span><b>{Number(calibrationSolution?.rank ?? 0)} / {Number(calibrationSolution?.columns ?? nodeCount)}</b></div><div><span>CONDITION</span><b>{Number(calibrationSolution?.condition_number ?? 0).toFixed(1)}</b></div><div><span>NEXT PAIR</span><b>{recommendedPair()}</b></div></div></article>
       </section>
     {:else if active === 'Radar Map'}
-      <RadarMap {live} snapshot={mapSnapshot} dataset={mapDataset} onSnapshot={(value) => mapSnapshot = value} onDataset={(value) => mapDataset = value} onNavigate={(tab) => setTab(tab)} />
+      <RadarMap {live} {liveRevision} snapshot={mapSnapshot} dataset={mapDataset} onSnapshot={(value) => mapSnapshot = value} onDataset={(value) => mapDataset = value} onNavigate={(tab) => setTab(tab)} />
     {:else}
       <section class="link-workspace">
         {#if compactMode}
