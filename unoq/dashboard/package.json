@@ -14,9 +14,13 @@
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "5.1.1",
+    "@types/three": "0.185.4",
     "svelte": "5.56.8",
     "svelte-check": "4.1.4",
     "typescript": "5.7.3",
     "vite": "6.4.3"
+  },
+  "dependencies": {
+    "three": "0.185.1"
   }
 }

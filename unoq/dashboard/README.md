@@ -25,3 +25,9 @@ Recognized payload fields include:
 | calibration | GET state `{live,applied}` and solve output `rank`, `condition_number`, `recommended_next_pair`, `board_offsets`, and `residuals` |
 
 When the backend is disconnected or a selected topic/link has not produced data, realistic synthetic frames remain available. Live frames always take precedence.
+
+## Simulator tab
+
+The Simulator tab renders a Three.js cabin-occupancy scene for four seats (FL, FR, RL, RR). Seat states arrive through the `SeatFeed` interface in `src/lib/simulator-feed.ts`; the bundled `MockSeatFeed` emits changing multi-seat states and powers the temporary test-control panel. Replacing it with a real backend client only requires passing a different `SeatFeed` implementation to `SimulatorScene` in `App.svelte` — the scene component consumes `SeatState` updates exclusively through `subscribe()`.
+
+The scene attempts to load a Tesla Model Y model from `public/models/tesla-model-y.glb` (not bundled). If you add one, it must be license-safe (CC0 or CC-BY) and its author, source, and license must be recorded here. The loader normalizes glTF's +Z-forward convention to the scene's nose-at-minus-Z frame (`MODEL_YAW`) and clips all model geometry above `CUTAWAY_Y` (1.15 m) so the seats and occupants stay visible regardless of the asset's roof materials. Until a model is provided, a stylized primitive SUV body renders as the fallback; the render loop and mock-feed timer run only while the tab is active and the document is visible.

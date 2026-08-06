@@ -5,6 +5,7 @@
   import { HeimdallApi } from './lib/api';
   import { linksFor } from './lib/demo';
   import { LiveStore } from './lib/live';
+  import { MockSeatFeed } from './lib/simulator-feed';
   import { tabs, type Link, type PlotFrame, type StreamStatus, type Tab, type TopicKey } from './lib/types';
 
   let active: Tab = $state('Network Health');
@@ -79,6 +80,8 @@
     });
   }
   const live = new LiveStore(requestUiRevision);
+  const simulatorFeed = new MockSeatFeed();
+  const simulatorImport = () => import('./lib/SimulatorScene.svelte');
   const CIR_DB_OFFSET = -10 - 20 * Math.log10(11.2);
   const CIR_LINEAR_SCALE = Math.pow(10, CIR_DB_OFFSET / 20);
 
@@ -213,7 +216,7 @@
   }
 
   function topicFor(tab: Tab): TopicKey {
-    return ({ 'Network Health':'health','Live Distance':'distance','Board Positions':'distance','Live CIR':'cir','CIR Waterfall':'waterfall','Slow-Time FFT':'slow-fft','Fast-Time FFT':'fast-fft','CFO':'cfo','Distance Calibration':'calibration' } as const)[tab];
+    return ({ 'Network Health':'health','Live Distance':'distance','Board Positions':'distance','Live CIR':'cir','CIR Waterfall':'waterfall','Slow-Time FFT':'slow-fft','Fast-Time FFT':'fast-fft','CFO':'cfo','Distance Calibration':'calibration','Simulator':'health' } as const)[tab];
   }
 
   function linkMetric(link: Link) {
@@ -555,6 +558,13 @@
 
     {#if active === 'Board Positions'}
       <BoardPositions {live} {api} {nodeCount} revision={liveRevision} />
+    {:else if active === 'Simulator'}
+      {#await simulatorImport() then module}
+        {@const SimulatorScene = module.default}
+        <SimulatorScene feed={simulatorFeed} />
+      {:catch}
+        <section class="link-workspace"><p class="load-error">SIMULATOR MODULE FAILED TO LOAD · RELOAD THE PAGE</p></section>
+      {/await}
     {:else if active === 'Network Health'}
       <section class="health-layout">
         <div class="node-strip">
