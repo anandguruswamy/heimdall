@@ -60,6 +60,7 @@ export type ReconstructionConfig = {
   softScoreCenter: number;
   softCountSlope: number;
   softCountCenter: number;
+  softVoteBasis: CgbpVoteBasis;
 };
 
 export const DEFAULT_RECONSTRUCTION_CONFIG: ReconstructionConfig = {
@@ -80,6 +81,7 @@ export const DEFAULT_RECONSTRUCTION_CONFIG: ReconstructionConfig = {
   softScoreCenter: 1.8,
   softCountSlope: 1.5,
   softCountCenter: 4,
+  softVoteBasis: 'baseline',
 };
 
 export type GridSpec = {
@@ -630,28 +632,69 @@ export function reconstruct(
         }
 
         if (config.mode === 'soft') {
-          validLinks[index] = linkCount;
+          const score = (ratio: number) =>
+            1 / (1 + Math.exp(-config.softScoreSharpness * (ratio - config.softScoreCenter)));
+
+          if (config.softVoteBasis === 'directed') {
+            validLinks[index] = linkCount;
+            let softCount = 0;
+            let weighted = 0;
+            let weightTotal = 0;
+            for (let p = 0; p < valid.length; p++) {
+              if (!valid[p]) continue;
+              const item = prepared.profiles[p];
+              softCount += score(values[p] / item.softFloor);
+              weighted += values[p] * item.weight;
+              weightTotal += item.weight;
+            }
+            const confidenceValue =
+              1 / (1 + Math.exp(-config.softCountSlope * (softCount - config.softCountCenter)));
+            volume[index] = confidenceValue;
+            if (weightTotal > 0) intensity[index] = weighted / weightTotal;
+            if (linkCount > 0) {
+              confidence[index] = Math.max(softCount, 1e-6);
+              supportLinks[index] = Math.max(0, Math.min(255, Math.round(softCount)));
+              consensus[index] = Math.min(1, softCount / linkCount);
+            }
+            continue;
+          }
+
+          // baseline vote basis: merge reciprocal directions before scoring so
+          // the two directions of one physical baseline count as one vote,
+          // not two correlated votes.
+          let baselineCount = 0;
           let softCount = 0;
           let weighted = 0;
           let weightTotal = 0;
-          for (let p = 0; p < valid.length; p++) {
-            if (!valid[p]) continue;
-            const item = prepared.profiles[p];
-            const ratio = values[p] / item.softFloor;
-            const score =
-              1 / (1 + Math.exp(-config.softScoreSharpness * (ratio - config.softScoreCenter)));
-            softCount += score;
-            weighted += values[p] * item.weight;
-            weightTotal += item.weight;
+          for (const group of prepared.groups) {
+            let sum = 0;
+            let floorSum = 0;
+            let weight = 0;
+            let available = 0;
+            for (const p of group) {
+              if (!valid[p]) continue;
+              sum += values[p];
+              floorSum += prepared.profiles[p].softFloor;
+              weight += prepared.profiles[p].weight;
+              available++;
+            }
+            if (!available) continue;
+            baselineCount++;
+            const mean = sum / available;
+            const floor = floorSum / available;
+            softCount += score(mean / floor);
+            weighted += mean * (weight / available);
+            weightTotal += weight / available;
           }
           const confidenceValue =
             1 / (1 + Math.exp(-config.softCountSlope * (softCount - config.softCountCenter)));
           volume[index] = confidenceValue;
           if (weightTotal > 0) intensity[index] = weighted / weightTotal;
-          if (linkCount > 0) {
+          if (baselineCount > 0) {
+            validLinks[index] = baselineCount;
             confidence[index] = Math.max(softCount, 1e-6);
             supportLinks[index] = Math.max(0, Math.min(255, Math.round(softCount)));
-            consensus[index] = Math.min(1, softCount / linkCount);
+            consensus[index] = Math.min(1, softCount / baselineCount);
           }
           continue;
         }

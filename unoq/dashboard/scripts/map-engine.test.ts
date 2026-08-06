@@ -471,6 +471,7 @@ const softConfig = {
   mode: 'soft' as const,
   softNoiseStartTap: 5,
   softNoiseEndTap: 15,
+  softVoteBasis: 'directed' as const,
 };
 
 test('estimateSoftBackground and estimateNoiseFloor read the configured tap window', () => {
@@ -516,6 +517,59 @@ test('soft consensus is invariant to per-link amplitude scale (unequal link powe
     fusionGeometry,
     fusionGrid,
     softConfig
+  ).volume[0];
+  assert.ok(Math.abs(baseline - scaled) < 1e-3, `baseline=${baseline} scaled=${scaled}`);
+});
+
+// Baseline vote basis merges each physical baseline's two reciprocal directed
+// CIRs before scoring, so they no longer count as two correlated votes.
+const softBaselineConfig = { ...softConfig, softVoteBasis: 'baseline' as const, softCountCenter: 2 };
+
+test('baseline vote basis dilutes a single-direction bump against its unbumped reciprocal', () => {
+  const oneDirection = reconstruct(
+    buildSoftScenario(new Set(['0>1']), 10),
+    fusionGeometry,
+    fusionGrid,
+    softBaselineConfig
+  ).volume[0];
+  const bothDirections = reconstruct(
+    buildSoftScenario(new Set(['0>1', '1>0']), 10),
+    fusionGeometry,
+    fusionGrid,
+    softBaselineConfig
+  ).volume[0];
+  assert.ok(
+    oneDirection < bothDirections,
+    `one-direction ${oneDirection} should be < both-directions-agreeing ${bothDirections}`
+  );
+});
+
+test('baseline vote basis requires genuinely independent baselines, not reciprocal duplication', () => {
+  const threeBaselinesAgree = reconstruct(
+    buildSoftScenario(new Set(['0>1', '1>0', '0>2', '2>0', '1>2', '2>1']), 5),
+    fusionGeometry,
+    fusionGrid,
+    softBaselineConfig
+  ).volume[0];
+  assert.ok(threeBaselinesAgree > 0.8, `three independent baselines confidence ${threeBaselinesAgree} should be high`);
+
+  const oneBaselineAgrees = reconstruct(
+    buildSoftScenario(new Set(['0>1', '1>0']), 5),
+    fusionGeometry,
+    fusionGrid,
+    softBaselineConfig
+  ).volume[0];
+  assert.ok(oneBaselineAgrees < 0.3, `a single agreeing baseline ${oneBaselineAgrees} should stay low`);
+});
+
+test('baseline vote basis remains invariant to per-link amplitude scale', () => {
+  const bumped = new Set(['0>1', '1>0', '0>2', '2>0']);
+  const baseline = reconstruct(buildSoftScenario(bumped, 5), fusionGeometry, fusionGrid, softBaselineConfig).volume[0];
+  const scaled = reconstruct(
+    buildSoftScenario(bumped, 5, { '0>1': 80, '1>0': 0.05, '0>2': 12, '2>0': 300 }),
+    fusionGeometry,
+    fusionGrid,
+    softBaselineConfig
   ).volume[0];
   assert.ok(Math.abs(baseline - scaled) < 1e-3, `baseline=${baseline} scaled=${scaled}`);
 });

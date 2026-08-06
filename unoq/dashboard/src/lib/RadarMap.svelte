@@ -44,7 +44,7 @@
   let mode = $state<'live' | 'dataset'>('live');
   let frames = $state(32);
   let spacing = $state(0.1);
-  let percentile = $state(85);
+  let percentile = $state(99);
   let pointSize = $state(3);
   let message = $state('Waiting for aligned CIR samples on this tab…');
   let timePct = $state(50);
@@ -162,6 +162,7 @@
     void reconstruction.softScoreCenter;
     void reconstruction.softCountSlope;
     void reconstruction.softCountCenter;
+    void reconstruction.softVoteBasis;
     if (mode !== 'dataset') return;
     scheduleDatasetCompute();
   });
@@ -187,6 +188,7 @@
     void reconstruction.softScoreCenter;
     void reconstruction.softCountSlope;
     void reconstruction.softCountCenter;
+    void reconstruction.softVoteBasis;
     if (mode !== 'live') return;
     if (liveFrozen) scheduleLiveRecompute();
     else scheduleLiveUpdate();
@@ -528,6 +530,7 @@
     {#if reconstruction.mode === 'soft'}
       <div class="mode-settings">
         <header>SOFT CONSENSUS · continuous confidence</header>
+        <label><span>VOTE BASIS</span><select value={reconstruction.softVoteBasis} onchange={(e) => reconstruction.softVoteBasis = e.currentTarget.value as ReconstructionConfig['softVoteBasis']} aria-label="Soft vote basis"><option value="baseline">Baselines</option><option value="directed">Directed links</option></select></label>
         <label><span>SCORE SHARPNESS</span><input type="number" min="0.5" max="10" step="0.5" bind:value={reconstruction.softScoreSharpness} aria-label="Soft score sharpness" /></label>
         <label><span>SCORE CENTER</span><input type="number" min="1" max="5" step="0.1" bind:value={reconstruction.softScoreCenter} aria-label="Soft score center ratio above background" /></label>
         <label><span>COUNT SLOPE</span><input type="number" min="0.2" max="5" step="0.1" bind:value={reconstruction.softCountSlope} aria-label="Soft confidence ramp slope" /></label>
