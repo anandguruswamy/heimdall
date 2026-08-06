@@ -25,7 +25,7 @@ pub const SEAT_CLASSES: [&str; 4] = ["FrontLeft", "FrontRight", "BackRight", "Ba
 
 const DEFAULT_PYTHON: &str = r"C:\Users\qc_de\AppData\Local\Programs\Python\Python311\python.exe";
 const DEFAULT_SEATCLASS_ROOT: &str =
-    r"C:\Users\qc_de\OneDrive\Desktop\UWB_Sensing\test\SeatClassification";
+    r"C:\Users\qc_de\OneDrive\Documents\GitHub\heimdall\host-tools\seat-classification";
 const MAX_LOG_LINES: usize = 10_000;
 const MIN_EPOCHS: i64 = 1;
 const MAX_EPOCHS: i64 = 500;
@@ -35,7 +35,8 @@ pub struct TrainingConfig {
     /// Interpreter that has torch installed; `python` on PATH is deliberately
     /// not used because other interpreters on the host lack torch.
     pub python: PathBuf,
-    /// SeatClassification checkout containing claude_scripts/ and models/.
+    /// Seat-classification root containing scripts/ and models/
+    /// (host-tools/seat-classification in the heimdall repository).
     pub seatclass_root: PathBuf,
 }
 
@@ -184,10 +185,10 @@ impl TrainingManager {
         variant: &str,
         epochs: Option<i64>,
     ) -> Result<Value> {
-        let scripts = self.config.seatclass_root.join("claude_scripts");
+        let scripts = self.config.seatclass_root.join("scripts");
         if !scripts.is_dir() {
             bail!(
-                "SeatClassification scripts directory not found at {} (set HEIMDALL_SEATCLASS_ROOT)",
+                "seat-classification scripts directory not found at {} (set HEIMDALL_SEATCLASS_ROOT)",
                 scripts.display()
             );
         }

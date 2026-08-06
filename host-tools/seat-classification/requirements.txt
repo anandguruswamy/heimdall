@@ -1,0 +1,7 @@
+# Validated on Windows ARM64 with CPython 3.11 (the interpreter the
+# heimdall-service Training pipeline is configured with). torch is the
+# CPU wheel; install it from the PyTorch index if pip cannot resolve it:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+numpy==2.3.3
+torch==2.13.0
+matplotlib==3.11.1
