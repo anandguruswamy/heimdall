@@ -9,7 +9,8 @@ export const tabs = [
   'CFO',
   'Distance Calibration',
   'Radar Map',
-  'Simulator'
+  'Simulator',
+  'Training'
 ] as const;
 
 export type Tab = (typeof tabs)[number];
@@ -35,6 +36,12 @@ export const seatIds = ['front_left', 'front_right', 'rear_left', 'rear_right'] 
 export type SeatId = (typeof seatIds)[number];
 // timestamp: epoch ms of the backend update that produced this state, not delivery time.
 export type SeatState = { seats: Record<SeatId, boolean>; timestamp: number };
+
+// Seat-classifier class names; must match the training scripts exactly
+// (FrontLeft=0, FrontRight=1, BackRight=2, BackLeft=3). The UI may display
+// "Rear Left"/"Rear Right" but always sends these identifiers.
+export const seatClasses = ['FrontLeft', 'FrontRight', 'BackRight', 'BackLeft'] as const;
+export type SeatClass = (typeof seatClasses)[number];
 
 export type TopicKey = 'health' | 'distance' | 'cir' | 'waterfall' | 'slow-fft' | 'fast-fft' | 'cfo' | 'calibration';
 export type Envelope = {

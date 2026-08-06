@@ -24,11 +24,14 @@ use serde_json::{Value, json};
 use tokio::sync::broadcast;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
+use anyhow::Context;
+
 use crate::{
     clips::ClipManager,
     metadata::Metadata,
     pipeline::Pipeline,
     telemetry::{Topic, envelope_batch, envelope_key, envelope_topic},
+    training::{SEAT_CLASSES, TrainingClip, TrainingConfig, TrainingManager},
 };
 
 include!(concat!(env!("OUT_DIR"), "/assets.rs"));
@@ -66,6 +69,7 @@ pub struct AppState {
     pub pipeline: Arc<Mutex<Pipeline>>,
     pub metadata: Arc<Metadata>,
     pub clips: ClipManager,
+    pub training: TrainingManager,
     pub stream: broadcast::Sender<Vec<u8>>,
     pub processing_drops: Arc<AtomicU64>,
     pub live_metrics: Arc<LiveMetrics>,
@@ -97,6 +101,7 @@ impl AppState {
         Ok(Self {
             pipeline: Arc::new(Mutex::new(pipeline)),
             clips: ClipManager::new(data_root.join("clips"), metadata.clone())?,
+            training: TrainingManager::new(data_root.join("training"), TrainingConfig::from_env()),
             metadata,
             stream,
             processing_drops: Arc::new(AtomicU64::new(0)),
@@ -136,6 +141,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/board/unfreeze", post(unfreeze_board))
         .route("/api/v1/clips", get(clips).post(post_clip))
         .route("/api/v1/clips/{id}", get(download_clip).delete(delete_clip))
+        .route("/api/v1/clips/{id}/training", post(tag_clip))
+        .route("/api/v1/training/run", post(run_training))
+        .route("/api/v1/training/status", get(training_status))
         .route("/api/v1/calibration", get(calibration))
         .route(
             "/api/v1/calibration/snapshot",
@@ -163,6 +171,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/board/unfreeze", post(unfreeze_board))
         .route("/api/clips", get(clips).post(post_clip))
         .route("/api/clips/{id}", get(download_clip).delete(delete_clip))
+        .route("/api/clips/{id}/training", post(tag_clip))
+        .route("/api/training/run", post(run_training))
+        .route("/api/training/status", get(training_status))
         .route("/api/calibration", get(calibration))
         .route(
             "/api/calibration/snapshot",
@@ -341,6 +352,114 @@ async fn delete_clip(
     } else {
         Ok(StatusCode::NOT_FOUND)
     }
+}
+
+/// Attach or update a training tag (seat class, person, exclusion) on a clip.
+/// The tag is merged into the clip's stored metadata value, so it survives
+/// service restarts and page reloads. Passing `seat: null` removes the tag.
+async fn tag_clip(
+    Path(id): Path<i64>,
+    State(state): State<AppState>,
+    Json(request): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let row = state
+        .metadata
+        .clip(id)?
+        .context("capture clip does not exist")?;
+    let mut value = row["value"].clone();
+    if value["status"] == "capturing" {
+        return Err(anyhow::anyhow!("wait for the capture to complete before tagging").into());
+    }
+    let seat = match &request["seat"] {
+        Value::Null => None,
+        Value::String(seat) if SEAT_CLASSES.contains(&seat.as_str()) => Some(seat.clone()),
+        _ => {
+            return Err(anyhow::anyhow!(
+                "seat must be null or one of FrontLeft, FrontRight, BackRight, BackLeft"
+            )
+            .into());
+        }
+    };
+    let person = request["person"].as_str().unwrap_or("").trim();
+    if person.len() > 60 {
+        return Err(anyhow::anyhow!("person name is limited to 60 characters").into());
+    }
+    match seat {
+        Some(seat) => {
+            value["training"] = serde_json::json!({
+                "seat": seat,
+                "person": person,
+                "exclude": request["exclude"] == true,
+                "updated_ns": crate::metadata::now_ns(),
+            });
+        }
+        None => {
+            if let Some(object) = value.as_object_mut() {
+                object.remove("training");
+            }
+        }
+    }
+    state.metadata.update_clip(id, &value)?;
+    Ok(Json(
+        json!({"id": id, "created_ns": row["created_ns"], "value": value}),
+    ))
+}
+
+/// Launch the capture-to-model pipeline over every tagged, non-excluded,
+/// complete clip. The run executes on a background thread; progress streams
+/// through `training_status`.
+async fn run_training(
+    State(state): State<AppState>,
+    Json(request): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let variant = request["variant"].as_str().unwrap_or("raw");
+    let epochs = request["epochs"].as_i64();
+    let mut training_clips = Vec::new();
+    for row in state.metadata.clips()? {
+        let value = &row["value"];
+        if value["status"] != "complete" {
+            continue;
+        }
+        let tag = &value["training"];
+        let Some(seat) = tag["seat"].as_str() else {
+            continue;
+        };
+        if tag["exclude"] == true {
+            continue;
+        }
+        // Clips without aligned CIR records cannot feed the dataset builder;
+        // the dashboard flags them NO CIR and they are skipped here too.
+        if value["manifest"]["aligned_cir_records"].as_i64().unwrap_or(0) == 0 {
+            continue;
+        }
+        let Some(id) = row["id"].as_i64() else {
+            continue;
+        };
+        let zip_path = state
+            .clips
+            .path(id)
+            .with_context(|| format!("stored clip {id:06} is unavailable"))?;
+        training_clips.push(TrainingClip {
+            id,
+            zip_path,
+            seat: seat.to_owned(),
+            person: tag["person"].as_str().unwrap_or("").to_owned(),
+        });
+    }
+    Ok(Json(state.training.start(training_clips, variant, epochs)?))
+}
+
+async fn training_status(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<
+        std::collections::HashMap<String, String>,
+    >,
+) -> Json<Value> {
+    let after = params
+        .get("after")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    Json(state.training.status(after))
 }
 
 async fn calibration(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
@@ -659,5 +778,89 @@ mod tests {
             let body = response.into_body().collect().await.unwrap().to_bytes();
             assert!(serde_json::from_slice::<Value>(&body).unwrap()["board_frozen"].is_boolean());
         }
+    }
+
+    #[tokio::test]
+    async fn clip_training_tags_persist_in_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let metadata = Metadata::open(dir.path().join("api.db")).unwrap();
+        let state = AppState::new(metadata.clone(), dir.path()).unwrap();
+        let row = metadata
+            .add_clip(&json!({"status": "complete", "name": "seat test", "duration_s": 10}))
+            .unwrap();
+        let id = row["id"].as_i64().unwrap();
+        let app = router(state);
+
+        let tag_request = |body: &str| {
+            axum::http::Request::builder()
+                .method(axum::http::Method::POST)
+                .uri(format!("/api/clips/{id}/training"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_owned()))
+                .unwrap()
+        };
+
+        let response = app
+            .clone()
+            .oneshot(tag_request(r#"{"seat":"BackLeft","person":"Simarjit","exclude":false}"#))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let stored = metadata.clip(id).unwrap().unwrap();
+        assert_eq!(stored["value"]["training"]["seat"], "BackLeft");
+        assert_eq!(stored["value"]["training"]["person"], "Simarjit");
+        assert_eq!(stored["value"]["name"], "seat test");
+
+        let response = app
+            .clone()
+            .oneshot(tag_request(r#"{"seat":"MiddleSeat"}"#))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let response = app
+            .clone()
+            .oneshot(tag_request(r#"{"seat":null}"#))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let cleared = metadata.clip(id).unwrap().unwrap();
+        assert!(cleared["value"]["training"].is_null());
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method(axum::http::Method::POST)
+                    .uri("/api/training/run")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"variant":"raw"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let error = serde_json::from_slice::<Value>(&body).unwrap()["error"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(error.contains("at least one tagged clip"), "{error}");
+
+        let status = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/training/status?after=0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+        let body = status.into_body().collect().await.unwrap().to_bytes();
+        let payload = serde_json::from_slice::<Value>(&body).unwrap();
+        assert_eq!(payload["status"], "idle");
+        assert_eq!(payload["log_next"], 0);
     }
 }

@@ -5,3 +5,4 @@ pub mod live_agent;
 pub mod metadata;
 pub mod pipeline;
 pub mod telemetry;
+pub mod training;

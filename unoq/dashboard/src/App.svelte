@@ -3,6 +3,7 @@
   import PlotCanvas from './lib/PlotCanvas.svelte';
   import BoardPositions from './lib/BoardPositions.svelte';
   import RadarMap from './lib/RadarMap.svelte';
+  import TrainingTab from './lib/TrainingTab.svelte';
   import { HeimdallApi } from './lib/api';
   import { linksFor } from './lib/demo';
   import { LiveStore } from './lib/live';
@@ -222,7 +223,7 @@
   }
 
   function topicFor(tab: Tab): TopicKey {
-    return ({ 'Network Health':'health','Live Distance':'distance','Board Positions':'distance','Live CIR':'cir','CIR Waterfall':'waterfall','Slow-Time FFT':'slow-fft','Fast-Time FFT':'fast-fft','CFO':'cfo','Distance Calibration':'calibration','Radar Map':'cir','Simulator':'health' } as const)[tab];
+    return ({ 'Network Health':'health','Live Distance':'distance','Board Positions':'distance','Live CIR':'cir','CIR Waterfall':'waterfall','Slow-Time FFT':'slow-fft','Fast-Time FFT':'fast-fft','CFO':'cfo','Distance Calibration':'calibration','Radar Map':'cir','Simulator':'health','Training':'health' } as const)[tab];
   }
 
   function linkMetric(link: Link) {
@@ -591,6 +592,8 @@
       {:catch}
         <section class="link-workspace"><p class="load-error">SIMULATOR MODULE FAILED TO LOAD · RELOAD THE PAGE</p></section>
       {/await}
+    {:else if active === 'Training'}
+      <TrainingTab {api} boardPositions={frozenBoardPositions} />
     {:else if active === 'Network Health'}
       <section class="health-layout">
         <div class="node-strip">

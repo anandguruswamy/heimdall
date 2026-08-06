@@ -1,5 +1,5 @@
 import { decodeEnvelopes } from './envelope';
-import type { Envelope, StreamStatus, Tab } from './types';
+import type { Envelope, SeatClass, StreamStatus, Tab } from './types';
 
 export type BootstrapData = { health?: unknown; topology?: unknown; distanceHistory?: unknown; settings?: unknown; calibration?: unknown };
 
@@ -16,6 +16,7 @@ const tabTopics = (tab: Tab): string[] => {
     case 'CFO': return ['cfo'];
     case 'Radar Map': return ['instantaneous-cir'];
     case 'Simulator': return [];
+    case 'Training': return [];
   }
 };
 
@@ -43,7 +44,14 @@ export class HeimdallApi {
 
   async send<T>(path: string, method: 'POST' | 'PUT', body: unknown): Promise<T> {
     const response = await fetch(`${this.base}${path}`, { method, headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!response.ok) throw new Error(`${method} ${path}: HTTP ${response.status}`);
+    if (!response.ok) {
+      let detail = '';
+      try {
+        const payload = await response.json() as Record<string, unknown>;
+        if (typeof payload?.error === 'string' && payload.error) detail = `: ${payload.error}`;
+      } catch { /* error body was not JSON */ }
+      throw new Error(`${method} ${path}: HTTP ${response.status}${detail}`);
+    }
     return response.json() as Promise<T>;
   }
 
@@ -65,6 +73,13 @@ export class HeimdallApi {
     const response=await fetch(`${this.base}/clips/${id}`,{method:'DELETE'});
     if (!response.ok && response.status !== 404) throw new Error(`DELETE /clips/${id}: HTTP ${response.status}`);
   }
+  setClipTraining(id: number, payload: { seat: SeatClass | null; person?: string; exclude?: boolean }): Promise<unknown> {
+    return this.send(`/clips/${id}/training`, 'POST', payload);
+  }
+  startTraining(payload: { variant: 'raw' | 'calibrated'; epochs?: number }): Promise<unknown> {
+    return this.send('/training/run', 'POST', payload);
+  }
+  trainingStatus(after: number): Promise<unknown> { return this.get(`/training/status?after=${after}`); }
 
   connect(): void {
     this.stopped = false;
