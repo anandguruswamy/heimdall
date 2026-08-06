@@ -619,6 +619,11 @@ calibration remains before timestamps can be treated as accurate ranges.
   tests and 50 Rust service tests pass; one checkpoint-dependent inference test
   remains ignored. Live hardware accuracy and the `<35 ms` p95 snapshot target
   are not yet verified, and no ONNX/QNN runtime dependency has been introduced.
+- Commit `4e3a772` was rebuilt and deployed to the Windows ARM64 processing
+  server on 2026-08-06. The running scheduled task owns UDP `7878` and TCP
+  `8080`, `/api/health` reports `ok`, the served dashboard bundle contains the
+  new Training UI and `Empty` class, and the deployed binary SHA-256 is
+  `21295A9A5E5FF07B13ABE3C2F75CBA29FABEDB0848428CF09A74BAE890BAFC2F`.
 
 - Live migration in progress (2026-07-30): `heimdall-service agent` now keeps
   only CDC validation, local health, LED status support, and UDP forwarding;
