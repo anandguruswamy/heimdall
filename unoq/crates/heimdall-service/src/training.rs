@@ -3,6 +3,7 @@
 //! CNN training script as external Python processes with live log streaming.
 
 use std::{
+    collections::HashSet,
     ffi::OsStr,
     fs::{self, File},
     io::{BufRead, BufReader},
@@ -21,9 +22,6 @@ use crate::metadata::now_ns;
 /// Class names must match the shared Python dataset and trainer exactly.
 pub const SEAT_CLASSES: [&str; 5] = ["FrontLeft", "FrontRight", "BackRight", "BackLeft", "Empty"];
 
-const DEFAULT_PYTHON: &str = r"C:\Users\qc_de\AppData\Local\Programs\Python\Python311\python.exe";
-const DEFAULT_SEATCLASS_ROOT: &str =
-    r"C:\Users\qc_de\OneDrive\Documents\GitHub\heimdall\host-tools\seat-classification";
 const MAX_LOG_LINES: usize = 10_000;
 const MIN_EPOCHS: i64 = 1;
 const MAX_EPOCHS: i64 = 500;
@@ -103,15 +101,89 @@ pub struct TrainingConfig {
 
 impl TrainingConfig {
     pub fn from_env() -> Self {
+        let seatclass_root = std::env::var_os("HEIMDALL_SEATCLASS_ROOT")
+            .map(PathBuf::from)
+            .or_else(discover_seatclass_root)
+            .unwrap_or_else(|| PathBuf::from("host-tools/seat-classification"));
         Self {
             python: std::env::var_os("HEIMDALL_PYTHON")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(DEFAULT_PYTHON)),
-            seatclass_root: std::env::var_os("HEIMDALL_SEATCLASS_ROOT")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(DEFAULT_SEATCLASS_ROOT)),
+                .or_else(|| discover_python(&seatclass_root))
+                .unwrap_or_else(|| PathBuf::from("python")),
+            seatclass_root,
         }
     }
+}
+
+fn discover_seatclass_root() -> Option<PathBuf> {
+    let mut starts = Vec::new();
+    if let Ok(path) = std::env::current_dir() {
+        starts.push(path);
+    }
+    if let Ok(path) = std::env::current_exe()
+        && let Some(parent) = path.parent()
+    {
+        starts.push(parent.to_path_buf());
+    }
+    starts.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    starts.into_iter().find_map(|start| {
+        start.ancestors().find_map(|ancestor| {
+            let candidate = ancestor.join("host-tools/seat-classification");
+            candidate
+                .join("scripts/build_seat_dataset.py")
+                .is_file()
+                .then_some(candidate)
+        })
+    })
+}
+
+fn discover_python(seatclass_root: &Path) -> Option<PathBuf> {
+    let mut candidates = vec![
+        seatclass_root.join(".venv/Scripts/python.exe"),
+        seatclass_root.join(".venv/bin/python"),
+    ];
+    if let Some(home) = std::env::var_os("USERPROFILE") {
+        let home = PathBuf::from(home);
+        candidates.push(home.join("miniconda3/python.exe"));
+        candidates.push(home.join("anaconda3/python.exe"));
+    }
+    if let Some(prefix) = std::env::var_os("CONDA_PREFIX") {
+        candidates.push(PathBuf::from(prefix).join(if cfg!(windows) {
+            "python.exe"
+        } else {
+            "bin/python"
+        }));
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        for directory in std::env::split_paths(&path) {
+            candidates.push(directory.join(if cfg!(windows) {
+                "python.exe"
+            } else {
+                "python3"
+            }));
+        }
+    }
+    let mut seen = HashSet::new();
+    candidates.retain(|candidate| seen.insert(candidate.clone()));
+    candidates
+        .into_iter()
+        .find(|candidate| python_supports_training(candidate))
+}
+
+fn python_supports_training(python: &Path) -> bool {
+    if !python.is_file() {
+        return false;
+    }
+    Command::new(python)
+        .args([
+            "-c",
+            "import numpy,torch; torch.from_numpy(numpy.zeros(1,dtype=numpy.float32))",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 #[derive(Clone)]
@@ -536,6 +608,24 @@ mod tests {
             "patience": 0,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn discovers_local_training_runtime() {
+        if std::env::var_os("HEIMDALL_SEATCLASS_ROOT").is_none() {
+            let config = TrainingConfig::from_env();
+            assert!(
+                config
+                    .seatclass_root
+                    .join("scripts/build_seat_dataset.py")
+                    .is_file()
+            );
+            assert!(
+                python_supports_training(&config.python),
+                "{}",
+                config.python.display()
+            );
+        }
     }
 
     #[test]

@@ -622,8 +622,11 @@ calibration remains before timestamps can be treated as accurate ranges.
 - Commit `4e3a772` was rebuilt and deployed to the Windows ARM64 processing
   server on 2026-08-06. The running scheduled task owns UDP `7878` and TCP
   `8080`, `/api/health` reports `ok`, the served dashboard bundle contains the
-  new Training UI and `Empty` class, and the deployed binary SHA-256 is
-  `21295A9A5E5FF07B13ABE3C2F75CBA29FABEDB0848428CF09A74BAE890BAFC2F`.
+  new Training UI and `Empty` class. A follow-up removed stale `qc_de` training
+  paths: the deployed service now discovers this checkout's classifier toolkit
+  and validates Torch/NumPy interoperability before selecting Python. It chose
+  `C:\Users\anand\miniconda3\python.exe`; the replacement binary SHA-256 is
+  `F3CC50C7BF70A4D6931942721DBA423263DEFA7E91BA92B08320E47A49FDA3CB`.
 
 - Live migration in progress (2026-07-30): `heimdall-service agent` now keeps
   only CDC validation, local health, LED status support, and UDP forwarding;

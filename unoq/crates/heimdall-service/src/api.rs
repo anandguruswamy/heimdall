@@ -102,11 +102,12 @@ impl AppState {
         if let Ok(stack) = metadata.calibration_stack() {
             pipeline.restore_calibration_stack(stack);
         }
+        let training_config = TrainingConfig::from_env();
         Ok(Self {
             pipeline: Arc::new(Mutex::new(pipeline)),
             clips: ClipManager::new(data_root.join("clips"), metadata.clone())?,
-            training: TrainingManager::new(data_root.join("training"), TrainingConfig::from_env()),
-            inference: InferenceManager::new(TrainingConfig::from_env(), stream.clone()),
+            training: TrainingManager::new(data_root.join("training"), training_config.clone()),
+            inference: InferenceManager::new(training_config, stream.clone()),
             metadata,
             stream,
             processing_drops: Arc::new(AtomicU64::new(0)),

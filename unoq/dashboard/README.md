@@ -48,5 +48,5 @@ The training scripts live in this repository under `host-tools/seat-classificati
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `HEIMDALL_PYTHON` | `C:\Users\qc_de\AppData\Local\Programs\Python\Python311\python.exe` | Interpreter used for both scripts; must have torch installed (PATH `python` is deliberately not used) |
-| `HEIMDALL_SEATCLASS_ROOT` | `C:\Users\qc_de\OneDrive\Documents\GitHub\heimdall\host-tools\seat-classification` | Seat-classification root containing `scripts/` and `models/` |
+| `HEIMDALL_PYTHON` | Auto-discovered | Optional interpreter override. Without it, the service probes the toolkit `.venv`, Conda installs, and PATH candidates for working Torch/NumPy interop. |
+| `HEIMDALL_SEATCLASS_ROOT` | Auto-discovered | Optional toolkit override. Without it, the service searches ancestors of its working directory and executable for `host-tools/seat-classification`. |
