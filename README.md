@@ -5,6 +5,8 @@
 Heimdall is a room-scale, multi-node UWB sensing and scene-reconstruction
 system built around DWM3001 radios and an Arduino UNO Q gateway.
 
+![Heimdall system topology: a Snapdragon host and Arduino UNO Q gateway linked to a five-node DWM3001 UWB mesh](docs/assets/topology.svg)
+
 ## Application description
 
 Multiple fixed DWM3001 nodes exchange scheduled UWB beacons. Each node records
