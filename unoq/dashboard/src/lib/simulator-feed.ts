@@ -35,6 +35,7 @@ export class LiveSeatFeed implements SeatFeed {
   private raw: SeatPrediction | null = null;
   private stablePrediction: SeatPrediction | null = null;
   private stableIndex: number | null = null;
+  private person: string | null = null;
   private uncertain = false;
   private lastTs = Date.now();
 
@@ -56,12 +57,26 @@ export class LiveSeatFeed implements SeatFeed {
     const hasStable = Object.hasOwn(payload, 'stable_seat') || Object.hasOwn(payload, 'stable_seat_probs');
     this.raw = this.parsePrediction(payload.raw_seat ?? payload.seat, payload.raw_seat_probs ?? payload.probs, payload.raw_person ?? payload.person, payload);
 
+    if (!hasStable && !this.raw && (Object.hasOwn(payload, 'stable_person') || Object.hasOwn(payload, 'raw_person') || Object.hasOwn(payload, 'person'))) {
+      const probabilities = this.probabilities(payload.stable_person_probs ?? payload.raw_person_probs);
+      this.person = this.personName(payload.stable_person ?? payload.raw_person ?? payload.person);
+      this.latest = null;
+      this.stablePrediction = null;
+      this.stableIndex = null;
+      this.votes = [];
+      this.uncertain = probabilities ? Math.max(...probabilities) < this.confidenceThreshold : false;
+      this.emitSeats();
+      this.emitInfo();
+      return;
+    }
+
     if (hasStable) {
       const stable = this.parsePrediction(payload.stable_seat, payload.stable_seat_probs, payload.stable_person ?? payload.person, payload);
       if (!stable) return;
       this.stablePrediction = stable;
       this.latest = stable;
       this.stableIndex = stable.seatIndex;
+      this.person = stable.seat === 'Empty' ? null : stable.person;
       this.uncertain = typeof payload.uncertain === 'boolean' ? payload.uncertain : stable.probs[stable.seatIndex] < this.confidenceThreshold;
       this.votes = [];
       this.emitSeats();
@@ -73,6 +88,7 @@ export class LiveSeatFeed implements SeatFeed {
     if (!prediction) return;
     this.stablePrediction = null;
     this.latest = prediction;
+    this.person = prediction.seat === 'Empty' ? null : prediction.person;
     if (prediction.probs[prediction.seatIndex] >= this.confidenceThreshold) {
       this.uncertain = false;
       this.votes.push(prediction.seatIndex);
@@ -95,6 +111,7 @@ export class LiveSeatFeed implements SeatFeed {
     this.raw = null;
     this.stablePrediction = null;
     this.stableIndex = null;
+    this.person = null;
     this.uncertain = false;
     this.lastTs = Date.now();
     this.emitSeats();
@@ -108,20 +125,20 @@ export class LiveSeatFeed implements SeatFeed {
       stablePrediction: this.stablePrediction,
       stable: this.stableIndex === null ? null : classSeatIds[this.stableIndex],
       stableClass: this.stableIndex === null ? null : seatClasses[this.stableIndex],
-      person: this.latest?.person ?? null,
+      person: this.person,
       uncertain: this.uncertain
     };
   }
 
   private parsePrediction(seatValue: unknown, probsValue: unknown, personValue: unknown, payload: Record<string, unknown>): SeatPrediction | null {
-    const probs = Array.isArray(probsValue) ? probsValue.map(Number) : null;
+    const probs = this.probabilities(probsValue);
     if (!probs || (probs.length !== 4 && probs.length !== seatClasses.length) || probs.some((value) => !Number.isFinite(value))) return null;
     const namedIndex = seatClasses.findIndex((seat) => seat === seatValue);
     const valueIndex = Number(seatValue);
     const legacyIndex = Number(payload.seat_index);
     const seatIndex = namedIndex >= 0 ? namedIndex : Number.isInteger(valueIndex) ? valueIndex : legacyIndex;
     if (!Number.isInteger(seatIndex) || seatIndex < 0 || seatIndex >= probs.length) return null;
-    const person = typeof personValue === 'string' && personValue.trim() ? personValue.trim() : null;
+    const person = this.personName(personValue);
     return {
       seat: seatClasses[seatIndex],
       seatIndex,
@@ -130,6 +147,16 @@ export class LiveSeatFeed implements SeatFeed {
       frameId: payload.frame_id == null ? null : Number(payload.frame_id),
       ts: this.lastTs
     };
+  }
+
+  private probabilities(value: unknown): number[] | null {
+    const probabilities = Array.isArray(value) ? value.map(Number) : null;
+    return probabilities && probabilities.length > 0 && probabilities.every(Number.isFinite) ? probabilities : null;
+  }
+
+  private personName(value: unknown): string | null {
+    if (typeof value !== 'string' || !value.trim() || value.trim().toLowerCase() === 'n/a') return null;
+    return value.trim();
   }
 
   private snapshot(): SeatState {

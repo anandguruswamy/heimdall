@@ -39,6 +39,7 @@
   let liveInfo = $state<LiveInfo>({ latest: null, raw: null, stablePrediction: null, stable: null, stableClass: null, person: null, uncertain: false });
   let models = $state<{ name: string; modifiedMs: number }[]>([]);
   let selectedModel = $state('');
+  let smoothingWindow = $state(5);
   let statusTimer: ReturnType<typeof setTimeout> | undefined;
   const classIndexForSeat: Record<SeatId, number> = { front_left: 0, front_right: 1, rear_right: 2, rear_left: 3 };
 
@@ -95,6 +96,8 @@
       const status = await api.inferenceStatus() as Record<string, unknown>;
       liveModel = String(status.model ?? '');
       liveRate = Number(status.rate_hz ?? 0) || 0;
+      const features = status.features as Record<string, unknown> | undefined;
+      smoothingWindow = Number(features?.smoothing_window ?? smoothingWindow) || smoothingWindow;
       const phase = String(status.status ?? '');
       if (phase === 'running' || phase === 'starting') {
         liveStatus = phase;
@@ -114,6 +117,8 @@
     liveActive = true;
     liveStatus = String(status.status) === 'running' ? 'running' : 'starting';
     liveModel = String(status.model ?? '');
+    const features = status.features as Record<string, unknown> | undefined;
+    smoothingWindow = Number(features?.smoothing_window ?? smoothingWindow) || smoothingWindow;
     liveError = '';
     liveNote = '';
     resubscribeFeed?.();
@@ -137,7 +142,7 @@
     }
     liveStatus = 'starting';
     try {
-      await api.startInference(selectedModel);
+      await api.startInference(selectedModel, smoothingWindow);
       liveActive = true;
       liveModel = selectedModel;
       live.reset();
@@ -487,24 +492,29 @@
           {#each models as model (model.name)}<option value={model.name}>{model.name}</option>{/each}
         </select>
       </label>
+      <label class="model-pick smoothing-window">COMMON MAJORITY WINDOW <output>{smoothingWindow} snapshot{smoothingWindow === 1 ? '' : 's'}</output>
+        <input type="range" min="1" max="300" step="1" bind:value={smoothingWindow} disabled={liveActive || liveStatus === 'starting'} aria-label="Common person and position majority window" />
+      </label>
       {#if liveActive}
         <dl class="status live-readout">
           <dt>STATE</dt><dd class:uncertain={liveInfo.uncertain}>{liveStatus === 'running' ? (liveInfo.uncertain ? 'RUNNING · UNCERTAIN' : 'RUNNING') : 'STARTING'}</dd>
           <dt>MODEL</dt><dd class="wrap">{liveModel || selectedModel}</dd>
           <dt>RATE</dt><dd>{liveRate.toFixed(1)} Hz</dd>
-          <dt>PREDICTED</dt><dd>{liveInfo.latest?.seat.replace(/(?!^)([A-Z])/g, ' $1').toUpperCase() ?? '—'}</dd>
+          <dt>PREDICTED</dt><dd>{liveInfo.latest?.seat.replace(/(?!^)([A-Z])/g, ' $1').toUpperCase() ?? (liveInfo.person ? 'PERSON ONLY' : '—')}</dd>
           {#if liveInfo.person}<dt>PERSON</dt><dd>{liveInfo.person}</dd>{/if}
         </dl>
-        <div class="confidence">
-          {#each seatDefs as def (def.id)}
-            {@const prob = liveInfo.latest?.probs[classIndexForSeat[def.id]] ?? 0}
-            <div class="bar" class:top={liveInfo.stable === def.id}>
-              <span>{def.short}</span>
-              <i><b style={`width:${Math.min(100, Math.round(prob * 100))}%`}></b></i>
-              <small>{Math.round(prob * 100)}%</small>
-            </div>
-          {/each}
-        </div>
+        {#if liveInfo.latest}
+          <div class="confidence">
+            {#each seatDefs as def (def.id)}
+              {@const prob = liveInfo.latest.probs[classIndexForSeat[def.id]] ?? 0}
+              <div class="bar" class:top={liveInfo.stable === def.id}>
+                <span>{def.short}</span>
+                <i><b style={`width:${Math.min(100, Math.round(prob * 100))}%`}></b></i>
+                <small>{Math.round(prob * 100)}%</small>
+              </div>
+            {/each}
+          </div>
+        {/if}
       {/if}
       {#if liveStatus === 'error'}<p class="note error-note">{liveError}</p>{/if}
       {#if liveNote}<p class="note">{liveNote}</p>{/if}
@@ -545,6 +555,7 @@
           <span bind:this={labelEls[def.id]} class:occupied={seatState?.seats[def.id]}>{seatState?.seats[def.id] ? seatState.people?.[def.id] ?? '' : ''}</span>
         {/each}
       </div>
+      {#if liveActive && !liveInfo.latest && liveInfo.person}<div class="person-only-label">{liveInfo.person}</div>{/if}
       <div class="hint">DRAG ORBIT · WHEEL ZOOM · AUTO-ROTATES WHEN IDLE</div>
     </div>
   </article>
@@ -571,6 +582,8 @@
   .live-toggle:disabled{opacity:.6;cursor:wait}
   .model-pick{display:block;margin:10px 0 0;color:#99aaae;font:9px DM Mono,monospace;letter-spacing:.08em}
   .model-pick select{display:block;width:100%;margin-top:5px;font:10px DM Mono,monospace}
+  .smoothing-window output{float:right;color:#45e0c1}
+  .smoothing-window input{display:block;width:100%;margin-top:8px;accent-color:#45e0c1}
   .live-readout dd.uncertain{color:#f4bd62}
   .live-readout dd.wrap{overflow-wrap:anywhere}
   .confidence{display:grid;gap:5px;margin:10px 0}
@@ -591,6 +604,7 @@
   .labels{position:absolute;inset:0;pointer-events:none}
   .labels span{position:absolute;transform:translate(-50%,-100%);padding:2px 5px;background:#071014c9;color:#7d8d93;font:9px DM Mono,monospace;border:1px solid #31434a}
   .labels span.occupied{color:#45e0c1;border-color:#31524f;box-shadow:0 0 9px #45e0c133}
+  .person-only-label{position:absolute;left:50%;top:48%;transform:translate(-50%,-50%);padding:7px 12px;border:1px solid #31524f;background:#071014d9;color:#45e0c1;box-shadow:0 0 16px #45e0c133;font:12px DM Mono,monospace;letter-spacing:.06em;pointer-events:none}
   .hint{position:absolute;left:8px;bottom:7px;color:#61757b;font:8px DM Mono,monospace}
   @media(max-width:900px){.sim-layout{grid-template-columns:1fr;grid-template-rows:minmax(0,1.4fr) auto}.sim-layout{grid-template-areas:'scene' 'controls'}.scene-panel{grid-area:scene}.sim-controls{grid-area:controls;max-height:40vh}}
 </style>

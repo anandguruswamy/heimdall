@@ -134,7 +134,10 @@ impl FeatureContract {
             legacy_full: false,
             variant: value["variant"].as_str().unwrap_or("raw").to_owned(),
             mode: value["model_mode"].as_str().unwrap_or("seat").to_owned(),
-            smoothing_window: value["smoothing_window"].as_u64().unwrap_or(5).clamp(1, 31) as usize,
+            smoothing_window: value["smoothing_window"]
+                .as_u64()
+                .unwrap_or(5)
+                .clamp(1, 300) as usize,
         })
     }
 
@@ -521,6 +524,7 @@ impl InferenceManager {
         &self,
         model_name: &str,
         frozen_refs: Option<BTreeMap<(u8, u8), Vec<[f64; 2]>>>,
+        smoothing_window: Option<usize>,
     ) -> Result<Value> {
         let model_name = model_name.trim();
         if model_name.is_empty()
@@ -552,7 +556,13 @@ impl InferenceManager {
                 self.inner.config.python.display()
             );
         }
-        let features = FeatureContract::load(&checkpoint)?;
+        let mut features = FeatureContract::load(&checkpoint)?;
+        if let Some(smoothing_window) = smoothing_window {
+            if !(1..=300).contains(&smoothing_window) {
+                bail!("smoothing window must be between 1 and 300 snapshots");
+            }
+            features.smoothing_window = smoothing_window;
+        }
         let variant = if features.variant == "calibrated" {
             let refs = frozen_refs.context(
                 "the calibrated model subtracts frozen board references; freeze the board first",
@@ -628,7 +638,12 @@ impl InferenceManager {
         spawn_frame_writer(frame_rx, stdin);
         self.spawn_stdout_reader(generation, stdout);
         self.spawn_stderr_reader(generation, stderr);
-        Ok(json!({"status": "starting", "model": model_name, "run": generation}))
+        Ok(json!({
+            "status": "starting",
+            "model": model_name,
+            "run": generation,
+            "smoothing_window": smoothing_window,
+        }))
     }
 
     /// Stop the current run: closing the frame channel drops the child's
@@ -1020,7 +1035,7 @@ mod tests {
         let (stream, _) = broadcast::channel(8);
         let manager = InferenceManager::new(TrainingConfig::from_env(), stream);
         for bad in ["", "model", "../x.pt", "a/b.pt", "a\\b.pt"] {
-            assert!(manager.start(bad, None).is_err(), "{bad:?}");
+            assert!(manager.start(bad, None, None).is_err(), "{bad:?}");
         }
         assert_eq!(manager.status()["status"], "idle");
         assert!(!manager.wants_frames());
@@ -1075,9 +1090,9 @@ mod tests {
             .find(|name| name.contains("data_raw") && !name.contains("shuffled"))
             .expect("a raw checkpoint under models/")
             .to_owned();
-        manager.start(&model, None).unwrap();
+        manager.start(&model, None, None).unwrap();
         assert!(
-            manager.start(&model, None).is_err(),
+            manager.start(&model, None, None).is_err(),
             "second start must be rejected"
         );
         assert!(
@@ -1115,7 +1130,7 @@ mod tests {
         // (this also proves the previous child is not lingering as the only
         // holder of the checkpoint or pipes).
         assert!(wait_for(
-            || manager.start(&model, None).is_ok(),
+            || manager.start(&model, None, None).is_ok(),
             Duration::from_secs(5)
         ));
         assert!(

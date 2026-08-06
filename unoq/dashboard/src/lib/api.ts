@@ -82,7 +82,7 @@ export class HeimdallApi {
   trainingStatus(after: number): Promise<unknown> { return this.get(`/training/status?after=${after}`); }
   inferenceModels(): Promise<unknown> { return this.get('/inference/models'); }
   inferenceStatus(): Promise<unknown> { return this.get('/inference/status'); }
-  startInference(model: string): Promise<unknown> { return this.send('/inference/start', 'POST', { model }); }
+  startInference(model: string, smoothingWindow = 5): Promise<unknown> { return this.send('/inference/start', 'POST', { model, smoothing_window: smoothingWindow }); }
   stopInference(): Promise<unknown> { return this.send('/inference/stop', 'POST', {}); }
 
   connect(): void {

@@ -630,9 +630,12 @@ calibration remains before timestamps can be treated as accurate ranges.
   accepts only the selected `clip_ids`. The deployed bundle and empty-selection
   API guard were verified. The Simulator tab is now Presence Detection; Empty
   maps to no chair, and occupied-chair overlays show the stable predicted person
-  name instead of seat abbreviations. The served main/scene bundles were
-  verified; the replacement binary SHA-256 is
-  `F5BC279BA05E28C57A561E75AF75276514698CEA5ECE437B61F97F837C7A3BF6`.
+  name instead of seat abbreviations. Person-only checkpoints now leave all
+  chairs unassigned and show the stable identity in the cabin center. Presence
+  Detection now exposes one 1-300 snapshot majority window shared by person-name
+  voting and seat-position probability smoothing. The served UI and backend
+  validation were verified; the replacement binary SHA-256 is
+  `526C303DFC4C285C8A077F4FE1B39D0F95476BAE14C78AF620BF7AB225B2290B`.
 
 - Live migration in progress (2026-07-30): `heimdall-service agent` now keeps
   only CDC validation, local health, LED status support, and UDP forwarding;

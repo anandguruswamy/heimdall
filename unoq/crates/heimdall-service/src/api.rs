@@ -538,11 +538,21 @@ async fn inference_start(
     Json(request): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let model = request["model"].as_str().unwrap_or("");
+    let smoothing_window = request["smoothing_window"]
+        .as_u64()
+        .map(|value| usize::try_from(value).unwrap_or(usize::MAX));
+    if smoothing_window.is_some_and(|value| !(1..=300).contains(&value)) {
+        return Err(anyhow::anyhow!("smoothing_window must be between 1 and 300 snapshots").into());
+    }
     // The model manifest, not its filename, decides whether these references
     // are required. Passing an empty option is harmless for raw checkpoints.
     let taps = state.pipeline.lock().frozen_reference_taps();
     let frozen_refs = if taps.is_empty() { None } else { Some(taps) };
-    Ok(Json(state.inference.start(model, frozen_refs)?))
+    Ok(Json(state.inference.start(
+        model,
+        frozen_refs,
+        smoothing_window,
+    )?))
 }
 
 async fn inference_stop(State(state): State<AppState>) -> Json<Value> {
