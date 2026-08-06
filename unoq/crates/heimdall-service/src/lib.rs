@@ -1,6 +1,7 @@
 pub mod api;
 pub mod archive;
 pub mod clips;
+pub mod inference;
 pub mod live_agent;
 pub mod metadata;
 pub mod pipeline;

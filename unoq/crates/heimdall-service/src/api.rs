@@ -28,9 +28,10 @@ use anyhow::Context;
 
 use crate::{
     clips::ClipManager,
+    inference::InferenceManager,
     metadata::Metadata,
     pipeline::Pipeline,
-    telemetry::{Topic, envelope_batch, envelope_key, envelope_topic},
+    telemetry::{DSP_TOPIC_COUNT, TOPIC_COUNT, Topic, envelope_batch, envelope_key, envelope_topic},
     training::{SEAT_CLASSES, TrainingClip, TrainingConfig, TrainingManager},
 };
 
@@ -70,6 +71,7 @@ pub struct AppState {
     pub metadata: Arc<Metadata>,
     pub clips: ClipManager,
     pub training: TrainingManager,
+    pub inference: InferenceManager,
     pub stream: broadcast::Sender<Vec<u8>>,
     pub processing_drops: Arc<AtomicU64>,
     pub live_metrics: Arc<LiveMetrics>,
@@ -77,7 +79,7 @@ pub struct AppState {
     pub archive_paused: Arc<std::sync::atomic::AtomicBool>,
     pub archive_last_error: Arc<Mutex<Option<String>>>,
     pub web_clients: Arc<AtomicU64>,
-    pub topic_demand: Arc<[AtomicU64; 8]>,
+    pub topic_demand: Arc<[AtomicU64; TOPIC_COUNT]>,
     pub data_root: Arc<PathBuf>,
     pub started: std::time::Instant,
 }
@@ -102,6 +104,7 @@ impl AppState {
             pipeline: Arc::new(Mutex::new(pipeline)),
             clips: ClipManager::new(data_root.join("clips"), metadata.clone())?,
             training: TrainingManager::new(data_root.join("training"), TrainingConfig::from_env()),
+            inference: InferenceManager::new(TrainingConfig::from_env(), stream.clone()),
             metadata,
             stream,
             processing_drops: Arc::new(AtomicU64::new(0)),
@@ -116,10 +119,13 @@ impl AppState {
         })
     }
 
+    /// Demand mask for the DSP pipeline. Only the first DSP_TOPIC_COUNT
+    /// topics participate; seat-inference is fed from the capture path.
     pub fn topic_mask(&self) -> u8 {
         self.topic_demand
             .iter()
             .enumerate()
+            .take(DSP_TOPIC_COUNT)
             .fold(0, |mask, (index, count)| {
                 mask | if count.load(Ordering::Relaxed) > 0 {
                     1 << index
@@ -144,6 +150,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/clips/{id}/training", post(tag_clip))
         .route("/api/v1/training/run", post(run_training))
         .route("/api/v1/training/status", get(training_status))
+        .route("/api/v1/inference/models", get(inference_models))
+        .route("/api/v1/inference/start", post(inference_start))
+        .route("/api/v1/inference/stop", post(inference_stop))
+        .route("/api/v1/inference/status", get(inference_status))
         .route("/api/v1/calibration", get(calibration))
         .route(
             "/api/v1/calibration/snapshot",
@@ -174,6 +184,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/clips/{id}/training", post(tag_clip))
         .route("/api/training/run", post(run_training))
         .route("/api/training/status", get(training_status))
+        .route("/api/inference/models", get(inference_models))
+        .route("/api/inference/start", post(inference_start))
+        .route("/api/inference/stop", post(inference_stop))
+        .route("/api/inference/status", get(inference_status))
         .route("/api/calibration", get(calibration))
         .route(
             "/api/calibration/snapshot",
@@ -462,6 +476,34 @@ async fn training_status(
     Json(state.training.status(after))
 }
 
+async fn inference_models(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    Ok(Json(state.inference.models()?))
+}
+
+async fn inference_start(
+    State(state): State<AppState>,
+    Json(request): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let model = request["model"].as_str().unwrap_or("");
+    // Calibrated checkpoints subtract the frozen board references, exactly
+    // like the calibrated dataset variant they were trained on.
+    let frozen_refs = if model.contains("calibrated") {
+        let taps = state.pipeline.lock().frozen_reference_taps();
+        if taps.is_empty() { None } else { Some(taps) }
+    } else {
+        None
+    };
+    Ok(Json(state.inference.start(model, frozen_refs)?))
+}
+
+async fn inference_stop(State(state): State<AppState>) -> Json<Value> {
+    Json(state.inference.stop("stopped from dashboard"))
+}
+
+async fn inference_status(State(state): State<AppState>) -> Json<Value> {
+    Json(state.inference.status())
+}
+
 async fn calibration(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
     Ok(Json(json!({
         "live": state.pipeline.lock().calibration_snapshot(),
@@ -511,32 +553,30 @@ async fn rollback_calibration(State(state): State<AppState>) -> Result<Json<Valu
 }
 
 async fn stream(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| {
-        websocket(
-            socket,
-            state.stream.subscribe(),
-            state.web_clients,
-            state.topic_demand,
-            state.live_metrics,
-        )
-    })
+    ws.on_upgrade(move |socket| websocket(socket, state))
 }
 
-async fn websocket(
-    mut socket: WebSocket,
-    mut receiver: broadcast::Receiver<Vec<u8>>,
-    clients: Arc<AtomicU64>,
-    demand: Arc<[AtomicU64; 8]>,
-    metrics: Arc<LiveMetrics>,
-) {
-    clients.fetch_add(1, Ordering::Relaxed);
+/// Called after any seat-inference demand decrement: if no dashboard is
+/// subscribed anymore, give the inference run a grace period to find a new
+/// subscriber before shutting the Python process down.
+fn maybe_stop_idle_inference(state: &AppState) {
+    if state.topic_demand[Topic::SeatInference as usize].load(Ordering::Relaxed) == 0 {
+        state.inference.schedule_idle_stop(state.topic_demand.clone());
+    }
+}
+
+async fn websocket(mut socket: WebSocket, state: AppState) {
+    let mut receiver = state.stream.subscribe();
+    let demand = state.topic_demand.clone();
+    let metrics = state.live_metrics.clone();
+    state.web_clients.fetch_add(1, Ordering::Relaxed);
     struct ClientGuard(Arc<AtomicU64>);
     impl Drop for ClientGuard {
         fn drop(&mut self) {
             self.0.fetch_sub(1, Ordering::Relaxed);
         }
     }
-    let _guard = ClientGuard(clients);
+    let _guard = ClientGuard(state.web_clients.clone());
     let mut topics = HashSet::new();
     let mut pending = BTreeMap::<String, Vec<u8>>::new();
     let mut publish = tokio::time::interval(Duration::from_millis(16));
@@ -557,7 +597,12 @@ async fn websocket(
                         for topic in next.difference(&topics) {
                             demand[*topic as usize].fetch_add(1, Ordering::Relaxed);
                         }
+                        let dropped_inference = topics.contains(&Topic::SeatInference)
+                            && !next.contains(&Topic::SeatInference);
                         topics = next;
+                        if dropped_inference {
+                            maybe_stop_idle_inference(&state);
+                        }
                     }
                 }
                 _ => {}
@@ -597,8 +642,12 @@ async fn websocket(
             }
         }
     }
+    let had_inference = topics.contains(&Topic::SeatInference);
     for topic in topics {
         demand[topic as usize].fetch_sub(1, Ordering::Relaxed);
+    }
+    if had_inference {
+        maybe_stop_idle_inference(&state);
     }
 }
 

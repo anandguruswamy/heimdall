@@ -4,10 +4,11 @@
   import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
   import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
   import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-  import { MockSeatFeed, type SeatFeed } from './simulator-feed';
+  import type { HeimdallApi } from './api';
+  import { LiveSeatFeed, MockSeatFeed, classSeatIds, type LiveInfo, type SeatFeed } from './simulator-feed';
   import { seatIds, type SeatId, type SeatState } from './types';
 
-  let { feed }: { feed: SeatFeed } = $props();
+  let { feed, live, api }: { feed: SeatFeed; live: LiveSeatFeed; api: HeimdallApi } = $props();
   const mock = $derived(feed instanceof MockSeatFeed ? feed : null);
 
   // Car frame: nose points -Z, +Y up, driver (front_left) at -X.
@@ -25,21 +26,127 @@
   let canvas: HTMLCanvasElement;
   const labelEls: Partial<Record<SeatId, HTMLSpanElement>> = {};
   let setSeats: ((seats: Record<SeatId, boolean>) => void) | undefined;
+  let resubscribeFeed: (() => void) | undefined;
+
+  // Live model inference: predictions arrive through the LiveSeatFeed while
+  // active; the mock feed and its manual controls are overridden.
+  let liveActive = $state(false);
+  let liveStatus = $state<'off' | 'starting' | 'running' | 'error'>('off');
+  let liveError = $state('');
+  let liveNote = $state('');
+  let liveModel = $state('');
+  let liveRate = $state(0);
+  let liveInfo = $state<LiveInfo>({ latest: null, stable: null, uncertain: false });
+  let models = $state<{ name: string; modifiedMs: number }[]>([]);
+  let selectedModel = $state('');
+  let statusTimer: ReturnType<typeof setTimeout> | undefined;
+  const classIndexForSeat: Record<SeatId, number> = { front_left: 0, front_right: 1, rear_right: 2, rear_left: 3 };
 
   const occupiedCount = $derived(seatState ? seatIds.filter((id) => seatState!.seats[id]).length : 0);
   const occupiedShort = $derived(seatState ? seatDefs.filter((def) => seatState!.seats[def.id]).map((def) => def.short).join('+') || 'NONE' : '—');
   const lastUpdate = $derived(seatState ? new Date(seatState.timestamp).toISOString().slice(11, 23) : '—');
 
   function toggleSeat(id: SeatId) {
-    if (!mock || !seatState) return;
+    if (liveActive || !mock || !seatState) return;
     mock.setSeat(id, !seatState.seats[id]);
     autoMode = mock.auto;
   }
 
   function toggleAuto() {
-    if (!mock) return;
+    if (liveActive || !mock) return;
     mock.setAuto(!mock.auto);
     autoMode = mock.auto;
+  }
+
+  async function refreshModels() {
+    try {
+      const list = await api.inferenceModels();
+      models = Array.isArray(list)
+        ? (list as Record<string, unknown>[])
+            .map((row) => ({ name: String(row.name ?? ''), modifiedMs: Number(row.modified_ms ?? 0) }))
+            .filter((row) => row.name)
+        : [];
+    } catch {
+      models = [];
+    }
+    if (!selectedModel || !models.some((model) => model.name === selectedModel)) selectedModel = models[0]?.name ?? '';
+  }
+
+  function stopStatusPolling() {
+    clearTimeout(statusTimer);
+    statusTimer = undefined;
+  }
+
+  function leaveLive(status: 'off' | 'error', message = '') {
+    stopStatusPolling();
+    liveActive = false;
+    liveStatus = status;
+    liveError = status === 'error' ? message || 'Live inference failed' : '';
+    liveNote = status === 'off' ? message : '';
+    live.reset();
+    resubscribeFeed?.();
+    autoMode = mock?.auto ?? false;
+  }
+
+  async function pollStatus() {
+    stopStatusPolling();
+    if (!liveActive) return;
+    try {
+      const status = await api.inferenceStatus() as Record<string, unknown>;
+      liveModel = String(status.model ?? '');
+      liveRate = Number(status.rate_hz ?? 0) || 0;
+      const phase = String(status.status ?? '');
+      if (phase === 'running' || phase === 'starting') {
+        liveStatus = phase;
+      } else if (phase === 'error') {
+        leaveLive('error', String(status.error ?? ''));
+        return;
+      } else {
+        // Stopped elsewhere (another client or the idle auto-stop).
+        leaveLive('off', String(status.stop_reason ?? 'Live inference stopped'));
+        return;
+      }
+    } catch { /* transient status failure; keep polling */ }
+    statusTimer = setTimeout(() => void pollStatus(), 2000);
+  }
+
+  function adoptRunning(status: Record<string, unknown>) {
+    liveActive = true;
+    liveStatus = String(status.status) === 'running' ? 'running' : 'starting';
+    liveModel = String(status.model ?? '');
+    liveError = '';
+    liveNote = '';
+    resubscribeFeed?.();
+    void pollStatus();
+  }
+
+  async function toggleLive() {
+    if (liveStatus === 'starting') return;
+    if (liveActive) {
+      leaveLive('off');
+      try { await api.stopInference(); } catch { /* already stopped on the backend */ }
+      return;
+    }
+    liveError = '';
+    liveNote = '';
+    await refreshModels();
+    if (!selectedModel) {
+      liveStatus = 'error';
+      liveError = 'No .pt checkpoints found in the models directory';
+      return;
+    }
+    liveStatus = 'starting';
+    try {
+      await api.startInference(selectedModel);
+      liveActive = true;
+      liveModel = selectedModel;
+      live.reset();
+      resubscribeFeed?.();
+      void pollStatus();
+    } catch (error) {
+      liveStatus = 'error';
+      liveError = error instanceof Error ? error.message : 'Live inference could not be started';
+    }
   }
 
   // Swap point for a real car model: drop a license-safe (CC0 / CC-BY) Tesla
@@ -306,8 +413,13 @@
     const start = () => { if (!raf) { clock.getDelta(); raf = requestAnimationFrame(step); } };
     const stop = () => { cancelAnimationFrame(raf); raf = 0; };
     let unsubscribe: (() => void) | undefined;
-    const subscribeFeed = () => { unsubscribe ??= feed.subscribe((state) => { seatState = state; setSeats?.(state.seats); }); };
+    // The active source is decided at (re)subscribe time so the scene code
+    // itself stays agnostic of mock-versus-live mode.
+    const currentFeed = () => (liveActive ? live : feed);
+    const subscribeFeed = () => { unsubscribe ??= currentFeed().subscribe((state) => { seatState = state; setSeats?.(state.seats); }); };
     const pauseFeed = () => { unsubscribe?.(); unsubscribe = undefined; };
+    resubscribeFeed = () => { pauseFeed(); subscribeFeed(); };
+    const offInfo = live.onInfo((info) => { liveInfo = info; });
     const onVisibility = () => { if (document.hidden) { stop(); pauseFeed(); } else { subscribeFeed(); start(); } };
     document.addEventListener('visibilitychange', onVisibility);
 
@@ -333,11 +445,20 @@
 
     subscribeFeed();
     start();
+    void refreshModels();
+    // Adopt a run that is already active on the backend (page reload or a
+    // quick tab switch while the idle grace period was still counting down).
+    void api.inferenceStatus().then((status) => {
+      const phase = String((status as Record<string, unknown>).status ?? '');
+      if (!disposed && (phase === 'running' || phase === 'starting')) adoptRunning(status as Record<string, unknown>);
+    }).catch(() => { /* backend offline; stay in mock mode */ });
 
     return () => {
       disposed = true;
       pauseFeed();
       stop();
+      stopStatusPolling();
+      offInfo();
       clearTimeout(resumeTimer);
       document.removeEventListener('visibilitychange', onVisibility);
       resize.disconnect();
@@ -348,29 +469,64 @@
       renderer.dispose();
       renderer.forceContextLoss();
       setSeats = undefined;
+      resubscribeFeed = undefined;
     };
   });
 </script>
 
 <section class="sim-layout">
   <div class="sim-controls panel">
-    <header><span>TEST CONTROLS</span><b>TEMPORARY</b></header>
+    <header><span>SIMULATOR CONTROLS</span><b>{liveActive ? 'LIVE MODEL' : 'MOCK FEED'}</b></header>
     <div class="controls-body">
-      {#if mock}
-        <button class="auto" class:active={autoMode} onclick={toggleAuto}>{autoMode ? 'AUTO / RANDOM · ON' : 'AUTO / RANDOM · OFF'}</button>
-        <div class="seat-toggles">
+      <button class="auto live-toggle" class:running={liveActive} onclick={() => void toggleLive()} disabled={liveStatus === 'starting'}>
+        {liveStatus === 'starting' ? 'LIVE INFERENCE · STARTING…' : liveActive ? 'LIVE INFERENCE · STOP' : 'LIVE INFERENCE · START'}
+      </button>
+      <label class="model-pick">MODEL
+        <select bind:value={selectedModel} disabled={liveActive || liveStatus === 'starting' || !models.length}>
+          {#if !models.length}<option value="">NO CHECKPOINTS FOUND</option>{/if}
+          {#each models as model (model.name)}<option value={model.name}>{model.name}</option>{/each}
+        </select>
+      </label>
+      {#if liveActive}
+        <dl class="status live-readout">
+          <dt>STATE</dt><dd class:uncertain={liveInfo.uncertain}>{liveStatus === 'running' ? (liveInfo.uncertain ? 'RUNNING · UNCERTAIN' : 'RUNNING') : 'STARTING'}</dd>
+          <dt>MODEL</dt><dd class="wrap">{liveModel || selectedModel}</dd>
+          <dt>RATE</dt><dd>{liveRate.toFixed(1)} Hz</dd>
+          <dt>PREDICTED</dt><dd>{liveInfo.latest ? classSeatIds[liveInfo.latest.seatIndex].replace('_', ' ').toUpperCase() : '—'}</dd>
+        </dl>
+        <div class="confidence">
           {#each seatDefs as def (def.id)}
-            <button class:active={seatState?.seats[def.id]} onclick={() => toggleSeat(def.id)}>
+            {@const prob = liveInfo.latest?.probs[classIndexForSeat[def.id]] ?? 0}
+            <div class="bar" class:top={liveInfo.latest !== null && classSeatIds[liveInfo.latest.seatIndex] === def.id}>
               <span>{def.short}</span>
-              <small>{def.id.replace('_', ' ').toUpperCase()}</small>
-              <b>{seatState?.seats[def.id] ? 'OCCUPIED' : 'EMPTY'}</b>
-            </button>
+              <i><b style={`width:${Math.min(100, Math.round(prob * 100))}%`}></b></i>
+              <small>{Math.round(prob * 100)}%</small>
+            </div>
           {/each}
         </div>
-        <p class="note">Toggling a seat switches Auto off. Any combination of seats can be occupied at once.</p>
-      {:else}
-        <p class="note">Live seat feed connected · manual test controls are available with the mock feed only.</p>
       {/if}
+      {#if liveStatus === 'error'}<p class="note error-note">{liveError}</p>{/if}
+      {#if liveNote}<p class="note">{liveNote}</p>{/if}
+      <p class="note">LIVE MODEL · SINGLE OCCUPANT — the classifier always names exactly one seat; below {Math.round(live.confidenceThreshold * 100)}% confidence the last stable seat is kept.</p>
+
+      <div class="test-block" class:overridden={liveActive}>
+        <p class="section-label">TEST CONTROLS{liveActive ? ' · OVERRIDDEN BY LIVE' : ''}</p>
+        {#if mock}
+          <button class="auto" class:active={autoMode && !liveActive} disabled={liveActive} onclick={toggleAuto}>{autoMode ? 'AUTO / RANDOM · ON' : 'AUTO / RANDOM · OFF'}</button>
+          <div class="seat-toggles">
+            {#each seatDefs as def (def.id)}
+              <button class:active={!liveActive && seatState?.seats[def.id]} disabled={liveActive} onclick={() => toggleSeat(def.id)}>
+                <span>{def.short}</span>
+                <small>{def.id.replace('_', ' ').toUpperCase()}</small>
+                <b>{seatState?.seats[def.id] ? 'OCCUPIED' : 'EMPTY'}</b>
+              </button>
+            {/each}
+          </div>
+          <p class="note">Toggling a seat switches Auto off. Any combination of seats can be occupied at once.</p>
+        {:else}
+          <p class="note">External seat feed connected · manual test controls are available with the mock feed only.</p>
+        {/if}
+      </div>
       <dl class="status">
         <dt>LAST UPDATE</dt><dd>{lastUpdate}</dd>
         <dt>OCCUPIED</dt><dd>{occupiedShort} · {occupiedCount}/4</dd>
@@ -410,6 +566,24 @@
   .status dt{color:#718188}
   .status dd{margin:0;text-align:right;color:#dbe5e7}
   .note{margin:8px 0 0;color:#61757b;font:8px DM Mono,monospace;line-height:1.5}
+  .live-toggle.running{background:#f4bd6222;border-color:#745b32;color:#f4bd62}
+  .live-toggle:disabled{opacity:.6;cursor:wait}
+  .model-pick{display:block;margin:10px 0 0;color:#99aaae;font:9px DM Mono,monospace;letter-spacing:.08em}
+  .model-pick select{display:block;width:100%;margin-top:5px;font:10px DM Mono,monospace}
+  .live-readout dd.uncertain{color:#f4bd62}
+  .live-readout dd.wrap{overflow-wrap:anywhere}
+  .confidence{display:grid;gap:5px;margin:10px 0}
+  .confidence .bar{display:grid;grid-template-columns:22px minmax(0,1fr) 32px;align-items:center;gap:7px;font:8px DM Mono,monospace;color:#718188}
+  .confidence .bar i{display:block;height:6px;background:#0b1215;border:1px solid #26373d}
+  .confidence .bar b{display:block;height:100%;background:#2c4a45;transition:width .15s linear}
+  .confidence .bar small{text-align:right}
+  .confidence .bar.top{color:#45e0c1}
+  .confidence .bar.top b{background:#45e0c1;box-shadow:0 0 7px #45e0c144}
+  .error-note{color:#f4bd62}
+  .section-label{margin:14px 0 8px;padding-top:10px;border-top:1px solid #1c282d;color:#718188;font:8px DM Mono,monospace;letter-spacing:.1em}
+  .test-block.overridden{opacity:.45}
+  .test-block.overridden .section-label{color:#f4bd62;opacity:1}
+  .test-block button:disabled{cursor:not-allowed}
   .scene-panel{display:grid;grid-template-rows:36px minmax(0,1fr)}
   .scene{position:relative;min-height:0;overflow:hidden;background:#0b1115}
   canvas{display:block;width:100%;height:100%;cursor:grab;touch-action:none}

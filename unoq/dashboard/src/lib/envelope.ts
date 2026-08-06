@@ -1,6 +1,6 @@
 import type { Envelope, TopicKey } from './types';
 
-const topics: TopicKey[] = ['health', 'distance', 'cir', 'waterfall', 'slow-fft', 'fast-fft', 'cfo', 'calibration'];
+const topics: TopicKey[] = ['health', 'distance', 'cir', 'waterfall', 'slow-fft', 'fast-fft', 'cfo', 'calibration', 'seat-inference'];
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
 export function decodeEnvelope(buffer: ArrayBuffer, byteOffset = 0, byteLength = buffer.byteLength - byteOffset): Envelope {

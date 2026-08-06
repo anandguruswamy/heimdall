@@ -10,11 +10,18 @@ must stay in sync with `unoq/crates/heimdall-service/src/training.rs`.
 
 ```text
 scripts/    build_seat_dataset.py, train_seat_classifier.py,
-            evaluate_seat_classifier.py, extract_wednesday_test.py
+            evaluate_seat_classifier.py, live_infer_seats.py,
+            extract_wednesday_test.py
 dataset/    generated .npz train/test splits (gitignored)
 models/     trained seat_cnn_<variant>.pt checkpoints (gitignored)
 results/    evaluation heatmap PNGs (gitignored)
 ```
+
+`live_infer_seats.py` is the persistent stdin/stdout NDJSON worker behind the
+dashboard Simulator tab's LIVE INFERENCE toggle: heimdall-service spawns it
+once per run, streams assembled `(20, 64)` CIR-magnitude frames in, and reads
+one `{seat, seat_index, probs, frame_id, ts}` prediction per line back. It
+exits on stdin EOF and deliberately avoids matplotlib for fast startup.
 
 Seat labels are `FrontLeft=0, FrontRight=1, BackRight=2, BackLeft=3`
 everywhere; the dashboard displays "Rear Left/Right" but always sends these

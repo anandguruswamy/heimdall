@@ -15,7 +15,7 @@ const tabTopics = (tab: Tab): string[] => {
     case 'Distance Calibration': return ['distance-calibration'];
     case 'CFO': return ['cfo'];
     case 'Radar Map': return ['instantaneous-cir'];
-    case 'Simulator': return [];
+    case 'Simulator': return ['seat-inference'];
     case 'Training': return [];
   }
 };
@@ -80,6 +80,10 @@ export class HeimdallApi {
     return this.send('/training/run', 'POST', payload);
   }
   trainingStatus(after: number): Promise<unknown> { return this.get(`/training/status?after=${after}`); }
+  inferenceModels(): Promise<unknown> { return this.get('/inference/models'); }
+  inferenceStatus(): Promise<unknown> { return this.get('/inference/status'); }
+  startInference(model: string): Promise<unknown> { return this.send('/inference/start', 'POST', { model }); }
+  stopInference(): Promise<unknown> { return this.send('/inference/stop', 'POST', {}); }
 
   connect(): void {
     this.stopped = false;

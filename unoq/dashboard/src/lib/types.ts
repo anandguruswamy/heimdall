@@ -43,7 +43,7 @@ export type SeatState = { seats: Record<SeatId, boolean>; timestamp: number };
 export const seatClasses = ['FrontLeft', 'FrontRight', 'BackRight', 'BackLeft'] as const;
 export type SeatClass = (typeof seatClasses)[number];
 
-export type TopicKey = 'health' | 'distance' | 'cir' | 'waterfall' | 'slow-fft' | 'fast-fft' | 'cfo' | 'calibration';
+export type TopicKey = 'health' | 'distance' | 'cir' | 'waterfall' | 'slow-fft' | 'fast-fft' | 'cfo' | 'calibration' | 'seat-inference';
 export type Envelope = {
   schemaVersion: number;
   topic: TopicKey;

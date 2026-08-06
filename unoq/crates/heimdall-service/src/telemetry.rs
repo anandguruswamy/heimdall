@@ -1,5 +1,12 @@
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 
+/// The number of topics that participate in the pipeline's u8 DSP demand
+/// mask. SeatInference (8) is produced outside the DSP pipeline and must
+/// never be shifted into that mask.
+pub const DSP_TOPIC_COUNT: usize = 8;
+/// Total number of subscribable topics (demand-counter array length).
+pub const TOPIC_COUNT: usize = 9;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum Topic {
@@ -11,9 +18,11 @@ pub enum Topic {
     FastFft = 5,
     Cfo = 6,
     Calibration = 7,
+    SeatInference = 8,
 }
 
 impl Topic {
+    /// DSP demand-mask bit; only valid for the first DSP_TOPIC_COUNT topics.
     pub const fn bit(self) -> u8 {
         1 << self as u8
     }
@@ -28,6 +37,7 @@ impl Topic {
             "fast-time-fft" | "fast-fft" => Self::FastFft,
             "cfo" => Self::Cfo,
             "distance-calibration" | "calibration" => Self::Calibration,
+            "seat-inference" => Self::SeatInference,
             _ => return None,
         })
     }
@@ -64,6 +74,7 @@ pub fn envelope_topic(bytes: &[u8]) -> Option<Topic> {
         5 => Topic::FastFft,
         6 => Topic::Cfo,
         7 => Topic::Calibration,
+        8 => Topic::SeatInference,
         _ => return None,
     })
 }

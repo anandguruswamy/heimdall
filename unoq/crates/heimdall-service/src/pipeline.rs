@@ -1287,6 +1287,18 @@ impl Pipeline {
         })
     }
 
+    /// Frozen per-link reference taps as [re, im] pairs, for live calibrated
+    /// inference (the analogue of build_seat_dataset.py's reference matrix).
+    /// Empty when the board is not frozen.
+    pub fn frozen_reference_taps(&self) -> std::collections::BTreeMap<(u8, u8), Vec<[f64; 2]>> {
+        self.board_frozen_references
+            .iter()
+            .map(|(key, taps)| {
+                (*key, taps.iter().map(|value| [value.re, value.im]).collect())
+            })
+            .collect()
+    }
+
     pub fn board_freeze_snapshot(&self) -> Value {
         let references = self
             .board_frozen_references

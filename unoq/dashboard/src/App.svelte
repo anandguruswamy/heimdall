@@ -9,7 +9,7 @@
   import { LiveStore } from './lib/live';
   import type { MapSnapshot } from './lib/map/map-engine';
   import type { Dataset } from './lib/map/dataset';
-  import { MockSeatFeed } from './lib/simulator-feed';
+  import { LiveSeatFeed, MockSeatFeed } from './lib/simulator-feed';
   import { tabs, type Link, type PlotFrame, type StreamStatus, type Tab, type TopicKey } from './lib/types';
 
   let active: Tab = $state('Network Health');
@@ -88,6 +88,7 @@
   }
   const live = new LiveStore(requestUiRevision);
   const simulatorFeed = new MockSeatFeed();
+  const liveSeatFeed = new LiveSeatFeed();
   const simulatorImport = () => import('./lib/SimulatorScene.svelte');
   const CIR_DB_OFFSET = -10 - 20 * Math.log10(11.2);
   const CIR_LINEAR_SCALE = Math.pow(10, CIR_DB_OFFSET / 20);
@@ -497,7 +498,10 @@
     const updateCompact = () => compactMode = compact.matches;
     updateCompact();
     compact.addEventListener('change', updateCompact);
-    api = new HeimdallApi('/api', (next) => status = next, (envelope) => live.ingest(envelope), (data) => {
+    api = new HeimdallApi('/api', (next) => status = next, (envelope) => {
+      if (envelope.topic === 'seat-inference') { liveSeatFeed.push(envelope.payload as Record<string, unknown>); return; }
+      live.ingest(envelope);
+    }, (data) => {
       if (data.health) live.health = data.health as Record<string,unknown>;
       if (data.topology) { live.loadTopology(data.topology); const config=(data.topology as Record<string,unknown>).config as Record<string,unknown>|undefined; const count = Number(config?.n_nodes); if (count >= 2 && count <= 8) chooseNodeCount(count); }
       if (data.distanceHistory) live.loadDistanceHistory(data.distanceHistory);
@@ -588,7 +592,7 @@
     {:else if active === 'Simulator'}
       {#await simulatorImport() then module}
         {@const SimulatorScene = module.default}
-        <SimulatorScene feed={simulatorFeed} />
+        <SimulatorScene feed={simulatorFeed} live={liveSeatFeed} {api} />
       {:catch}
         <section class="link-workspace"><p class="load-error">SIMULATOR MODULE FAILED TO LOAD · RELOAD THE PAGE</p></section>
       {/await}

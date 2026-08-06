@@ -546,13 +546,16 @@ fn spawn_processor(receiver: Receiver<ProcessingInput>, state: AppState) -> thre
                     let started = Instant::now();
                     let (messages, cir_samples) = {
                         let mut pipeline = state.pipeline.lock();
-                        pipeline.set_capture_active(state.clips.has_active_clips());
+                        pipeline.set_capture_active(
+                            state.clips.has_active_clips() || state.inference.wants_frames(),
+                        );
                         let messages = pipeline.feed_with_topics(&bytes, state.topic_mask());
                         let cir_samples = pipeline.drain_capture_cir_samples();
                         parking_lot::MutexGuard::unlock_fair(pipeline);
                         (messages, cir_samples)
                     };
                     if !cir_samples.is_empty() {
+                        state.inference.ingest_cir(&cir_samples);
                         state
                             .clips
                             .ingest_cir(heimdall_service::metadata::now_ns(), cir_samples);
