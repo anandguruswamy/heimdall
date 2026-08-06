@@ -38,10 +38,25 @@ export type SeatId = (typeof seatIds)[number];
 export type SeatState = { seats: Record<SeatId, boolean>; timestamp: number };
 
 // Seat-classifier class names; must match the training scripts exactly
-// (FrontLeft=0, FrontRight=1, BackRight=2, BackLeft=3). The UI may display
+// (FrontLeft=0, FrontRight=1, BackRight=2, BackLeft=3, Empty=4). The UI may display
 // "Rear Left"/"Rear Right" but always sends these identifiers.
-export const seatClasses = ['FrontLeft', 'FrontRight', 'BackRight', 'BackLeft'] as const;
+export const seatClasses = ['FrontLeft', 'FrontRight', 'BackRight', 'BackLeft', 'Empty'] as const;
 export type SeatClass = (typeof seatClasses)[number];
+
+export type TrainingVariant = 'raw' | 'calibrated';
+export type TrainingMode = 'seat' | 'person' | 'separate' | 'joint';
+export type TrainingArchitecture = 'standard' | 'lite';
+export type TrainingLinkMode = 'canonical' | 'directed';
+export type StartTrainingPayload = {
+  variant: TrainingVariant;
+  epochs: number;
+  mode: TrainingMode;
+  architecture: TrainingArchitecture;
+  link_mode: TrainingLinkMode;
+  taps_left: number;
+  taps_right: number;
+  patience: number;
+};
 
 export type TopicKey = 'health' | 'distance' | 'cir' | 'waterfall' | 'slow-fft' | 'fast-fft' | 'cfo' | 'calibration' | 'seat-inference';
 export type Envelope = {

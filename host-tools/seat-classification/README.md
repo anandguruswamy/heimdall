@@ -1,51 +1,73 @@
-# Seat Classification
+# Seat And Person Classification
 
-CNN seat-occupancy classifier trained on aligned CIR magnitude matrices from
-heimdall capture clips. This folder is the canonical home of the training
-toolkit; the heimdall-service Training tab drives the same scripts, so their
-CLI contract (arguments, folder-name label encoding, printed output format)
-must stay in sync with `unoq/crates/heimdall-service/src/training.rs`.
+This directory contains the Python dataset, training, evaluation, and live
+inference layer for cropped UWB CIR magnitude matrices. It has no dependencies
+beyond those already listed in `requirements.txt`.
 
-## Layout
+## Dataset Contract
 
-```text
-scripts/    build_seat_dataset.py, train_seat_classifier.py,
-            evaluate_seat_classifier.py, live_infer_seats.py,
-            extract_wednesday_test.py
-dataset/    generated .npz train/test splits (gitignored)
-models/     trained seat_cnn_<variant>.pt checkpoints (gitignored)
-results/    evaluation heatmap PNGs (gitignored)
-```
-
-`live_infer_seats.py` is the persistent stdin/stdout NDJSON worker behind the
-dashboard Simulator tab's LIVE INFERENCE toggle: heimdall-service spawns it
-once per run, streams assembled `(20, 64)` CIR-magnitude frames in, and reads
-one `{seat, seat_index, probs, frame_id, ts}` prediction per line back. It
-exits on stdin EOF and deliberately avoids matplotlib for fast startup.
-
-Seat labels are `FrontLeft=0, FrontRight=1, BackRight=2, BackLeft=3`
-everywhere; the dashboard displays "Rear Left/Right" but always sends these
-identifiers. Dataset clips are extracted folders named
-`clip-<id>-<Label><Person>/` containing `aligned-cirs.ndjson` and
-`metadata.json`.
-
-## Usage
+Capture folders are named `clip-<id>-<Seat><Person>`. Seats are exactly
+`FrontLeft`, `FrontRight`, `BackRight`, `BackLeft`, and `Empty`. Occupied clips
+must include a person suffix; `Empty` must not. Service exports also include
+`training-label.json`, which preserves the exact person name (including spaces
+and punctuation) and takes precedence over the legacy folder suffix. Build both targets with:
 
 ```sh
-python scripts/build_seat_dataset.py --dataset-dir <extracted-clips> [--out-root DIR]
-python scripts/train_seat_classifier.py --data-dir data_raw|data_calibrated \
-    [--dataset-root DIR] [--epochs N]
-python scripts/evaluate_seat_classifier.py [--split test] [--checkpoint <path.pt>]
+python scripts/build_seat_dataset.py --dataset-dir <clips> --out-root dataset \
+  --link-mode canonical --taps-left 8 --taps-right 24
 ```
 
-`--out-root`/`--dataset-root` default to `dataset/` next to `scripts/`, and
-models save to `models/`. The dataset builder writes both raw and calibrated
-variants; the calibrated variant is skipped with a warning when clips lack a
-consistent frozen board reference. Requires the pinned interpreter with torch
-(see `requirements.txt`); the service defaults to
-`HEIMDALL_PYTHON=C:\Users\qc_de\AppData\Local\Programs\Python\Python311\python.exe`
-and `HEIMDALL_SEATCLASS_ROOT=<this folder>` — see `unoq/dashboard/README.md`.
+`canonical` is the default and retains the ten links where `from < to`;
+`directed` retains all twenty directed links. A frame needs only the links
+selected by this mode. Each link's complex IQ is centered using deterministic
+half-away-from-zero rounding of `marker_aligned`, cropped inclusively to
+`[center-left, center+right]`, and complex-zero-padded before magnitude is
+taken. `data_raw` is always written. `data_calibrated` is written only when all
+selected frozen full-complex references exist and are consistent across clips;
+the reference is subtracted before cropping.
 
-`extract_wednesday_test.py` is a one-off cross-session test-set builder for
-the wednesday-new-test captures (`datasets/wednesday-new-test/` holds the
-zipped originals; the script expects them extracted, see its docstring).
+Each split stores `X`, `seat_y`, compatibility alias `y`, `person_y` (`-1` for
+Empty), `person_names`, `person`, `clip`, `frame`, `link_order`, `link_mode`,
+`taps_left`, and `taps_right`.
+
+## Training
+
+```sh
+python scripts/train_seat_classifier.py --dataset-root dataset --data-dir data_raw \
+  --mode seat|person|separate|joint --architecture standard|lite \
+  --epochs 30 --patience 5 [--device cpu] [--shuffle-labels]
+```
+
+`seat` predicts five seats. `person` predicts captured people plus an `n/a`
+class for Empty. `separate` trains those tasks with independent backbones in
+one run. `joint` shares a backbone and ignores Empty (`person_y=-1`) in person
+loss. Both architectures infer link/tap dimensions from `X`; `lite` uses
+16/32/32 channels and a smaller dense layer.
+
+Every run writes one schema-v2 `.pt` bundle and matching `.manifest.json` under
+`models/`. Bundles include preprocessing, feature geometry, classes, weights,
+and test metrics/confusions. The manifest is the JSON-safe inference contract
+without weights or normalization arrays. The trainer's final line is compact
+JSON prefixed by `HEIMDALL_RESULT `.
+
+## Inference And Evaluation
+
+```sh
+python scripts/live_infer_seats.py --checkpoint models/<bundle>.pt
+python scripts/evaluate_seat_classifier.py --checkpoint models/<bundle>.pt \
+  --dataset-root dataset --data-dir data_raw --split test
+```
+
+Live inference reads NDJSON containing `frame_id`, `ts`, and a cropped
+`magnitude` matrix matching the readiness feature shape. It supports all
+schema-v2 modes and legacy seat checkpoints. Outputs use `raw_seat*` and/or
+`raw_person*`; seat-capable models also retain `seat`, `seat_index`, and `probs`
+aliases. A predicted Empty seat forces `raw_person` to `n/a`. Evaluation uses
+the seat head for seat, separate, joint, and legacy bundles, and fails clearly
+for person-only bundles.
+
+Run unit tests with:
+
+```sh
+python -m unittest scripts.test_classifier_pipeline
+```

@@ -31,8 +31,10 @@ use crate::{
     inference::InferenceManager,
     metadata::Metadata,
     pipeline::Pipeline,
-    telemetry::{DSP_TOPIC_COUNT, TOPIC_COUNT, Topic, envelope_batch, envelope_key, envelope_topic},
-    training::{SEAT_CLASSES, TrainingClip, TrainingConfig, TrainingManager},
+    telemetry::{
+        DSP_TOPIC_COUNT, TOPIC_COUNT, Topic, envelope_batch, envelope_key, envelope_topic,
+    },
+    training::{SEAT_CLASSES, TrainingClip, TrainingConfig, TrainingManager, TrainingOptions},
 };
 
 include!(concat!(env!("OUT_DIR"), "/assets.rs"));
@@ -389,12 +391,17 @@ async fn tag_clip(
         Value::String(seat) if SEAT_CLASSES.contains(&seat.as_str()) => Some(seat.clone()),
         _ => {
             return Err(anyhow::anyhow!(
-                "seat must be null or one of FrontLeft, FrontRight, BackRight, BackLeft"
+                "seat must be null or one of FrontLeft, FrontRight, BackRight, BackLeft, Empty"
             )
             .into());
         }
     };
-    let person = request["person"].as_str().unwrap_or("").trim();
+    let requested_person = request["person"].as_str().unwrap_or("").trim();
+    let person = if seat.as_deref() == Some("Empty") {
+        ""
+    } else {
+        requested_person
+    };
     if person.len() > 60 {
         return Err(anyhow::anyhow!("person name is limited to 60 characters").into());
     }
@@ -426,8 +433,7 @@ async fn run_training(
     State(state): State<AppState>,
     Json(request): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    let variant = request["variant"].as_str().unwrap_or("raw");
-    let epochs = request["epochs"].as_i64();
+    let options = TrainingOptions::from_json(&request)?;
     let mut training_clips = Vec::new();
     for row in state.metadata.clips()? {
         let value = &row["value"];
@@ -443,7 +449,11 @@ async fn run_training(
         }
         // Clips without aligned CIR records cannot feed the dataset builder;
         // the dashboard flags them NO CIR and they are skipped here too.
-        if value["manifest"]["aligned_cir_records"].as_i64().unwrap_or(0) == 0 {
+        if value["manifest"]["aligned_cir_records"]
+            .as_i64()
+            .unwrap_or(0)
+            == 0
+        {
             continue;
         }
         let Some(id) = row["id"].as_i64() else {
@@ -460,14 +470,12 @@ async fn run_training(
             person: tag["person"].as_str().unwrap_or("").to_owned(),
         });
     }
-    Ok(Json(state.training.start(training_clips, variant, epochs)?))
+    Ok(Json(state.training.start(training_clips, options)?))
 }
 
 async fn training_status(
     State(state): State<AppState>,
-    axum::extract::Query(params): axum::extract::Query<
-        std::collections::HashMap<String, String>,
-    >,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Json<Value> {
     let after = params
         .get("after")
@@ -485,14 +493,10 @@ async fn inference_start(
     Json(request): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let model = request["model"].as_str().unwrap_or("");
-    // Calibrated checkpoints subtract the frozen board references, exactly
-    // like the calibrated dataset variant they were trained on.
-    let frozen_refs = if model.contains("calibrated") {
-        let taps = state.pipeline.lock().frozen_reference_taps();
-        if taps.is_empty() { None } else { Some(taps) }
-    } else {
-        None
-    };
+    // The model manifest, not its filename, decides whether these references
+    // are required. Passing an empty option is harmless for raw checkpoints.
+    let taps = state.pipeline.lock().frozen_reference_taps();
+    let frozen_refs = if taps.is_empty() { None } else { Some(taps) };
     Ok(Json(state.inference.start(model, frozen_refs)?))
 }
 
@@ -561,7 +565,9 @@ async fn stream(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl Int
 /// subscriber before shutting the Python process down.
 fn maybe_stop_idle_inference(state: &AppState) {
     if state.topic_demand[Topic::SeatInference as usize].load(Ordering::Relaxed) == 0 {
-        state.inference.schedule_idle_stop(state.topic_demand.clone());
+        state
+            .inference
+            .schedule_idle_stop(state.topic_demand.clone());
     }
 }
 
@@ -851,7 +857,9 @@ mod tests {
 
         let response = app
             .clone()
-            .oneshot(tag_request(r#"{"seat":"BackLeft","person":"Simarjit","exclude":false}"#))
+            .oneshot(tag_request(
+                r#"{"seat":"BackLeft","person":"Simarjit","exclude":false}"#,
+            ))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);

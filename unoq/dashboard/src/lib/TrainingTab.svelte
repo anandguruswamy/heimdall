@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import type { HeimdallApi } from './api';
-  import { seatClasses, type SeatClass } from './types';
+  import { seatClasses, type SeatClass, type TrainingArchitecture, type TrainingLinkMode, type TrainingMode, type TrainingVariant } from './types';
 
   let { api, boardPositions }: { api: HeimdallApi; boardPositions: () => unknown } = $props();
 
@@ -12,6 +12,7 @@
     FrontRight: 'FRONT RIGHT',
     BackRight: 'REAR RIGHT',
     BackLeft: 'REAR LEFT',
+    Empty: 'EMPTY',
   };
 
   type ClipRow = {
@@ -39,7 +40,13 @@
   let captureMessage = $state('');
   let captureError = $state(false);
 
-  let variant = $state<'raw' | 'calibrated'>('raw');
+  let variant = $state<TrainingVariant>('raw');
+  let mode = $state<TrainingMode>('seat');
+  let architecture = $state<TrainingArchitecture>('standard');
+  let linkMode = $state<TrainingLinkMode>('canonical');
+  let tapsLeft = $state(8);
+  let tapsRight = $state(24);
+  let patience = $state(5);
   let epochs = $state(30);
   let training = $state<Record<string, unknown> | null>(null);
   let trainMessage = $state('');
@@ -52,14 +59,35 @@
 
   const trainable = $derived(clips.filter((clip) => clip.status === 'complete' && clip.seat !== null && !clip.exclude && clip.hasCir));
   const missingClasses = $derived(seatClasses.filter((seat) => !trainable.some((clip) => clip.seat === seat)));
+  const needsSeatClasses = $derived(mode !== 'person');
+  const requiredMissingClasses = $derived(needsSeatClasses ? missingClasses : missingClasses.filter((seat) => seat === 'Empty'));
+  const needsPerson = $derived(mode !== 'seat');
+  const unlabeledPeople = $derived(trainable.filter((clip) => clip.seat !== 'Empty' && clip.person.trim().length === 0));
+  const hasPerson = $derived(trainable.some((clip) => clip.seat !== 'Empty' && clip.person.trim().length > 0));
   const trainingStatus = $derived(String(training?.status ?? 'idle'));
   const trainingRunning = $derived(trainingStatus === 'running');
   const trainingResult = $derived((training?.result ?? null) as Record<string, unknown> | null);
-  const confusion = $derived.by(() => {
-    const rows = trainingResult?.confusion;
-    return Array.isArray(rows) && rows.length === seatClasses.length ? rows as number[][] : null;
-  });
-  const canTrain = $derived(missingClasses.length === 0 && !trainingRunning && captureState !== 'capturing');
+  const seatConfusion = $derived(matrixFrom(trainingResult?.seat_confusion ?? trainingResult?.seat_confusion_matrix ?? trainingResult?.confusion, seatClasses.length));
+  const personClasses = $derived(stringsFrom(trainingResult?.person_names ?? trainingResult?.person_classes ?? trainingResult?.person_labels));
+  const personConfusion = $derived(matrixFrom(trainingResult?.person_confusion ?? trainingResult?.person_confusion_matrix, personClasses.length));
+  const seatAccuracy = $derived(numberFrom(trainingResult?.seat_accuracy, trainingResult?.seat_test_accuracy, trainingResult?.test_seat_accuracy, trainingResult?.test_accuracy));
+  const personAccuracy = $derived(numberFrom(trainingResult?.person_accuracy, trainingResult?.person_test_accuracy, trainingResult?.test_person_accuracy));
+  const canTrain = $derived(requiredMissingClasses.length === 0 && unlabeledPeople.length === 0 && (!needsPerson || hasPerson) && !trainingRunning && captureState !== 'capturing');
+
+  function matrixFrom(value: unknown, size: number): number[][] | null {
+    return size > 0 && Array.isArray(value) && value.length === size && value.every((row) => Array.isArray(row) && row.length === size)
+      ? value as number[][]
+      : null;
+  }
+
+  function numberFrom(...values: unknown[]): number | null {
+    const value = values.find((candidate) => typeof candidate === 'number');
+    return typeof value === 'number' ? value : null;
+  }
+
+  function stringsFrom(value: unknown): string[] {
+    return Array.isArray(value) ? value.map(String) : [];
+  }
 
   function parseClips(value: unknown): ClipRow[] {
     if (!Array.isArray(value)) return [];
@@ -76,7 +104,7 @@
         error: String(v.error ?? ''),
         durationS: Number(v.duration_s ?? manifest.duration_s ?? 0),
         seat,
-        person: String(tag?.person ?? ''),
+        person: seat === 'Empty' ? '' : String(tag?.person ?? ''),
         exclude: tag?.exclude === true,
         hasCir: Number(manifest.aligned_cir_records ?? 0) > 0,
       };
@@ -115,7 +143,7 @@
         const row = clips.find((clip) => clip.id === clipId);
         if (row?.status === 'complete') {
           captureProgress = 100;
-          const person = capturePerson.trim();
+          const person = captureSeat === 'Empty' ? '' : capturePerson.trim();
           if (captureSeat) {
             await tag(clipId, captureSeat, person, false);
             captureMessage = `Clip ${clipId} captured and tagged ${seatDisplay[captureSeat]}${person ? ` · ${person}` : ''}`;
@@ -138,7 +166,7 @@
 
   async function tag(id: number, seat: SeatClass | null, person: string, exclude: boolean) {
     try {
-      await api.setClipTraining(id, { seat, person, exclude });
+      await api.setClipTraining(id, { seat, person: seat === 'Empty' ? '' : person, exclude });
       await refreshClips();
     } catch (error) {
       clipsMessage = error instanceof Error ? error.message : `Clip ${id} could not be tagged`;
@@ -159,11 +187,16 @@
     return seatClasses.find((name) => name === value) ?? null;
   }
 
+  function setCaptureSeat(value: string) {
+    captureSeat = seatFrom(value) ?? '';
+    if (captureSeat === 'Empty') capturePerson = '';
+  }
+
   async function startTraining() {
     if (!canTrain) return;
     trainMessage = '';
     try {
-      const started = await api.startTraining({ variant, epochs }) as Record<string, unknown>;
+      const started = await api.startTraining({ variant, epochs, mode, architecture, link_mode: linkMode, taps_left: tapsLeft, taps_right: tapsRight, patience }) as Record<string, unknown>;
       runId = Number(started.run_id ?? 0);
       logLines = [];
       logNext = 0;
@@ -229,9 +262,9 @@
       <label>NOTE<input maxlength="2000" bind:value={captureNote} placeholder="Optional context" /></label>
       <div class="pair">
         <label>LENGTH<select bind:value={captureDurationS}>{#each [5, 10, 15, 30, 60] as seconds}<option value={seconds}>{seconds} s</option>{/each}</select></label>
-        <label>SEAT TAG<select bind:value={captureSeat}><option value="">— untagged —</option>{#each seatClasses as seat}<option value={seat}>{seatDisplay[seat]}</option>{/each}</select></label>
+        <label>SEAT TAG<select value={captureSeat} onchange={(e) => setCaptureSeat(e.currentTarget.value)}><option value="">— untagged —</option>{#each seatClasses as seat}<option value={seat}>{seatDisplay[seat]}</option>{/each}</select></label>
       </div>
-      <label>PERSON<input maxlength="60" bind:value={capturePerson} placeholder="Who is seated" /></label>
+      <label>PERSON<input maxlength="60" bind:value={capturePerson} disabled={captureSeat === 'Empty'} placeholder={captureSeat === 'Empty' ? 'N/A for empty' : 'Who is seated'} /></label>
       <button class="snapshot" onclick={capture} disabled={captureState === 'capturing'}>{captureState === 'capturing' ? `CAPTURING ${Math.round(captureProgress)}%` : `CAPTURE ${captureDurationS} S CLIP`}</button>
       <div class="capture-progress"><i style={`width:${captureProgress}%`}></i></div>
       {#if captureMessage}<p class="note" class:error={captureError}>{captureMessage}</p>{/if}
@@ -252,12 +285,12 @@
               <td class="mono">{String(clip.id).padStart(6, '0')}</td>
               <td class="name">{clip.name || '—'}</td>
               <td>
-                <select value={clip.seat ?? ''} disabled={clip.status !== 'complete'} onchange={(e) => void tag(clip.id, seatFrom(e.currentTarget.value), clip.person, clip.exclude)}>
+                <select value={clip.seat ?? ''} disabled={clip.status !== 'complete'} onchange={(e) => { const seat = seatFrom(e.currentTarget.value); void tag(clip.id, seat, seat === 'Empty' ? '' : clip.person, clip.exclude); }}>
                   <option value="">—</option>
                   {#each seatClasses as seat}<option value={seat}>{seatDisplay[seat]}</option>{/each}
                 </select>
               </td>
-              <td><input value={clip.person} maxlength="60" disabled={!clip.seat} placeholder="—" onchange={(e) => void tag(clip.id, clip.seat, e.currentTarget.value.trim(), clip.exclude)} /></td>
+              <td><input value={clip.person} maxlength="60" disabled={!clip.seat || clip.seat === 'Empty'} placeholder={clip.seat === 'Empty' ? 'N/A' : '—'} onchange={(e) => void tag(clip.id, clip.seat, e.currentTarget.value.trim(), clip.exclude)} /></td>
               <td class="mono">{clip.durationS ? `${clip.durationS}s` : '—'}</td>
               <td>
                 {#if clip.status !== 'complete'}<span class="flag pending">{clip.status.toUpperCase()}</span>
@@ -280,7 +313,7 @@
   </article>
 
   <article class="panel train-panel">
-    <header><span>TRAIN SEAT CLASSIFIER</span><b class:running={trainingRunning}>{trainingStatus.toUpperCase()}</b></header>
+    <header><span>TRAIN CIR CLASSIFIER</span><b class:running={trainingRunning}>{trainingStatus.toUpperCase()}</b></header>
     <div class="panel-body">
       <div class="coverage">
         {#each seatClasses as seat}
@@ -292,33 +325,57 @@
       </div>
       <div class="pair">
         <label>VARIANT<select bind:value={variant} disabled={trainingRunning}><option value="raw">raw</option><option value="calibrated">calibrated</option></select></label>
+        <label>MODEL MODE<select bind:value={mode} disabled={trainingRunning}><option value="seat">seat</option><option value="person">person</option><option value="separate">separate</option><option value="joint">joint</option></select></label>
+      </div>
+      <div class="pair">
+        <label>ARCHITECTURE<select bind:value={architecture} disabled={trainingRunning}><option value="standard">standard</option><option value="lite">lite</option></select></label>
+        <label>LINK MODE<select bind:value={linkMode} disabled={trainingRunning}><option value="canonical">canonical · one per reciprocal link</option><option value="directed">directed</option></select></label>
+      </div>
+      <div class="pair triple">
+        <label>TAPS LEFT<input type="number" min="0" bind:value={tapsLeft} disabled={trainingRunning} /></label>
+        <label>TAPS RIGHT<input type="number" min="0" bind:value={tapsRight} disabled={trainingRunning} /></label>
+        <label>PATIENCE<input type="number" min="0" bind:value={patience} disabled={trainingRunning} /></label>
+      </div>
+      <div class="pair single">
         <label>EPOCHS<input type="number" min="1" max="500" bind:value={epochs} disabled={trainingRunning} /></label>
       </div>
       <button class="snapshot" onclick={startTraining} disabled={!canTrain}>{trainingRunning ? 'TRAINING IN PROGRESS…' : 'TRAIN MODEL'}</button>
-      {#if missingClasses.length > 0}
-        <p class="note">NEEDS ONE TAGGED CLIP PER SEAT · MISSING: {missingClasses.map((seat) => seatDisplay[seat]).join(', ')}</p>
+      {#if requiredMissingClasses.length > 0}
+        <p class="note">NEEDS ONE TAGGED CLIP PER REQUIRED CLASS · MISSING: {requiredMissingClasses.map((seat) => seatDisplay[seat]).join(', ')}</p>
       {/if}
+      {#if needsPerson && !hasPerson}<p class="note">NEEDS AT LEAST ONE NON-EMPTY PERSON TAG</p>{/if}
+      {#if unlabeledPeople.length > 0}<p class="note">EVERY OCCUPIED CLIP NEEDS A PERSON TAG · MISSING: {unlabeledPeople.map((clip) => String(clip.id).padStart(6, '0')).join(', ')}</p>{/if}
       {#if trainMessage}<p class="note error">{trainMessage}</p>{/if}
       {#if trainingStatus === 'failed'}
         <p class="note error">{String(training?.error ?? 'Training failed')}</p>
       {/if}
       {#if trainingResult}
         <dl class="result">
-          <dt>TEST ACCURACY</dt>
-          <dd class="accuracy">{typeof trainingResult.test_accuracy === 'number' ? `${(trainingResult.test_accuracy * 100).toFixed(2)}%` : '—'}</dd>
+          <dt>SEAT ACCURACY</dt>
+          <dd class="accuracy">{seatAccuracy !== null ? `${(seatAccuracy * 100).toFixed(2)}%` : '—'}</dd>
+          {#if personAccuracy !== null}<dt>PERSON ACCURACY</dt><dd class="accuracy">{(personAccuracy * 100).toFixed(2)}%</dd>{/if}
           <dt>SAVED MODEL</dt>
           <dd class="path">{String(trainingResult.model_path ?? '—')}</dd>
         </dl>
-        {#if confusion}
+        {#if seatConfusion}
           <div class="confusion-wrap">
             <p class="note">CONFUSION MATRIX · ROWS TRUE / COLS PREDICTED</p>
             <table class="confusion">
               <thead><tr><th></th>{#each seatClasses as seat}<th>{seatDisplay[seat]}</th>{/each}</tr></thead>
               <tbody>
-                {#each confusion as row, i}
+                {#each seatConfusion as row, i}
                   <tr><th>{seatDisplay[seatClasses[i]]}</th>{#each row as cell, j}<td class:diag={i === j} class:err={i !== j && cell > 0}>{cell}</td>{/each}</tr>
                 {/each}
               </tbody>
+            </table>
+          </div>
+        {/if}
+        {#if personConfusion}
+          <div class="confusion-wrap">
+            <p class="note">PERSON CONFUSION MATRIX · ROWS TRUE / COLS PREDICTED</p>
+            <table class="confusion">
+              <thead><tr><th></th>{#each personClasses as person}<th>{person}</th>{/each}</tr></thead>
+              <tbody>{#each personConfusion as row, i}<tr><th>{personClasses[i]}</th>{#each row as cell, j}<td class:diag={i === j} class:err={i !== j && cell > 0}>{cell}</td>{/each}</tr>{/each}</tbody>
             </table>
           </div>
         {/if}
@@ -357,6 +414,8 @@
   .panel-body > label, .pair { display: block; margin: 10px 13px 0; color: #99aaae; font: 9px DM Mono; letter-spacing: .08em; }
   .panel-body input:not([type='checkbox']), .panel-body select { display: block; width: 100%; margin-top: 5px; font: 12px DM Mono; }
   .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 0; }
+  .pair.triple { grid-template-columns: repeat(3, 1fr); }
+  .pair.single { grid-template-columns: 1fr; }
   .pair label { display: block; margin-top: 10px; color: #99aaae; font: 9px DM Mono; letter-spacing: .08em; }
   .panel-body .snapshot { margin-top: 12px; }
   .note { margin: 8px 13px 0; color: var(--muted); font: 8px DM Mono; letter-spacing: .06em; line-height: 1.5; overflow-wrap: anywhere; }
@@ -417,5 +476,6 @@
   @media (max-width: 900px) {
     .training-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(3, auto) minmax(240px, 1fr); grid-template-areas: 'capture' 'clips' 'train' 'log'; overflow-y: auto; }
     .table-scroll { max-height: 300px; }
+    .pair.triple { grid-template-columns: 1fr 1fr; }
   }
 </style>

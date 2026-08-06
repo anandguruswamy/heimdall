@@ -1,28 +1,10 @@
-"""Train a CNN seat classifier on the heimdall chair-occupancy CIR dataset.
-
-Input:  train_dataset.npz / test_dataset.npz produced by build_seat_dataset.py
-        (X: (N, 20, 64) float32 CIR magnitude matrices, y: seat labels 0..3).
-Usage:  python train_seat_classifier.py [--data-dir data_raw|data_calibrated]
-        [--dataset-root DIR] [--epochs N]
-        --dataset-root defaults to ../dataset next to this script, so existing
-        usage is unchanged; the heimdall dashboard passes a per-run directory.
-
-Preprocessing: log-compression (dB) to tame the ~7 orders of magnitude between
-direct-path taps and the noise floor, then per-(link, tap) standardization
-using statistics computed on the training set only.
-
-Model: small CNN whose conv kernels span only the tap axis and share weights
-across all 20 link rows (a perturbed path looks the same physics-wise on any
-link); the dense head then learns which combination of links encodes which
-seat. ~190k parameters.
-
-Outputs per-epoch train/val loss and accuracy, then final test accuracy,
-per-class metrics, and the confusion matrix. Saves the model + normalization
-stats to ../models/seat_cnn_<variant>.pt.
-"""
+"""Train seat, person, separate, or joint CIR classifiers."""
 
 import argparse
+import copy
+import json
 import os
+import random
 import time
 
 import numpy as np
@@ -33,8 +15,7 @@ from torch.utils.data import DataLoader, TensorDataset
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATASET_ROOT = os.path.join(SCRIPT_DIR, "..", "dataset")
 MODEL_DIR = os.path.join(SCRIPT_DIR, "..", "models")
-CLASS_NAMES = ["FrontLeft", "FrontRight", "BackRight", "BackLeft"]
-
+SEAT_NAMES = ["FrontLeft", "FrontRight", "BackRight", "BackLeft", "Empty"]
 SEED = 42
 BATCH_SIZE = 64
 EPOCHS = 30
@@ -44,175 +25,325 @@ VAL_FRACTION = 0.1
 DB_FLOOR, DB_CEIL = -60.0, 40.0
 
 
-def to_db(x):
-    """Magnitude -> clipped dB. Handles the ~1e-18 tail taps gracefully."""
-    return np.clip(20.0 * np.log10(x + 1e-6), DB_FLOOR, DB_CEIL)
+def to_db(x, floor=DB_FLOOR, ceil=DB_CEIL):
+    return np.clip(20.0 * np.log10(x + 1e-6), floor, ceil)
+
+
+class Backbone(nn.Module):
+    def __init__(self, n_links, architecture="standard"):
+        super().__init__()
+        channels = (32, 64, 64) if architecture == "standard" else (16, 32, 32)
+        self.out_features = channels[-1] * n_links
+        self.features = nn.Sequential(
+            nn.Conv2d(1, channels[0], (1, 7), padding=(0, 3)),
+            nn.BatchNorm2d(channels[0]), nn.ReLU(), nn.MaxPool2d((1, 2)),
+            nn.Conv2d(channels[0], channels[1], (1, 5), padding=(0, 2)),
+            nn.BatchNorm2d(channels[1]), nn.ReLU(), nn.MaxPool2d((1, 2)),
+            nn.Conv2d(channels[1], channels[2], (1, 3), padding=(0, 1)),
+            nn.ReLU(), nn.AdaptiveAvgPool2d((n_links, 1)), nn.Flatten())
+
+    def forward(self, x):
+        return self.features(x)
+
+
+def _head(in_features, n_classes, architecture):
+    dense = 128 if architecture == "standard" else 64
+    return nn.Sequential(nn.Linear(in_features, dense), nn.ReLU(), nn.Dropout(0.3),
+                         nn.Linear(dense, n_classes))
+
+
+class ClassifierModel(nn.Module):
+    """One serializable model class covering every schema-v2 mode."""
+    def __init__(self, mode, architecture, n_links, n_taps, n_seats, n_people):
+        super().__init__()
+        del n_taps  # Convolutions and adaptive pooling accept any viable tap count.
+        self.mode = mode
+        if mode == "separate":
+            self.seat_backbone = Backbone(n_links, architecture)
+            self.person_backbone = Backbone(n_links, architecture)
+            self.seat_head = _head(self.seat_backbone.out_features, n_seats, architecture)
+            self.person_head = _head(self.person_backbone.out_features, n_people, architecture)
+        else:
+            self.backbone = Backbone(n_links, architecture)
+            if mode in ("seat", "joint"):
+                self.seat_head = _head(self.backbone.out_features, n_seats, architecture)
+            if mode in ("person", "joint"):
+                self.person_head = _head(self.backbone.out_features, n_people, architecture)
+
+    def forward(self, x):
+        if self.mode == "separate":
+            return {"seat": self.seat_head(self.seat_backbone(x)),
+                    "person": self.person_head(self.person_backbone(x))}
+        features = self.backbone(x)
+        output = {}
+        if hasattr(self, "seat_head"):
+            output["seat"] = self.seat_head(features)
+        if hasattr(self, "person_head"):
+            output["person"] = self.person_head(features)
+        return output
 
 
 class SeatCNN(nn.Module):
+    """Legacy four-class checkpoint architecture."""
     def __init__(self, n_links=20, n_taps=64, n_classes=4):
         super().__init__()
+        del n_taps
         self.features = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=(1, 7), padding=(0, 3)),
-            nn.BatchNorm2d(32), nn.ReLU(),
-            nn.MaxPool2d((1, 2)),
-            nn.Conv2d(32, 64, kernel_size=(1, 5), padding=(0, 2)),
-            nn.BatchNorm2d(64), nn.ReLU(),
-            nn.MaxPool2d((1, 2)),
-            nn.Conv2d(64, 64, kernel_size=(1, 3), padding=(0, 1)),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d((n_links, 1)),  # pool over taps, keep links
-        )
-        self.head = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(64 * n_links, 128), nn.ReLU(), nn.Dropout(0.3),
-            nn.Linear(128, n_classes),
-        )
+            nn.Conv2d(1, 32, (1, 7), padding=(0, 3)), nn.BatchNorm2d(32), nn.ReLU(),
+            nn.MaxPool2d((1, 2)), nn.Conv2d(32, 64, (1, 5), padding=(0, 2)),
+            nn.BatchNorm2d(64), nn.ReLU(), nn.MaxPool2d((1, 2)),
+            nn.Conv2d(64, 64, (1, 3), padding=(0, 1)), nn.ReLU(),
+            nn.AdaptiveAvgPool2d((n_links, 1)))
+        self.head = nn.Sequential(nn.Flatten(), nn.Linear(64 * n_links, 128), nn.ReLU(),
+                                  nn.Dropout(0.3), nn.Linear(128, n_classes))
 
-    def forward(self, x):          # x: (B, 1, 20, 64)
+    def forward(self, x):
         return self.head(self.features(x))
 
 
-def run_epoch(model, loader, criterion, optimizer=None):
+def build_model(mode, architecture, n_links, n_taps, n_seats=5, n_people=2):
+    return ClassifierModel(mode, architecture, n_links, n_taps, n_seats, n_people)
+
+
+def _stratified_split(labels):
+    rng = np.random.RandomState(SEED)
+    validation = []
+    for label in np.unique(labels):
+        indices = rng.permutation(np.flatnonzero(labels == label))
+        if len(indices) >= 2:
+            count = min(max(int(round(VAL_FRACTION * len(indices))), 1), len(indices) - 1)
+            validation.extend(indices[:count])
+    if not validation:
+        return np.arange(len(labels)), np.arange(len(labels))
+    mask = np.ones(len(labels), dtype=bool)
+    mask[validation] = False
+    return np.flatnonzero(mask), np.asarray(validation, dtype=np.int64)
+
+
+def _weights(labels, n_classes, ignore=-999):
+    valid = labels != ignore
+    counts = np.bincount(labels[valid], minlength=n_classes).astype(np.float32)
+    weights = np.zeros(n_classes, dtype=np.float32)
+    present = counts > 0
+    weights[present] = counts[present].sum() / (present.sum() * counts[present])
+    return torch.from_numpy(weights)
+
+
+def _metrics(logits, target, n_classes, ignore=None):
+    if ignore is not None:
+        keep = target != ignore
+        logits, target = logits[keep], target[keep]
+    confusion = np.zeros((n_classes, n_classes), dtype=np.int64)
+    if len(target):
+        pred = logits.argmax(1).cpu().numpy()
+        truth = target.cpu().numpy()
+        np.add.at(confusion, (truth, pred), 1)
+    accuracy = float(confusion.trace() / confusion.sum()) if confusion.sum() else None
+    return accuracy, confusion
+
+
+def _run(model, loader, criteria, mode, device, optimizer=None):
     training = optimizer is not None
     model.train(training)
-    total_loss, correct, count = 0.0, 0, 0
+    total_loss, batches = 0.0, 0
+    collected = {"seat": [[], []], "person": [[], []]}
     with torch.set_grad_enabled(training):
-        for xb, yb in loader:
-            logits = model(xb)
-            loss = criterion(logits, yb)
+        for xb, seat_y, person_y in loader:
+            xb, seat_y, person_y = xb.to(device), seat_y.to(device), person_y.to(device)
+            output = model(xb)
+            losses = []
+            if "seat" in output:
+                losses.append(criteria["seat"](output["seat"], seat_y))
+                collected["seat"][0].append(output["seat"].detach().cpu())
+                collected["seat"][1].append(seat_y.detach().cpu())
+            if "person" in output:
+                if mode != "joint" or torch.any(person_y != -1):
+                    losses.append(criteria["person"](output["person"], person_y))
+                collected["person"][0].append(output["person"].detach().cpu())
+                collected["person"][1].append(person_y.detach().cpu())
+            loss = sum(losses)
             if training:
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-            total_loss += loss.item() * len(yb)
-            correct += (logits.argmax(1) == yb).sum().item()
-            count += len(yb)
-    return total_loss / count, correct / count
+            total_loss += loss.item()
+            batches += 1
+    result = {"loss": total_loss / max(batches, 1)}
+    for task, (logits, targets) in collected.items():
+        if logits:
+            result[task] = (torch.cat(logits), torch.cat(targets))
+    return result
+
+
+def _json_safe(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--data-dir", default="data_raw",
-                        help="dataset variant folder under the dataset root "
-                             "(data_raw or data_calibrated)")
-    parser.add_argument("--dataset-root", default=DATASET_ROOT,
-                        help="root folder containing the data_raw/data_calibrated "
-                             "variants (default: ../dataset next to this script)")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mode", choices=("seat", "person", "separate", "joint"),
+                        default="seat")
+    parser.add_argument("--architecture", choices=("standard", "lite"), default="standard")
+    parser.add_argument("--dataset-root", default=DATASET_ROOT)
+    parser.add_argument("--data-dir", default="data_raw")
     parser.add_argument("--epochs", type=int, default=EPOCHS)
-    parser.add_argument("--shuffle-labels", action="store_true",
-                        help="control experiment: randomly permute the training "
-                             "labels (test labels untouched); test accuracy "
-                             "should collapse to ~25%% if the pipeline has no "
-                             "label leakage")
+    parser.add_argument("--patience", type=int, default=5)
+    parser.add_argument("--device", default=None)
+    parser.add_argument("--shuffle-labels", action="store_true")
     args = parser.parse_args()
-    data_dir = os.path.join(args.dataset_root, args.data_dir)
 
+    random.seed(SEED)
     np.random.seed(SEED)
     torch.manual_seed(SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(SEED)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
 
+    data_dir = args.data_dir if os.path.isabs(args.data_dir) else os.path.join(args.dataset_root, args.data_dir)
     train_npz = np.load(os.path.join(data_dir, "train_dataset.npz"))
     test_npz = np.load(os.path.join(data_dir, "test_dataset.npz"))
-    X_train_all, y_train_all = to_db(train_npz["X"]), train_npz["y"]
-    X_test, y_test = to_db(test_npz["X"]), test_npz["y"]
+    X_all, X_test = to_db(train_npz["X"]), to_db(test_npz["X"])
+    seat_all = np.asarray(train_npz["seat_y"] if "seat_y" in train_npz else train_npz["y"], dtype=np.int64)
+    seat_test = np.asarray(test_npz["seat_y"] if "seat_y" in test_npz else test_npz["y"], dtype=np.int64)
+    person_names = [str(value) for value in train_npz.get("person_names", np.unique(train_npz["person"]))]
+    if "person_y" in train_npz:
+        person_all, person_test = train_npz["person_y"].astype(np.int64), test_npz["person_y"].astype(np.int64)
+    else:
+        mapping = {name: index for index, name in enumerate(person_names)}
+        person_all = np.asarray([mapping[str(value)] for value in train_npz["person"]])
+        person_test = np.asarray([mapping[str(value)] for value in test_npz["person"]])
+    n_links, n_taps = X_all.shape[1:]
+    if args.mode in ("person", "separate"):
+        person_all = np.where(person_all < 0, len(person_names), person_all)
+        person_test = np.where(person_test < 0, len(person_names), person_test)
+        model_person_names = person_names + ["n/a"]
+    else:
+        model_person_names = person_names
 
     if args.shuffle_labels:
-        y_train_all = np.random.RandomState(SEED + 1).permutation(y_train_all)
-        print("*** CONTROL RUN: training labels randomly permuted ***")
+        rng = np.random.RandomState(SEED + 1)
+        if args.mode in ("seat", "separate", "joint"):
+            seat_all = rng.permutation(seat_all)
+        if args.mode in ("person", "separate", "joint"):
+            person_all = rng.permutation(person_all)
 
-    # Per-(link, tap) standardization with train-set statistics only.
-    mean = X_train_all.mean(axis=0)
-    std = X_train_all.std(axis=0) + 1e-6
-    X_train_all = (X_train_all - mean) / std
-    X_test = (X_test - mean) / std
+    mean, std = X_all.mean(axis=0), X_all.std(axis=0) + 1e-6
+    X_all, X_test = (X_all - mean) / std, (X_test - mean) / std
+    if args.mode in ("joint", "separate"):
+        strata = seat_all * (len(person_names) + 1) + (person_all + 1)
+    elif args.mode == "person":
+        strata = person_all
+    else:
+        strata = seat_all
+    train_idx, val_idx = _stratified_split(strata)
 
-    # Stratified train/val split for epoch monitoring.
-    val_idx = []
-    rng = np.random.RandomState(SEED)
-    for c in np.unique(y_train_all):
-        idx = rng.permutation(np.flatnonzero(y_train_all == c))
-        val_idx.extend(idx[:int(round(VAL_FRACTION * len(idx)))])
-    val_mask = np.zeros(len(y_train_all), dtype=bool)
-    val_mask[val_idx] = True
+    def loader(X, seat, person, indices=None, shuffle=False):
+        if indices is not None:
+            X, seat, person = X[indices], seat[indices], person[indices]
+        dataset = TensorDataset(torch.from_numpy(X[:, None].astype(np.float32)),
+                                torch.from_numpy(seat), torch.from_numpy(person))
+        return DataLoader(dataset, batch_size=min(BATCH_SIZE, max(len(dataset), 1)), shuffle=shuffle)
 
-    def make_loader(X, y, shuffle):
-        ds = TensorDataset(torch.from_numpy(X[:, None, :, :].astype(np.float32)),
-                           torch.from_numpy(y))
-        return DataLoader(ds, batch_size=BATCH_SIZE, shuffle=shuffle)
+    train_loader = loader(X_all, seat_all, person_all, train_idx, True)
+    val_loader = loader(X_all, seat_all, person_all, val_idx)
+    test_loader = loader(X_test, seat_test, person_test)
+    n_people = len(model_person_names)
+    model = build_model(args.mode, args.architecture, n_links, n_taps,
+                        len(SEAT_NAMES), n_people).to(device)
+    criteria = {}
+    if args.mode in ("seat", "separate", "joint"):
+        criteria["seat"] = nn.CrossEntropyLoss(
+            weight=_weights(seat_all[train_idx], len(SEAT_NAMES)).to(device))
+    if args.mode in ("person", "separate"):
+        criteria["person"] = nn.CrossEntropyLoss(
+            weight=_weights(person_all[train_idx], n_people).to(device))
+    elif args.mode == "joint":
+        criteria["person"] = nn.CrossEntropyLoss(
+            weight=_weights(person_all[train_idx], n_people, -1).to(device), ignore_index=-1)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
 
-    train_loader = make_loader(X_train_all[~val_mask], y_train_all[~val_mask], True)
-    val_loader = make_loader(X_train_all[val_mask], y_train_all[val_mask], False)
-    test_loader = make_loader(X_test, y_test, False)
-
-    model = SeatCNN()
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"data: {data_dir}")
-    print(f"train {np.sum(~val_mask)} / val {np.sum(val_mask)} / test {len(y_test)}  "
-          f"| model params: {n_params:,}\n")
-
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR,
-                                 weight_decay=WEIGHT_DECAY)
-
-    best_val_acc, best_state = 0.0, None
+    best_metric, best_state, stale = -1.0, None, 0
     for epoch in range(1, args.epochs + 1):
-        t0 = time.time()
-        train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer)
-        val_loss, val_acc = run_epoch(model, val_loader, criterion)
-        marker = ""
-        if val_acc >= best_val_acc:
-            best_val_acc = val_acc
-            best_state = {k: v.clone() for k, v in model.state_dict().items()}
-            marker = " *"
-        print(f"epoch {epoch:2d}/{args.epochs}  "
-              f"train loss {train_loss:.4f} acc {train_acc:.4f}  |  "
-              f"val loss {val_loss:.4f} acc {val_acc:.4f}  "
-              f"({time.time() - t0:.1f}s){marker}")
-
+        started = time.time()
+        train_result = _run(model, train_loader, criteria, args.mode, device, optimizer)
+        val_result = _run(model, val_loader, criteria, args.mode, device)
+        scores = []
+        for task in ("seat", "person"):
+            if task in val_result:
+                count = len(SEAT_NAMES) if task == "seat" else n_people
+                ignore = -1 if task == "person" and args.mode == "joint" else None
+                score, _ = _metrics(*val_result[task], count, ignore)
+                if score is not None:
+                    scores.append(score)
+        metric = float(np.mean(scores)) if scores else -val_result["loss"]
+        improved = metric > best_metric
+        if improved:
+            best_metric, best_state, stale = metric, copy.deepcopy(model.state_dict()), 0
+        else:
+            stale += 1
+        print(f"epoch {epoch}/{args.epochs} train_loss={train_result['loss']:.4f} "
+              f"val_loss={val_result['loss']:.4f} val_metric={metric:.4f} "
+              f"seconds={time.time() - started:.1f}{' *' if improved else ''}")
+        if stale >= args.patience:
+            print(f"early stopping after {epoch} epochs")
+            break
+    if best_state is None:
+        best_state = copy.deepcopy(model.state_dict())
     model.load_state_dict(best_state)
-    test_loss, test_acc = run_epoch(model, test_loader, criterion)
+    test_result = _run(model, test_loader, criteria, args.mode, device)
+    metrics = {}
+    tasks = (["seat"] if args.mode == "seat" else ["person"] if args.mode == "person"
+             else ["seat", "person"])
+    for task in tasks:
+        if task in test_result:
+            count = len(SEAT_NAMES) if task == "seat" else n_people
+            ignore = -1 if task == "person" and args.mode == "joint" else None
+            accuracy, confusion = _metrics(*test_result[task], count, ignore)
+        else:
+            count = len(SEAT_NAMES) if task == "seat" else n_people
+            accuracy, confusion = None, np.zeros((count, count), dtype=np.int64)
+        metrics[f"{task}_accuracy"] = accuracy
+        metrics[f"{task}_confusion"] = confusion
 
-    # Confusion matrix and per-class metrics on the test set.
-    model.eval()
-    with torch.no_grad():
-        preds = torch.cat([model(xb).argmax(1) for xb, _ in test_loader]).numpy()
-    n_cls = len(CLASS_NAMES)
-    confusion = np.zeros((n_cls, n_cls), dtype=int)
-    for t, p in zip(y_test, preds):
-        confusion[t, p] += 1
-
-    print(f"\n=== test evaluation (best-val model) ===")
-    print(f"test loss {test_loss:.4f}  accuracy {test_acc:.4f} "
-          f"({confusion.trace()}/{confusion.sum()})\n")
-    print(f"{'class':>12s} {'precision':>9s} {'recall':>7s} {'f1':>7s} {'support':>8s}")
-    for c, name in enumerate(CLASS_NAMES):
-        tp = confusion[c, c]
-        prec = tp / max(confusion[:, c].sum(), 1)
-        rec = tp / max(confusion[c, :].sum(), 1)
-        f1 = 2 * prec * rec / max(prec + rec, 1e-12)
-        print(f"{name:>12s} {prec:9.4f} {rec:7.4f} {f1:7.4f} {confusion[c].sum():8d}")
-
-    print("\nconfusion matrix (rows = true, cols = predicted):")
-    header = " " * 12 + "".join(f"{n[:10]:>11s}" for n in CLASS_NAMES)
-    print(header)
-    for c, name in enumerate(CLASS_NAMES):
-        print(f"{name:>12s}" + "".join(f"{v:11d}" for v in confusion[c]))
-
-    # Per-person accuracy — a first hint at generalization across subjects.
-    persons = test_npz["person"]
-    print("\nper-person test accuracy:")
-    for who in np.unique(persons):
-        m = persons == who
-        print(f"  {who:10s} {np.mean(preds[m] == y_test[m]):.4f} ({m.sum()} samples)")
-
-    os.makedirs(MODEL_DIR, exist_ok=True)
+    variant = os.path.basename(os.path.normpath(data_dir)).replace("data_", "")
+    link_order = np.asarray(train_npz.get("link_order", []), dtype=np.int64)
+    metadata = {
+        "model_mode": args.mode, "architecture": args.architecture,
+        "seat_names": SEAT_NAMES, "person_names": model_person_names,
+        "link_order": link_order, "link_mode": str(train_npz.get("link_mode", "directed")),
+        "taps_left": int(train_npz.get("taps_left", 0)),
+        "taps_right": int(train_npz.get("taps_right", n_taps - 1)),
+        "n_links": n_links, "n_taps": n_taps, "norm_mean": mean, "norm_std": std,
+        "db_floor": DB_FLOOR, "db_ceil": DB_CEIL, "variant": variant,
+        "db_params": {"floor": DB_FLOOR, "ceil": DB_CEIL, "epsilon": 1e-6},
+        "schema_version": 2, **metrics,
+    }
     suffix = "_shuffled-labels" if args.shuffle_labels else ""
-    ckpt_path = os.path.join(MODEL_DIR, f"seat_cnn_{args.data_dir}{suffix}.pt")
-    torch.save({"state_dict": model.state_dict(), "norm_mean": mean,
-                "norm_std": std, "class_names": CLASS_NAMES,
-                "db_floor": DB_FLOOR, "db_ceil": DB_CEIL,
-                "data_dir": args.data_dir, "test_accuracy": test_acc}, ckpt_path)
-    print(f"\nsaved model to {ckpt_path}")
+    stem = f"classifier_{args.mode}_{args.architecture}_{variant}{suffix}"
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    model_path = os.path.abspath(os.path.join(MODEL_DIR, stem + ".pt"))
+    manifest_path = os.path.abspath(os.path.join(MODEL_DIR, stem + ".manifest.json"))
+    torch.save({**metadata, "state_dict": model.state_dict()}, model_path)
+    manifest = {key: value for key, value in metadata.items()
+                if key not in ("norm_mean", "norm_std")}
+    manifest.update({"checkpoint_filename": os.path.basename(model_path),
+                     "features": {"normalization": "per-link-tap", "input": "magnitude"}})
+    with open(manifest_path, "w", encoding="ascii") as stream:
+        json.dump(_json_safe(manifest), stream, separators=(",", ":"), sort_keys=True)
+    result = {"model_path": model_path, "manifest_path": manifest_path,
+              "seat_names": SEAT_NAMES if "seat" in tasks else [],
+              "person_names": model_person_names if "person" in tasks else [], **metrics}
+    print("HEIMDALL_RESULT " + json.dumps(_json_safe(result), separators=(",", ":")))
 
 
 if __name__ == "__main__":

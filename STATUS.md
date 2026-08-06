@@ -608,6 +608,18 @@ calibration remains before timestamps can be treated as accurate ranges.
 
 ## Next executable checkpoint
 
+- Classifier pipeline expanded on 2026-08-06. Training now supports a five-class
+  seat target including `Empty`, dynamic person labels, independent seat/person
+  models or a shared dual-head model, standard/lite backbones, a canonical
+  10-link reciprocal feature set (with 20 directed links retained as an option),
+  and zero-padded LOS windows controlled by taps left/right. Schema-v2 model
+  manifests carry the exact live feature contract. Live inference consumes that
+  contract, preserves legacy checkpoints, publishes raw and rolling-smoothed
+  seat/person outputs, and records average/p95 snapshot latency. Python contract
+  tests and 50 Rust service tests pass; one checkpoint-dependent inference test
+  remains ignored. Live hardware accuracy and the `<35 ms` p95 snapshot target
+  are not yet verified, and no ONNX/QNN runtime dependency has been introduced.
+
 - Live migration in progress (2026-07-30): `heimdall-service agent` now keeps
   only CDC validation, local health, LED status support, and UDP forwarding;
   `heimdall-service server` receives the live stream before the existing DSP

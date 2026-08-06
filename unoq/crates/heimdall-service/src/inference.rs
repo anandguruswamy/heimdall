@@ -29,31 +29,129 @@ use crate::{
 };
 
 const N_NODES: u8 = 5;
-const N_TAPS: usize = 64;
+const CAPTURE_TAPS: usize = 64;
 const ROUNDS_PER_FRAME: u32 = 5;
-/// All directed links between distinct nodes: 5 * 4 = 20 rows per frame.
-const LINKS_PER_FRAME: usize = N_NODES as usize * (N_NODES as usize - 1);
+const LEGACY_LINKS_PER_FRAME: usize = N_NODES as usize * (N_NODES as usize - 1);
 const PENDING_FRAME_LIMIT: usize = 8;
 const FRAME_QUEUE_CAPACITY: usize = 4;
 const STDERR_TAIL_LINES: usize = 8;
 const RATE_WINDOW_NS: i64 = 5_000_000_000;
 const IDLE_STOP_GRACE: Duration = Duration::from_secs(30);
 
-/// Row index in the canonical LINK_ORDER of build_seat_dataset.py:
-/// [(a, b) for a in range(5) for b in range(5) if a != b].
-fn link_index(from: u8, to: u8) -> usize {
-    from as usize * (N_NODES as usize - 1) + to as usize - usize::from(to > from)
+fn directed_links() -> impl Iterator<Item = (u8, u8)> {
+    (0..N_NODES).flat_map(|a| (0..N_NODES).filter(move |b| *b != a).map(move |b| (a, b)))
 }
 
-fn canonical_links() -> impl Iterator<Item = (u8, u8)> {
-    (0..N_NODES).flat_map(|a| (0..N_NODES).filter(move |b| *b != a).map(move |b| (a, b)))
+fn reciprocal_links() -> impl Iterator<Item = (u8, u8)> {
+    (0..N_NODES).flat_map(|a| (a + 1..N_NODES).map(move |b| (a, b)))
+}
+
+#[derive(Clone)]
+struct FeatureContract {
+    links: Vec<(u8, u8)>,
+    taps_left: usize,
+    taps_right: usize,
+    legacy_full: bool,
+    variant: String,
+    mode: String,
+    smoothing_window: usize,
+}
+
+impl Default for FeatureContract {
+    fn default() -> Self {
+        Self {
+            links: directed_links().collect(),
+            taps_left: 0,
+            taps_right: CAPTURE_TAPS - 1,
+            legacy_full: true,
+            variant: "raw".to_owned(),
+            mode: "seat".to_owned(),
+            smoothing_window: 5,
+        }
+    }
+}
+
+impl FeatureContract {
+    fn load(checkpoint: &std::path::Path) -> Result<Self> {
+        let manifest_path = checkpoint.with_extension("manifest.json");
+        if !manifest_path.is_file() {
+            let mut legacy = Self::default();
+            if checkpoint
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().contains("calibrated"))
+            {
+                legacy.variant = "calibrated".to_owned();
+            }
+            return Ok(legacy);
+        }
+        let value: Value = serde_json::from_slice(&std::fs::read(&manifest_path)?)
+            .with_context(|| format!("parse model manifest {}", manifest_path.display()))?;
+        if value["schema_version"].as_u64() != Some(2) {
+            bail!(
+                "unsupported classifier manifest schema in {}",
+                manifest_path.display()
+            );
+        }
+        let links = value["link_order"]
+            .as_array()
+            .context("model manifest contains no link_order")?
+            .iter()
+            .map(|row| {
+                let row = row.as_array().context("link_order rows must be arrays")?;
+                let from = row
+                    .first()
+                    .and_then(Value::as_u64)
+                    .context("link from missing")? as u8;
+                let to = row
+                    .get(1)
+                    .and_then(Value::as_u64)
+                    .context("link to missing")? as u8;
+                if from >= N_NODES || to >= N_NODES || from == to {
+                    bail!("invalid model link {from}>{to}");
+                }
+                Ok((from, to))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let taps_left = value["taps_left"]
+            .as_u64()
+            .context("manifest taps_left missing")? as usize;
+        let taps_right = value["taps_right"]
+            .as_u64()
+            .context("manifest taps_right missing")? as usize;
+        let n_taps = value["n_taps"]
+            .as_u64()
+            .context("manifest n_taps missing")? as usize;
+        if links.is_empty()
+            || value["n_links"].as_u64() != Some(links.len() as u64)
+            || n_taps != taps_left + taps_right + 1
+        {
+            bail!("classifier manifest feature dimensions are inconsistent");
+        }
+        Ok(Self {
+            links,
+            taps_left,
+            taps_right,
+            legacy_full: false,
+            variant: value["variant"].as_str().unwrap_or("raw").to_owned(),
+            mode: value["model_mode"].as_str().unwrap_or("seat").to_owned(),
+            smoothing_window: value["smoothing_window"].as_u64().unwrap_or(5).clamp(1, 31) as usize,
+        })
+    }
+
+    fn width(&self) -> usize {
+        if self.legacy_full {
+            CAPTURE_TAPS
+        } else {
+            self.taps_left + self.taps_right + 1
+        }
+    }
 }
 
 enum Variant {
     Raw,
     /// Frozen reference taps in canonical link order; live magnitude becomes
     /// |cir - reference| exactly like the calibrated dataset variant.
-    Calibrated(Vec<Vec<[f64; 2]>>),
+    Calibrated(BTreeMap<(u8, u8), Vec<[f64; 2]>>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -90,16 +188,18 @@ impl FrameAssembler {
         frame: u64,
         key: (u8, u8),
         magnitude: Vec<f32>,
+        expected_links: usize,
     ) -> Option<(u64, HashMap<(u8, u8), Vec<f32>>)> {
         if self.emitted_through.is_some_and(|done| frame <= done) {
             return None;
         }
         let links = self.pending.entry(frame).or_default();
         links.insert(key, magnitude);
-        if links.len() == LINKS_PER_FRAME {
+        if links.len() == expected_links {
             let complete = self.pending.remove(&frame).unwrap();
             self.emitted_through = Some(frame);
-            self.pending.retain(|&pending_frame, _| pending_frame > frame);
+            self.pending
+                .retain(|&pending_frame, _| pending_frame > frame);
             return Some((frame, complete));
         }
         while self.pending.len() > PENDING_FRAME_LIMIT {
@@ -114,10 +214,12 @@ struct RunState {
     generation: u64,
     phase: Phase,
     model: String,
+    features: FeatureContract,
     variant: Variant,
     started_ns: i64,
     predictions: u64,
     dropped_frames: u64,
+    latency_ms: VecDeque<f64>,
     recent_ns: VecDeque<i64>,
     last: Option<Value>,
     error: Option<String>,
@@ -126,6 +228,7 @@ struct RunState {
     child: Option<Child>,
     frame_tx: Option<SyncSender<String>>,
     assembler: FrameAssembler,
+    smoother: PredictionSmoother,
 }
 
 impl Default for RunState {
@@ -134,10 +237,12 @@ impl Default for RunState {
             generation: 0,
             phase: Phase::Idle,
             model: String::new(),
+            features: FeatureContract::default(),
             variant: Variant::Raw,
             started_ns: 0,
             predictions: 0,
             dropped_frames: 0,
+            latency_ms: VecDeque::new(),
             recent_ns: VecDeque::new(),
             last: None,
             error: None,
@@ -146,8 +251,132 @@ impl Default for RunState {
             child: None,
             frame_tx: None,
             assembler: FrameAssembler::default(),
+            smoother: PredictionSmoother::default(),
         }
     }
+}
+
+#[derive(Default)]
+struct PredictionSmoother {
+    window: usize,
+    seat: VecDeque<Vec<f64>>,
+    person: VecDeque<Vec<f64>>,
+    person_labels: VecDeque<String>,
+}
+
+impl PredictionSmoother {
+    fn reset(&mut self, window: usize) {
+        self.window = window.max(1);
+        self.seat.clear();
+        self.person.clear();
+        self.person_labels.clear();
+    }
+
+    fn update(&mut self, value: &mut Value) {
+        let raw_seat = value["raw_seat"]
+            .as_str()
+            .or_else(|| value["seat"].as_str())
+            .map(str::to_owned);
+        let seat_probs = probability_vector(&value["raw_seat_probs"])
+            .or_else(|| probability_vector(&value["probs"]));
+        if let Some(probs) = seat_probs {
+            push_probabilities(&mut self.seat, probs, self.window);
+            let stable = average_probabilities(&self.seat);
+            let index = argmax(&stable);
+            let classes = ["FrontLeft", "FrontRight", "BackRight", "BackLeft", "Empty"];
+            let name = classes
+                .get(index)
+                .copied()
+                .or(raw_seat.as_deref())
+                .unwrap_or("")
+                .to_owned();
+            value["raw_seat"] = raw_seat.map_or(Value::Null, Value::String);
+            value["raw_seat_probs"] = json!(
+                value["raw_seat_probs"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_else(|| value["probs"].as_array().cloned().unwrap_or_default())
+            );
+            value["stable_seat"] = json!(name);
+            value["stable_seat_index"] = json!(index);
+            value["stable_seat_probs"] = json!(stable);
+            value["seat"] = json!(name);
+            value["seat_index"] = json!(index);
+            value["probs"] = value["stable_seat_probs"].clone();
+            value["uncertain"] = json!(stable.get(index).copied().unwrap_or(0.0) < 0.6);
+        }
+
+        if let Some(probs) = probability_vector(&value["raw_person_probs"]) {
+            push_probabilities(&mut self.person, probs, self.window);
+            let stable = average_probabilities(&self.person);
+            let index = argmax(&stable);
+            value["stable_person_index"] = json!(index);
+            value["stable_person_probs"] = json!(stable);
+        }
+        if let Some(raw) = value["raw_person"].as_str().map(str::to_owned) {
+            self.person_labels.push_back(raw);
+            while self.person_labels.len() > self.window {
+                self.person_labels.pop_front();
+            }
+        }
+        if value["stable_seat"] == "Empty" {
+            value["stable_person"] = json!("n/a");
+        } else if let Some(person) = majority_label(&self.person_labels) {
+            value["stable_person"] = json!(person);
+        }
+        if value.get("stable_person").is_some() {
+            value["person"] = value["stable_person"].clone();
+        }
+    }
+}
+
+fn probability_vector(value: &Value) -> Option<Vec<f64>> {
+    value
+        .as_array()?
+        .iter()
+        .map(Value::as_f64)
+        .collect::<Option<Vec<_>>>()
+        .filter(|values| !values.is_empty() && values.iter().all(|value| value.is_finite()))
+}
+
+fn push_probabilities(queue: &mut VecDeque<Vec<f64>>, values: Vec<f64>, window: usize) {
+    if queue
+        .back()
+        .is_some_and(|prior| prior.len() != values.len())
+    {
+        queue.clear();
+    }
+    queue.push_back(values);
+    while queue.len() > window {
+        queue.pop_front();
+    }
+}
+
+fn average_probabilities(queue: &VecDeque<Vec<f64>>) -> Vec<f64> {
+    let mut average = vec![0.0; queue.front().map_or(0, Vec::len)];
+    for values in queue {
+        for (total, value) in average.iter_mut().zip(values) {
+            *total += value;
+        }
+    }
+    let count = queue.len().max(1) as f64;
+    average.iter_mut().for_each(|value| *value /= count);
+    average
+}
+
+fn argmax(values: &[f64]) -> usize {
+    values
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map_or(0, |(index, _)| index)
+}
+
+fn majority_label(values: &VecDeque<String>) -> Option<&str> {
+    values
+        .iter()
+        .max_by_key(|candidate| values.iter().filter(|value| *value == *candidate).count())
+        .map(String::as_str)
 }
 
 #[derive(Clone)]
@@ -206,7 +435,17 @@ impl InferenceManager {
             models
                 .into_iter()
                 .map(|(modified_ms, name, bytes)| {
-                    json!({"name": name, "modified_ms": modified_ms, "bytes": bytes})
+                    let checkpoint = dir.join(&name);
+                    let features = FeatureContract::load(&checkpoint).ok();
+                    json!({
+                        "name": name,
+                        "modified_ms": modified_ms,
+                        "bytes": bytes,
+                        "mode": features.as_ref().map(|value| value.mode.as_str()),
+                        "variant": features.as_ref().map(|value| value.variant.as_str()),
+                        "links": features.as_ref().map(|value| value.links.len()),
+                        "taps": features.as_ref().map(FeatureContract::width),
+                    })
                 })
                 .collect(),
         ))
@@ -236,13 +475,35 @@ impl InferenceManager {
         } else {
             0.0
         };
+        let latency_average_ms = if state.latency_ms.is_empty() {
+            0.0
+        } else {
+            state.latency_ms.iter().sum::<f64>() / state.latency_ms.len() as f64
+        };
+        let mut ordered_latency = state.latency_ms.iter().copied().collect::<Vec<_>>();
+        ordered_latency.sort_by(f64::total_cmp);
+        let latency_p95_ms = ordered_latency
+            .get((ordered_latency.len().saturating_sub(1) * 95) / 100)
+            .copied()
+            .unwrap_or(0.0);
         json!({
             "status": state.phase.name(),
             "model": state.model,
+            "features": {
+                "mode": state.features.mode,
+                "variant": state.features.variant,
+                "links": state.features.links.len(),
+                "taps_left": state.features.taps_left,
+                "taps_right": state.features.taps_right,
+                "taps": state.features.width(),
+                "smoothing_window": state.features.smoothing_window,
+            },
             "started_ns": if state.started_ns == 0 { Value::Null } else { json!(state.started_ns) },
             "predictions": state.predictions,
             "dropped_frames": state.dropped_frames,
             "rate_hz": rate_hz,
+            "latency_average_ms": latency_average_ms,
+            "latency_p95_ms": latency_p95_ms,
             "last": state.last,
             "error": state.error,
             "stop_reason": state.stop_reason,
@@ -269,7 +530,12 @@ impl InferenceManager {
         {
             bail!("model must be a .pt file name from the models directory");
         }
-        let checkpoint = self.inner.config.seatclass_root.join("models").join(model_name);
+        let checkpoint = self
+            .inner
+            .config
+            .seatclass_root
+            .join("models")
+            .join(model_name);
         if !checkpoint.is_file() {
             bail!("model checkpoint not found: {}", checkpoint.display());
         }
@@ -286,22 +552,25 @@ impl InferenceManager {
                 self.inner.config.python.display()
             );
         }
-        let variant = if model_name.contains("calibrated") {
+        let features = FeatureContract::load(&checkpoint)?;
+        let variant = if features.variant == "calibrated" {
             let refs = frozen_refs.context(
                 "the calibrated model subtracts frozen board references; freeze the board first",
             )?;
-            let ordered = canonical_links()
-                .map(|key| {
-                    let taps = refs.get(&key).with_context(|| {
-                        format!("frozen references are missing link {}>{}", key.0, key.1)
-                    })?;
-                    if taps.len() != N_TAPS {
-                        bail!("frozen reference for {}>{} has {} taps", key.0, key.1, taps.len());
-                    }
-                    Ok(taps.clone())
-                })
-                .collect::<Result<Vec<_>>>()?;
-            Variant::Calibrated(ordered)
+            for key in &features.links {
+                let taps = refs.get(key).with_context(|| {
+                    format!("frozen references are missing link {}>{}", key.0, key.1)
+                })?;
+                if taps.len() != CAPTURE_TAPS {
+                    bail!(
+                        "frozen reference for {}>{} has {} taps",
+                        key.0,
+                        key.1,
+                        taps.len()
+                    );
+                }
+            }
+            Variant::Calibrated(refs)
         } else {
             Variant::Raw
         };
@@ -323,24 +592,36 @@ impl InferenceManager {
             .stderr(Stdio::piped())
             .spawn()
             .with_context(|| {
-                format!("spawn {} for live inference", self.inner.config.python.display())
+                format!(
+                    "spawn {} for live inference",
+                    self.inner.config.python.display()
+                )
             })?;
         let stdin = child.stdin.take().context("inference stdin unavailable")?;
-        let stdout = child.stdout.take().context("inference stdout unavailable")?;
-        let stderr = child.stderr.take().context("inference stderr unavailable")?;
+        let stdout = child
+            .stdout
+            .take()
+            .context("inference stdout unavailable")?;
+        let stderr = child
+            .stderr
+            .take()
+            .context("inference stderr unavailable")?;
 
         let generation = state.generation + 1;
+        let smoothing_window = features.smoothing_window;
         let (frame_tx, frame_rx) = sync_channel::<String>(FRAME_QUEUE_CAPACITY);
         *state = RunState {
             generation,
             phase: Phase::Starting,
             model: model_name.to_owned(),
+            features,
             variant,
             started_ns: now_ns(),
             child: Some(child),
             frame_tx: Some(frame_tx),
             ..RunState::default()
         };
+        state.smoother.reset(smoothing_window);
         drop(state);
         self.inner.active.store(true, Ordering::Release);
 
@@ -361,6 +642,8 @@ impl InferenceManager {
             state.stop_reason = Some(reason.to_owned());
             state.frame_tx = None;
             state.assembler = FrameAssembler::default();
+            let smoothing_window = state.features.smoothing_window;
+            state.smoother.reset(smoothing_window);
             state.child.take()
         };
         if let Some(mut child) = child {
@@ -388,11 +671,8 @@ impl InferenceManager {
         let generation = self.inner.state.lock().generation;
         tokio::spawn(async move {
             tokio::time::sleep(IDLE_STOP_GRACE).await;
-            let idle =
-                demand[Topic::SeatInference as usize].load(Ordering::Relaxed) == 0;
-            if idle
-                && manager.wants_frames()
-                && manager.inner.state.lock().generation == generation
+            let idle = demand[Topic::SeatInference as usize].load(Ordering::Relaxed) == 0;
+            if idle && manager.wants_frames() && manager.inner.state.lock().generation == generation
             {
                 manager.stop("no dashboard subscribed");
             }
@@ -410,44 +690,31 @@ impl InferenceManager {
         if !matches!(state.phase, Phase::Starting | Phase::Running) {
             return;
         }
+        let feature_links = state.features.links.clone();
+        let expected_links = feature_links.len();
         for sample in samples {
             if sample.from >= N_NODES
                 || sample.to >= N_NODES
                 || sample.from == sample.to
-                || sample.iq.len() != N_TAPS
+                || sample.iq.len() != CAPTURE_TAPS
             {
+                continue;
+            }
+            let key = (sample.from, sample.to);
+            if !feature_links.contains(&key) {
                 continue;
             }
             // Magnitude from iq, matching build_seat_dataset.py exactly (the
             // stored magnitude field is not guaranteed to equal |iq|).
-            let magnitude: Vec<f32> = match &state.variant {
-                Variant::Raw => sample
-                    .iq
-                    .iter()
-                    .map(|[re, im]| {
-                        let (re, im) = (*re as f64, *im as f64);
-                        (re * re + im * im).sqrt() as f32
-                    })
-                    .collect(),
-                Variant::Calibrated(references) => {
-                    let reference = &references[link_index(sample.from, sample.to)];
-                    sample
-                        .iq
-                        .iter()
-                        .zip(reference)
-                        .map(|([re, im], [ref_re, ref_im])| {
-                            let d_re = *re as f64 - ref_re;
-                            let d_im = *im as f64 - ref_im;
-                            (d_re * d_re + d_im * d_im).sqrt() as f32
-                        })
-                        .collect()
-                }
-            };
+            let magnitude = feature_magnitude(sample, &state.variant, &state.features);
             let frame = u64::from(sample.round / ROUNDS_PER_FRAME);
-            let key = (sample.from, sample.to);
-            if let Some((frame_id, links)) = state.assembler.insert(frame, key, magnitude) {
+            if let Some((frame_id, links)) =
+                state
+                    .assembler
+                    .insert(frame, key, magnitude, expected_links)
+            {
                 let matrix: Vec<&Vec<f32>> =
-                    canonical_links().map(|link| &links[&link]).collect();
+                    feature_links.iter().map(|link| &links[link]).collect();
                 let line = json!({
                     "frame_id": frame_id,
                     "ts": now_ns() / 1_000_000,
@@ -467,16 +734,12 @@ impl InferenceManager {
         }
     }
 
-    fn spawn_stdout_reader(
-        &self,
-        generation: u64,
-        stdout: impl std::io::Read + Send + 'static,
-    ) {
+    fn spawn_stdout_reader(&self, generation: u64, stdout: impl std::io::Read + Send + 'static) {
         let manager = self.clone();
         thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
                 let Ok(line) = line else { break };
-                let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                let Ok(mut value) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
                 if value["ready"] == true {
@@ -486,7 +749,10 @@ impl InferenceManager {
                     }
                     continue;
                 }
-                if value.get("seat").is_none() {
+                if value.get("seat").is_none()
+                    && value.get("raw_seat").is_none()
+                    && value.get("raw_person").is_none()
+                {
                     continue;
                 }
                 {
@@ -494,9 +760,19 @@ impl InferenceManager {
                     if state.generation != generation {
                         return;
                     }
+                    state.smoother.update(&mut value);
                     state.phase = Phase::Running;
                     state.predictions += 1;
                     let now = now_ns();
+                    if let Some(sent_ms) = value["ts"].as_f64() {
+                        let latency_ms = now as f64 / 1e6 - sent_ms;
+                        if latency_ms.is_finite() && latency_ms >= 0.0 {
+                            state.latency_ms.push_back(latency_ms);
+                            while state.latency_ms.len() > 256 {
+                                state.latency_ms.pop_front();
+                            }
+                        }
+                    }
                     state.recent_ns.push_back(now);
                     while state
                         .recent_ns
@@ -522,11 +798,7 @@ impl InferenceManager {
         });
     }
 
-    fn spawn_stderr_reader(
-        &self,
-        generation: u64,
-        stderr: impl std::io::Read + Send + 'static,
-    ) {
+    fn spawn_stderr_reader(&self, generation: u64, stderr: impl std::io::Read + Send + 'static) {
         let manager = self.clone();
         thread::spawn(move || {
             for line in BufReader::new(stderr).lines() {
@@ -580,6 +852,48 @@ impl InferenceManager {
     }
 }
 
+fn feature_magnitude(
+    sample: &AlignedCirSample,
+    variant: &Variant,
+    features: &FeatureContract,
+) -> Vec<f32> {
+    let reference = match variant {
+        Variant::Raw => None,
+        Variant::Calibrated(references) => references.get(&(sample.from, sample.to)),
+    };
+    let magnitude_at = |index: usize| {
+        let [re, im] = sample.iq[index];
+        let (mut re, mut im) = (f64::from(re), f64::from(im));
+        if let Some(reference) = reference {
+            re -= reference[index][0];
+            im -= reference[index][1];
+        }
+        (re * re + im * im).sqrt() as f32
+    };
+    if features.legacy_full {
+        return (0..sample.iq.len()).map(magnitude_at).collect();
+    }
+    let center = round_half_away_from_zero(sample.marker_aligned);
+    let start = center - features.taps_left as isize;
+    (0..features.width())
+        .map(|offset| {
+            let index = start + offset as isize;
+            usize::try_from(index)
+                .ok()
+                .filter(|index| *index < sample.iq.len())
+                .map_or(0.0, magnitude_at)
+        })
+        .collect()
+}
+
+fn round_half_away_from_zero(value: f64) -> isize {
+    if value >= 0.0 {
+        (value + 0.5).floor() as isize
+    } else {
+        (value - 0.5).ceil() as isize
+    }
+}
+
 fn spawn_frame_writer(frames: Receiver<String>, mut stdin: ChildStdin) {
     thread::spawn(move || {
         while let Ok(line) = frames.recv() {
@@ -596,32 +910,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn link_index_matches_python_link_order() {
-        let ordered = canonical_links().collect::<Vec<_>>();
-        assert_eq!(ordered.len(), LINKS_PER_FRAME);
+    fn link_orders_match_python_contract() {
+        let ordered = directed_links().collect::<Vec<_>>();
+        assert_eq!(ordered.len(), LEGACY_LINKS_PER_FRAME);
         assert_eq!(ordered[0], (0, 1));
         assert_eq!(ordered[4], (1, 0));
         assert_eq!(ordered[19], (4, 3));
-        for (index, (from, to)) in ordered.into_iter().enumerate() {
-            assert_eq!(link_index(from, to), index, "{from}>{to}");
-        }
+        let reciprocal = reciprocal_links().collect::<Vec<_>>();
+        assert_eq!(reciprocal.len(), 10);
+        assert_eq!(reciprocal[0], (0, 1));
+        assert_eq!(reciprocal[9], (3, 4));
     }
 
     #[test]
     fn assembler_emits_only_complete_frames_and_skips_stale() {
         let mut assembler = FrameAssembler::default();
-        let links = canonical_links().collect::<Vec<_>>();
-        for (from, to) in links.iter().take(LINKS_PER_FRAME - 1) {
-            assert!(assembler.insert(3, (*from, *to), vec![1.0]).is_none());
+        let links = reciprocal_links().collect::<Vec<_>>();
+        for (from, to) in links.iter().take(links.len() - 1) {
+            assert!(
+                assembler
+                    .insert(3, (*from, *to), vec![1.0], links.len())
+                    .is_none()
+            );
         }
         let (frame, complete) = assembler
-            .insert(3, links[LINKS_PER_FRAME - 1], vec![1.0])
-            .expect("20th link completes the frame");
+            .insert(3, links[links.len() - 1], vec![1.0], links.len())
+            .expect("final selected link completes the frame");
         assert_eq!(frame, 3);
-        assert_eq!(complete.len(), LINKS_PER_FRAME);
+        assert_eq!(complete.len(), links.len());
         // Late sample for an already-emitted frame is ignored.
-        assert!(assembler.insert(3, links[0], vec![1.0]).is_none());
-        assert!(assembler.insert(2, links[0], vec![1.0]).is_none());
+        assert!(
+            assembler
+                .insert(3, links[0], vec![1.0], links.len())
+                .is_none()
+        );
+        assert!(
+            assembler
+                .insert(2, links[0], vec![1.0], links.len())
+                .is_none()
+        );
         assert!(assembler.pending.is_empty());
     }
 
@@ -629,10 +956,63 @@ mod tests {
     fn assembler_bounds_pending_frames() {
         let mut assembler = FrameAssembler::default();
         for frame in 0..(PENDING_FRAME_LIMIT as u64 + 5) {
-            assembler.insert(frame, (0, 1), vec![1.0]);
+            assembler.insert(frame, (0, 1), vec![1.0], 10);
         }
         assert!(assembler.pending.len() <= PENDING_FRAME_LIMIT);
-        assert!(assembler.pending.contains_key(&(PENDING_FRAME_LIMIT as u64 + 4)));
+        assert!(
+            assembler
+                .pending
+                .contains_key(&(PENDING_FRAME_LIMIT as u64 + 4))
+        );
+    }
+
+    #[test]
+    fn los_window_matches_python_padding_contract() {
+        let mut sample = frame_samples(0).remove(0);
+        sample.marker_aligned = 1.5;
+        sample.iq = (0..CAPTURE_TAPS).map(|index| [index as f32, 0.0]).collect();
+        let features = FeatureContract {
+            links: vec![(sample.from, sample.to)],
+            taps_left: 3,
+            taps_right: 2,
+            legacy_full: false,
+            variant: "raw".to_owned(),
+            mode: "seat".to_owned(),
+            smoothing_window: 5,
+        };
+        assert_eq!(round_half_away_from_zero(sample.marker_aligned), 2);
+        assert_eq!(
+            feature_magnitude(&sample, &Variant::Raw, &features),
+            vec![0.0, 0.0, 1.0, 2.0, 3.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn smoother_preserves_raw_and_emits_stable_empty() {
+        let mut smoother = PredictionSmoother::default();
+        smoother.reset(3);
+        let mut first = json!({
+            "raw_seat": "FrontLeft",
+            "raw_seat_probs": [0.7, 0.1, 0.1, 0.05, 0.05],
+            "raw_person": "Anand",
+            "raw_person_probs": [0.9, 0.1],
+        });
+        smoother.update(&mut first);
+        assert_eq!(first["stable_seat"], "FrontLeft");
+        assert_eq!(first["stable_person"], "Anand");
+        for _ in 0..2 {
+            let mut empty = json!({
+                "raw_seat": "Empty",
+                "raw_seat_probs": [0.01, 0.01, 0.01, 0.01, 0.96],
+                "raw_person": "n/a",
+                "raw_person_probs": [0.5, 0.5],
+            });
+            smoother.update(&mut empty);
+            if smoother.seat.len() == 3 {
+                assert_eq!(empty["stable_seat"], "Empty");
+                assert_eq!(empty["stable_person"], "n/a");
+            }
+        }
     }
 
     #[test]
@@ -647,7 +1027,7 @@ mod tests {
     }
 
     fn frame_samples(round: u32) -> Vec<AlignedCirSample> {
-        canonical_links()
+        directed_links()
             .map(|(from, to)| AlignedCirSample {
                 from,
                 to,
@@ -662,8 +1042,8 @@ mod tests {
                 marker_aligned: 0.0,
                 fit_algorithm: "test".to_owned(),
                 match_score: None,
-                magnitude: vec![0.0; N_TAPS],
-                iq: vec![[1e-3, 0.0]; N_TAPS],
+                magnitude: vec![0.0; CAPTURE_TAPS],
+                iq: vec![[1e-3, 0.0]; CAPTURE_TAPS],
             })
             .collect()
     }
@@ -696,9 +1076,15 @@ mod tests {
             .expect("a raw checkpoint under models/")
             .to_owned();
         manager.start(&model, None).unwrap();
-        assert!(manager.start(&model, None).is_err(), "second start must be rejected");
         assert!(
-            wait_for(|| manager.status()["status"] == "running", Duration::from_secs(30)),
+            manager.start(&model, None).is_err(),
+            "second start must be rejected"
+        );
+        assert!(
+            wait_for(
+                || manager.status()["status"] == "running",
+                Duration::from_secs(30)
+            ),
             "model load: {:?}",
             manager.status()
         );
@@ -733,7 +1119,10 @@ mod tests {
             Duration::from_secs(5)
         ));
         assert!(
-            wait_for(|| manager.status()["status"] == "running", Duration::from_secs(30)),
+            wait_for(
+                || manager.status()["status"] == "running",
+                Duration::from_secs(30)
+            ),
             "restart: {:?}",
             manager.status()
         );

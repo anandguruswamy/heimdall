@@ -18,10 +18,8 @@ use serde_json::{Value, json};
 
 use crate::metadata::now_ns;
 
-/// Class names must match `LABELS` in build_seat_dataset.py and `CLASS_NAMES`
-/// in train_seat_classifier.py exactly (FrontLeft=0, FrontRight=1,
-/// BackRight=2, BackLeft=3).
-pub const SEAT_CLASSES: [&str; 4] = ["FrontLeft", "FrontRight", "BackRight", "BackLeft"];
+/// Class names must match the shared Python dataset and trainer exactly.
+pub const SEAT_CLASSES: [&str; 5] = ["FrontLeft", "FrontRight", "BackRight", "BackLeft", "Empty"];
 
 const DEFAULT_PYTHON: &str = r"C:\Users\qc_de\AppData\Local\Programs\Python\Python311\python.exe";
 const DEFAULT_SEATCLASS_ROOT: &str =
@@ -29,6 +27,69 @@ const DEFAULT_SEATCLASS_ROOT: &str =
 const MAX_LOG_LINES: usize = 10_000;
 const MIN_EPOCHS: i64 = 1;
 const MAX_EPOCHS: i64 = 500;
+const MAX_TAPS_SIDE: i64 = 63;
+const MAX_PATIENCE: i64 = 100;
+
+#[derive(Clone)]
+pub struct TrainingOptions {
+    pub variant: String,
+    pub mode: String,
+    pub architecture: String,
+    pub link_mode: String,
+    pub taps_left: i64,
+    pub taps_right: i64,
+    pub epochs: i64,
+    pub patience: i64,
+}
+
+impl TrainingOptions {
+    pub fn from_json(value: &Value) -> Result<Self> {
+        let options = Self {
+            variant: value["variant"].as_str().unwrap_or("raw").to_owned(),
+            mode: value["mode"].as_str().unwrap_or("seat").to_owned(),
+            architecture: value["architecture"]
+                .as_str()
+                .unwrap_or("standard")
+                .to_owned(),
+            link_mode: value["link_mode"]
+                .as_str()
+                .unwrap_or("canonical")
+                .to_owned(),
+            taps_left: value["taps_left"].as_i64().unwrap_or(8),
+            taps_right: value["taps_right"].as_i64().unwrap_or(24),
+            epochs: value["epochs"].as_i64().unwrap_or(30),
+            patience: value["patience"].as_i64().unwrap_or(5),
+        };
+        if !matches!(options.variant.as_str(), "raw" | "calibrated") {
+            bail!("variant must be raw or calibrated");
+        }
+        if !matches!(
+            options.mode.as_str(),
+            "seat" | "person" | "separate" | "joint"
+        ) {
+            bail!("mode must be seat, person, separate, or joint");
+        }
+        if !matches!(options.architecture.as_str(), "standard" | "lite") {
+            bail!("architecture must be standard or lite");
+        }
+        if !matches!(options.link_mode.as_str(), "canonical" | "directed") {
+            bail!("link_mode must be canonical or directed");
+        }
+        if !(0..=MAX_TAPS_SIDE).contains(&options.taps_left)
+            || !(0..=MAX_TAPS_SIDE).contains(&options.taps_right)
+            || options.taps_left + options.taps_right + 1 < 4
+        {
+            bail!("LOS feature window must contain at least 4 taps and use 0..63 taps per side");
+        }
+        if !(MIN_EPOCHS..=MAX_EPOCHS).contains(&options.epochs) {
+            bail!("epochs must be between {MIN_EPOCHS} and {MAX_EPOCHS}");
+        }
+        if !(0..=MAX_PATIENCE).contains(&options.patience) {
+            bail!("patience must be between 0 and {MAX_PATIENCE}");
+        }
+        Ok(options)
+    }
+}
 
 #[derive(Clone)]
 pub struct TrainingConfig {
@@ -124,20 +185,28 @@ impl TrainingManager {
         })
     }
 
-    pub fn start(
-        &self,
-        clips: Vec<TrainingClip>,
-        variant: &str,
-        epochs: Option<i64>,
-    ) -> Result<Value> {
-        if !matches!(variant, "raw" | "calibrated") {
-            bail!("variant must be raw or calibrated");
-        }
-        let epochs = epochs.map(|value| value.clamp(MIN_EPOCHS, MAX_EPOCHS));
-        for class in SEAT_CLASSES {
-            if !clips.iter().any(|clip| clip.seat == class) {
-                bail!("training requires at least one tagged clip for {class}");
+    pub fn start(&self, clips: Vec<TrainingClip>, options: TrainingOptions) -> Result<Value> {
+        if options.mode != "person" {
+            for class in SEAT_CLASSES {
+                if !clips.iter().any(|clip| clip.seat == class) {
+                    bail!("training requires at least one tagged clip for {class}");
+                }
             }
+        } else if !clips.iter().any(|clip| clip.seat == "Empty") {
+            bail!("person training requires at least one Empty clip for the n/a class");
+        }
+        if clips
+            .iter()
+            .any(|clip| clip.seat != "Empty" && clip.person.trim().is_empty())
+        {
+            bail!("every occupied training clip requires a person label");
+        }
+        if options.mode != "seat"
+            && !clips
+                .iter()
+                .any(|clip| clip.seat != "Empty" && !clip.person.trim().is_empty())
+        {
+            bail!("person training requires at least one occupied clip with a person label");
         }
         let run_id = {
             let mut state = self.state.lock();
@@ -148,7 +217,7 @@ impl TrainingManager {
             *state = RunState {
                 running: true,
                 run_id,
-                variant: variant.to_owned(),
+                variant: options.variant.clone(),
                 clip_ids: clips.iter().map(|clip| clip.id).collect(),
                 started_ns: now_ns(),
                 ..RunState::default()
@@ -156,10 +225,10 @@ impl TrainingManager {
             run_id
         };
         let manager = self.clone();
-        let variant_for_run = variant.to_owned();
         let clip_count = clips.len();
+        let started_options = options.clone();
         thread::spawn(move || {
-            let outcome = manager.execute(run_id, &clips, &variant_for_run, epochs);
+            let outcome = manager.execute(run_id, &clips, &started_options);
             let mut state = manager.state.lock();
             if state.run_id != run_id {
                 return;
@@ -175,15 +244,19 @@ impl TrainingManager {
                 }
             }
         });
-        Ok(json!({"run_id": run_id, "clips": clip_count, "variant": variant}))
+        Ok(json!({
+            "run_id": run_id,
+            "clips": clip_count,
+            "variant": options.variant,
+            "mode": options.mode,
+        }))
     }
 
     fn execute(
         &self,
         run_id: u64,
         clips: &[TrainingClip],
-        variant: &str,
-        epochs: Option<i64>,
+        options: &TrainingOptions,
     ) -> Result<Value> {
         let scripts = self.config.seatclass_root.join("scripts");
         if !scripts.is_dir() {
@@ -210,6 +283,8 @@ impl TrainingManager {
             let folder = export_clip(&source, clip)?;
             self.log(run_id, format!("  clip {:06} -> {folder}", clip.id));
         }
+        let taps_left = options.taps_left.to_string();
+        let taps_right = options.taps_right.to_string();
         self.run_python(
             run_id,
             &scripts,
@@ -219,22 +294,33 @@ impl TrainingManager {
                 source.as_os_str(),
                 OsStr::new("--out-root"),
                 dataset.as_os_str(),
+                OsStr::new("--link-mode"),
+                OsStr::new(&options.link_mode),
+                OsStr::new("--taps-left"),
+                OsStr::new(&taps_left),
+                OsStr::new("--taps-right"),
+                OsStr::new(&taps_right),
             ],
             "dataset build",
         )?;
-        let data_dir = format!("data_{variant}");
-        let epochs_value = epochs.map(|value| value.to_string());
-        let mut args = vec![
+        let data_dir = format!("data_{}", options.variant);
+        let epochs_value = options.epochs.to_string();
+        let patience_value = options.patience.to_string();
+        let args = vec![
             OsStr::new("train_seat_classifier.py"),
             OsStr::new("--dataset-root"),
             dataset.as_os_str(),
             OsStr::new("--data-dir"),
             OsStr::new(&data_dir),
+            OsStr::new("--mode"),
+            OsStr::new(&options.mode),
+            OsStr::new("--architecture"),
+            OsStr::new(&options.architecture),
+            OsStr::new("--epochs"),
+            OsStr::new(&epochs_value),
+            OsStr::new("--patience"),
+            OsStr::new(&patience_value),
         ];
-        if let Some(epochs_value) = &epochs_value {
-            args.push(OsStr::new("--epochs"));
-            args.push(OsStr::new(epochs_value));
-        }
         self.run_python(run_id, &scripts, &args, "training")?;
         let state = self.state.lock();
         Ok(parse_result(&state.log))
@@ -257,9 +343,7 @@ impl TrainingManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .with_context(|| {
-                format!("spawn {} for the {stage}", self.config.python.display())
-            })?;
+            .with_context(|| format!("spawn {} for the {stage}", self.config.python.display()))?;
         let stdout = child.stdout.take().context("child stdout unavailable")?;
         let stderr = child.stderr.take().context("child stderr unavailable")?;
         let stdout_reader = self.spawn_line_reader(run_id, stdout, false);
@@ -341,10 +425,14 @@ fn export_clip(source_root: &Path, clip: &TrainingClip) -> Result<String> {
     let folder = format!("clip-{:06}-{}{}", clip.id, clip.seat, person);
     let dir = source_root.join(&folder);
     fs::create_dir_all(&dir)?;
-    let file = File::open(&clip.zip_path)
-        .with_context(|| format!("open stored clip {:06}", clip.id))?;
-    let mut zip = zip::ZipArchive::new(file)
-        .with_context(|| format!("read stored clip {:06}", clip.id))?;
+    fs::write(
+        dir.join("training-label.json"),
+        serde_json::to_vec(&json!({"seat": &clip.seat, "person": &clip.person}))?,
+    )?;
+    let file =
+        File::open(&clip.zip_path).with_context(|| format!("open stored clip {:06}", clip.id))?;
+    let mut zip =
+        zip::ZipArchive::new(file).with_context(|| format!("read stored clip {:06}", clip.id))?;
     for name in ["aligned-cirs.ndjson", "metadata.json"] {
         let mut entry = zip.by_name(name).with_context(|| {
             format!(
@@ -362,6 +450,13 @@ fn export_clip(source_root: &Path, clip: &TrainingClip) -> Result<String> {
 /// Best-effort extraction of the headline numbers from the training output;
 /// the full log is always available to the dashboard regardless.
 fn parse_result(log: &[String]) -> Value {
+    if let Some(result) = log.iter().rev().find_map(|line| {
+        line.trim()
+            .strip_prefix("HEIMDALL_RESULT ")
+            .and_then(|json| serde_json::from_str::<Value>(json).ok())
+    }) {
+        return result;
+    }
     let mut test_accuracy = None;
     let mut model_path = None;
     for line in log {
@@ -429,6 +524,20 @@ mod tests {
         zip.finish().unwrap();
     }
 
+    fn test_options() -> TrainingOptions {
+        TrainingOptions::from_json(&json!({
+            "variant": "raw",
+            "mode": "seat",
+            "architecture": "lite",
+            "link_mode": "canonical",
+            "taps_left": 8,
+            "taps_right": 24,
+            "epochs": 1,
+            "patience": 0,
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn export_clip_writes_label_encoded_folder() {
         let dir = tempfile::tempdir().unwrap();
@@ -442,8 +551,18 @@ mod tests {
         };
         let folder = export_clip(dir.path(), &clip).unwrap();
         assert_eq!(folder, "clip-000013-FrontLeftSimarjitSingh");
-        assert!(dir.path().join(&folder).join("aligned-cirs.ndjson").is_file());
+        assert!(
+            dir.path()
+                .join(&folder)
+                .join("aligned-cirs.ndjson")
+                .is_file()
+        );
         assert!(dir.path().join(&folder).join("metadata.json").is_file());
+        let label: Value = serde_json::from_slice(
+            &fs::read(dir.path().join(&folder).join("training-label.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(label["person"], "Simarjit Singh!");
     }
 
     #[test]
@@ -473,7 +592,10 @@ mod tests {
                 person: String::new(),
             })
             .collect::<Vec<_>>();
-        let error = manager.start(clips, "raw", None).unwrap_err().to_string();
+        let error = manager
+            .start(clips, test_options())
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("BackLeft"), "{error}");
         assert_eq!(manager.status(0)["status"], "idle");
     }
@@ -481,28 +603,17 @@ mod tests {
     #[test]
     fn parses_train_script_output() {
         let log: Vec<String> = [
-            "epoch 30/30  train loss 0.0100 acc 0.9800  |  val loss 0.0200 acc 0.9700  (2.1s) *",
-            "",
-            "=== test evaluation (best-val model) ===",
-            "test loss 0.0500  accuracy 0.9750 (390/400)",
-            "",
-            "confusion matrix (rows = true, cols = predicted):",
-            "              FrontLeft  FrontRigh  BackRight   BackLeft",
-            "   FrontLeft        99          1          0          0",
-            "  FrontRight         2         97          1          0",
-            "   BackRight         0          0        100          0",
-            "    BackLeft         0          2          4         94",
-            "",
-            "saved model to C:\\models\\seat_cnn_data_raw.pt",
+            "epoch 2/3 train_loss=0.1 val_loss=0.2 val_metric=0.9",
+            "HEIMDALL_RESULT {\"model_path\":\"C:\\\\models\\\\classifier.pt\",\"seat_accuracy\":0.975,\"seat_confusion\":[[99,1,0,0,0],[2,97,1,0,0],[0,0,100,0,0],[0,2,4,94,0],[0,0,0,0,100]],\"seat_names\":[\"FrontLeft\",\"FrontRight\",\"BackRight\",\"BackLeft\",\"Empty\"]}",
         ]
         .into_iter()
         .map(str::to_owned)
         .collect();
         let result = parse_result(&log);
-        assert_eq!(result["test_accuracy"], 0.975);
-        assert_eq!(result["model_path"], "C:\\models\\seat_cnn_data_raw.pt");
-        assert_eq!(result["confusion"][0][0], 99);
-        assert_eq!(result["confusion"][3][2], 4);
-        assert_eq!(result["class_names"][3], "BackLeft");
+        assert_eq!(result["seat_accuracy"], 0.975);
+        assert_eq!(result["model_path"], "C:\\models\\classifier.pt");
+        assert_eq!(result["seat_confusion"][0][0], 99);
+        assert_eq!(result["seat_confusion"][3][2], 4);
+        assert_eq!(result["seat_names"][4], "Empty");
     }
 }

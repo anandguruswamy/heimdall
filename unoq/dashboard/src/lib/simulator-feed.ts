@@ -1,4 +1,4 @@
-import { seatIds, type SeatId, type SeatState } from './types';
+import { seatClasses, seatIds, type SeatClass, type SeatId, type SeatState } from './types';
 
 export type SeatListener = (state: SeatState) => void;
 
@@ -9,19 +9,22 @@ export interface SeatFeed {
   subscribe(listener: SeatListener): () => void;
 }
 
-// Classifier class index -> Simulator seat id. Class order comes from the
-// training scripts: FrontLeft=0, FrontRight=1, BackRight=2, BackLeft=3.
-export const classSeatIds: readonly SeatId[] = ['front_left', 'front_right', 'rear_right', 'rear_left'];
+// Empty has no physical seat and therefore maps to null.
+export const classSeatIds: readonly (SeatId | null)[] = ['front_left', 'front_right', 'rear_right', 'rear_left', null];
 
-export type SeatPrediction = { seat: string; seatIndex: number; probs: number[]; frameId: number | null; ts: number };
-export type LiveInfo = { latest: SeatPrediction | null; stable: SeatId | null; uncertain: boolean };
+export type SeatPrediction = { seat: SeatClass; seatIndex: number; probs: number[]; person: string | null; frameId: number | null; ts: number };
+export type LiveInfo = {
+  latest: SeatPrediction | null;
+  raw: SeatPrediction | null;
+  stablePrediction: SeatPrediction | null;
+  stable: SeatId | null;
+  stableClass: SeatClass | null;
+  person: string | null;
+  uncertain: boolean;
+};
 
-// SeatFeed driven by seat-inference WebSocket predictions. The 4-class model
-// has no "empty" class and always names exactly one seat, so the emitted
-// SeatState marks a single occupant. Two stabilizers prevent the 3D occupant
-// from flickering: a majority vote over the last `windowSize` confident
-// predictions, and a confidence threshold below which the prediction is
-// marked uncertain and the last stable seat is kept.
+// Stable backend predictions are authoritative. The majority vote remains only
+// for old or raw-only backends so smoothing is never applied twice.
 export class LiveSeatFeed implements SeatFeed {
   windowSize = 5;
   confidenceThreshold = 0.6;
@@ -29,6 +32,8 @@ export class LiveSeatFeed implements SeatFeed {
   private infoListeners = new Set<(info: LiveInfo) => void>();
   private votes: number[] = [];
   private latest: SeatPrediction | null = null;
+  private raw: SeatPrediction | null = null;
+  private stablePrediction: SeatPrediction | null = null;
   private stableIndex: number | null = null;
   private uncertain = false;
   private lastTs = Date.now();
@@ -46,22 +51,31 @@ export class LiveSeatFeed implements SeatFeed {
   }
 
   push(payload: Record<string, unknown>): void {
-    const probs = Array.isArray(payload.probs) ? (payload.probs as unknown[]).map(Number) : null;
-    const seatIndex = Number(payload.seat_index);
-    if (!probs || probs.length !== classSeatIds.length || probs.some(Number.isNaN)) return;
-    if (!Number.isInteger(seatIndex) || seatIndex < 0 || seatIndex >= classSeatIds.length) return;
     const ts = Number(payload.ts);
     this.lastTs = Number.isFinite(ts) && ts > 0 ? ts : Date.now();
-    this.latest = {
-      seat: String(payload.seat ?? ''),
-      seatIndex,
-      probs,
-      frameId: payload.frame_id == null ? null : Number(payload.frame_id),
-      ts: this.lastTs
-    };
-    if (probs[seatIndex] >= this.confidenceThreshold) {
+    const hasStable = Object.hasOwn(payload, 'stable_seat') || Object.hasOwn(payload, 'stable_seat_probs');
+    this.raw = this.parsePrediction(payload.raw_seat ?? payload.seat, payload.raw_seat_probs ?? payload.probs, payload.raw_person ?? payload.person, payload);
+
+    if (hasStable) {
+      const stable = this.parsePrediction(payload.stable_seat, payload.stable_seat_probs, payload.stable_person ?? payload.person, payload);
+      if (!stable) return;
+      this.stablePrediction = stable;
+      this.latest = stable;
+      this.stableIndex = stable.seatIndex;
+      this.uncertain = typeof payload.uncertain === 'boolean' ? payload.uncertain : stable.probs[stable.seatIndex] < this.confidenceThreshold;
+      this.votes = [];
+      this.emitSeats();
+      this.emitInfo();
+      return;
+    }
+
+    const prediction = this.raw;
+    if (!prediction) return;
+    this.stablePrediction = null;
+    this.latest = prediction;
+    if (prediction.probs[prediction.seatIndex] >= this.confidenceThreshold) {
       this.uncertain = false;
-      this.votes.push(seatIndex);
+      this.votes.push(prediction.seatIndex);
       if (this.votes.length > this.windowSize) this.votes.shift();
       const counts = classSeatIds.map((_, index) => this.votes.filter((vote) => vote === index).length);
       const winner = counts.indexOf(Math.max(...counts));
@@ -78,6 +92,8 @@ export class LiveSeatFeed implements SeatFeed {
   reset(): void {
     this.votes = [];
     this.latest = null;
+    this.raw = null;
+    this.stablePrediction = null;
     this.stableIndex = null;
     this.uncertain = false;
     this.lastTs = Date.now();
@@ -88,14 +104,38 @@ export class LiveSeatFeed implements SeatFeed {
   info(): LiveInfo {
     return {
       latest: this.latest,
+      raw: this.raw,
+      stablePrediction: this.stablePrediction,
       stable: this.stableIndex === null ? null : classSeatIds[this.stableIndex],
+      stableClass: this.stableIndex === null ? null : seatClasses[this.stableIndex],
+      person: this.latest?.person ?? null,
       uncertain: this.uncertain
+    };
+  }
+
+  private parsePrediction(seatValue: unknown, probsValue: unknown, personValue: unknown, payload: Record<string, unknown>): SeatPrediction | null {
+    const probs = Array.isArray(probsValue) ? probsValue.map(Number) : null;
+    if (!probs || (probs.length !== 4 && probs.length !== seatClasses.length) || probs.some((value) => !Number.isFinite(value))) return null;
+    const namedIndex = seatClasses.findIndex((seat) => seat === seatValue);
+    const valueIndex = Number(seatValue);
+    const legacyIndex = Number(payload.seat_index);
+    const seatIndex = namedIndex >= 0 ? namedIndex : Number.isInteger(valueIndex) ? valueIndex : legacyIndex;
+    if (!Number.isInteger(seatIndex) || seatIndex < 0 || seatIndex >= probs.length) return null;
+    const person = typeof personValue === 'string' && personValue.trim() ? personValue.trim() : null;
+    return {
+      seat: seatClasses[seatIndex],
+      seatIndex,
+      probs,
+      person,
+      frameId: payload.frame_id == null ? null : Number(payload.frame_id),
+      ts: this.lastTs
     };
   }
 
   private snapshot(): SeatState {
     const seats = Object.fromEntries(seatIds.map((id) => [id, false])) as Record<SeatId, boolean>;
-    if (this.stableIndex !== null) seats[classSeatIds[this.stableIndex]] = true;
+    const stableSeat = this.stableIndex === null ? null : classSeatIds[this.stableIndex];
+    if (stableSeat) seats[stableSeat] = true;
     return { seats, timestamp: this.lastTs };
   }
 

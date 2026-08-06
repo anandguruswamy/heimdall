@@ -36,7 +36,7 @@
   let liveNote = $state('');
   let liveModel = $state('');
   let liveRate = $state(0);
-  let liveInfo = $state<LiveInfo>({ latest: null, stable: null, uncertain: false });
+  let liveInfo = $state<LiveInfo>({ latest: null, raw: null, stablePrediction: null, stable: null, stableClass: null, person: null, uncertain: false });
   let models = $state<{ name: string; modifiedMs: number }[]>([]);
   let selectedModel = $state('');
   let statusTimer: ReturnType<typeof setTimeout> | undefined;
@@ -492,12 +492,13 @@
           <dt>STATE</dt><dd class:uncertain={liveInfo.uncertain}>{liveStatus === 'running' ? (liveInfo.uncertain ? 'RUNNING · UNCERTAIN' : 'RUNNING') : 'STARTING'}</dd>
           <dt>MODEL</dt><dd class="wrap">{liveModel || selectedModel}</dd>
           <dt>RATE</dt><dd>{liveRate.toFixed(1)} Hz</dd>
-          <dt>PREDICTED</dt><dd>{liveInfo.latest ? classSeatIds[liveInfo.latest.seatIndex].replace('_', ' ').toUpperCase() : '—'}</dd>
+          <dt>PREDICTED</dt><dd>{liveInfo.latest?.seat.replace(/(?!^)([A-Z])/g, ' $1').toUpperCase() ?? '—'}</dd>
+          {#if liveInfo.person}<dt>PERSON</dt><dd>{liveInfo.person}</dd>{/if}
         </dl>
         <div class="confidence">
           {#each seatDefs as def (def.id)}
             {@const prob = liveInfo.latest?.probs[classIndexForSeat[def.id]] ?? 0}
-            <div class="bar" class:top={liveInfo.latest !== null && classSeatIds[liveInfo.latest.seatIndex] === def.id}>
+            <div class="bar" class:top={liveInfo.stable === def.id}>
               <span>{def.short}</span>
               <i><b style={`width:${Math.min(100, Math.round(prob * 100))}%`}></b></i>
               <small>{Math.round(prob * 100)}%</small>
@@ -507,7 +508,7 @@
       {/if}
       {#if liveStatus === 'error'}<p class="note error-note">{liveError}</p>{/if}
       {#if liveNote}<p class="note">{liveNote}</p>{/if}
-      <p class="note">LIVE MODEL · SINGLE OCCUPANT — the classifier always names exactly one seat; below {Math.round(live.confidenceThreshold * 100)}% confidence the last stable seat is kept.</p>
+      <p class="note">LIVE MODEL · SINGLE OCCUPANT OR EMPTY · backend stable predictions are used directly; raw-only output falls back to local majority smoothing.</p>
 
       <div class="test-block" class:overridden={liveActive}>
         <p class="section-label">TEST CONTROLS{liveActive ? ' · OVERRIDDEN BY LIVE' : ''}</p>

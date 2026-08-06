@@ -1,5 +1,5 @@
 import { decodeEnvelopes } from './envelope';
-import type { Envelope, SeatClass, StreamStatus, Tab } from './types';
+import type { Envelope, SeatClass, StartTrainingPayload, StreamStatus, Tab } from './types';
 
 export type BootstrapData = { health?: unknown; topology?: unknown; distanceHistory?: unknown; settings?: unknown; calibration?: unknown };
 
@@ -76,7 +76,7 @@ export class HeimdallApi {
   setClipTraining(id: number, payload: { seat: SeatClass | null; person?: string; exclude?: boolean }): Promise<unknown> {
     return this.send(`/clips/${id}/training`, 'POST', payload);
   }
-  startTraining(payload: { variant: 'raw' | 'calibrated'; epochs?: number }): Promise<unknown> {
+  startTraining(payload: StartTrainingPayload): Promise<unknown> {
     return this.send('/training/run', 'POST', payload);
   }
   trainingStatus(after: number): Promise<unknown> { return this.get(`/training/status?after=${after}`); }
