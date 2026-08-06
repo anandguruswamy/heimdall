@@ -8,7 +8,8 @@ export const tabs = [
   'Fast-Time FFT',
   'CFO',
   'Distance Calibration',
-  'Radar Map'
+  'Radar Map',
+  'Simulator'
 ] as const;
 
 export type Tab = (typeof tabs)[number];
@@ -29,6 +30,11 @@ export type PlotFrame = {
 };
 
 export type StreamStatus = 'live' | 'connecting' | 'offline';
+
+export const seatIds = ['front_left', 'front_right', 'rear_left', 'rear_right'] as const;
+export type SeatId = (typeof seatIds)[number];
+// timestamp: epoch ms of the backend update that produced this state, not delivery time.
+export type SeatState = { seats: Record<SeatId, boolean>; timestamp: number };
 
 export type TopicKey = 'health' | 'distance' | 'cir' | 'waterfall' | 'slow-fft' | 'fast-fft' | 'cfo' | 'calibration';
 export type Envelope = {

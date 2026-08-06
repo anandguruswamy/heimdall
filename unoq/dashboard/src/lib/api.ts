@@ -15,6 +15,7 @@ const tabTopics = (tab: Tab): string[] => {
     case 'Distance Calibration': return ['distance-calibration'];
     case 'CFO': return ['cfo'];
     case 'Radar Map': return ['instantaneous-cir'];
+    case 'Simulator': return [];
   }
 };
 
