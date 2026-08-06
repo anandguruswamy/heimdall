@@ -2,7 +2,7 @@ import { seatClasses, seatIds, type SeatClass, type SeatId, type SeatState } fro
 
 export type SeatListener = (state: SeatState) => void;
 
-// The Simulator tab consumes this interface only; the real backend client can
+// The Presence Detection tab consumes this interface only; the real backend client can
 // replace MockSeatFeed by implementing subscribe() the same way api.ts exposes
 // its WebSocket topics.
 export interface SeatFeed {
@@ -136,7 +136,11 @@ export class LiveSeatFeed implements SeatFeed {
     const seats = Object.fromEntries(seatIds.map((id) => [id, false])) as Record<SeatId, boolean>;
     const stableSeat = this.stableIndex === null ? null : classSeatIds[this.stableIndex];
     if (stableSeat) seats[stableSeat] = true;
-    return { seats, timestamp: this.lastTs };
+    const person = this.latest?.person?.trim();
+    const people = stableSeat && person && person.toLowerCase() !== 'n/a'
+      ? { [stableSeat]: person }
+      : undefined;
+    return { seats, people, timestamp: this.lastTs };
   }
 
   private emitSeats(): void {

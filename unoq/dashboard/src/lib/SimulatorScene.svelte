@@ -403,7 +403,7 @@
         const label = labelEls[def.id];
         if (!label) continue;
         projected.copy(runtimes.get(def.id)!.labelAnchor).applyMatrix4(carGroup.matrixWorld).project(camera);
-        const visible = projected.z < 1 && Math.abs(projected.x) < 1.1 && Math.abs(projected.y) < 1.1;
+        const visible = Boolean(label.textContent?.trim()) && projected.z < 1 && Math.abs(projected.x) < 1.1 && Math.abs(projected.y) < 1.1;
         label.style.display = visible ? '' : 'none';
         if (visible) { label.style.left = `${(projected.x * 0.5 + 0.5) * width}px`; label.style.top = `${(0.5 - projected.y * 0.5) * height}px`; }
       }
@@ -476,7 +476,7 @@
 
 <section class="sim-layout">
   <div class="sim-controls panel">
-    <header><span>SIMULATOR CONTROLS</span><b>{liveActive ? 'LIVE MODEL' : 'MOCK FEED'}</b></header>
+    <header><span>PRESENCE CONTROLS</span><b>{liveActive ? 'LIVE MODEL' : 'MOCK FEED'}</b></header>
     <div class="controls-body">
       <button class="auto live-toggle" class:running={liveActive} onclick={() => void toggleLive()} disabled={liveStatus === 'starting'}>
         {liveStatus === 'starting' ? 'LIVE INFERENCE · STARTING…' : liveActive ? 'LIVE INFERENCE · STOP' : 'LIVE INFERENCE · START'}
@@ -542,7 +542,7 @@
       <canvas bind:this={canvas} aria-label="3D cabin occupancy view"></canvas>
       <div class="labels">
         {#each seatDefs as def (def.id)}
-          <span bind:this={labelEls[def.id]} class:occupied={seatState?.seats[def.id]}>{def.short}</span>
+          <span bind:this={labelEls[def.id]} class:occupied={seatState?.seats[def.id]}>{seatState?.seats[def.id] ? seatState.people?.[def.id] ?? '' : ''}</span>
         {/each}
       </div>
       <div class="hint">DRAG ORBIT · WHEEL ZOOM · AUTO-ROTATES WHEN IDLE</div>

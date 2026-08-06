@@ -10,7 +10,7 @@ export const tabs = [
   'Distance Calibration',
   'Radar Map',
   'Training',
-  'Simulator'
+  'Presence Detection'
 ] as const;
 
 export type Tab = (typeof tabs)[number];
@@ -35,7 +35,7 @@ export type StreamStatus = 'live' | 'connecting' | 'offline';
 export const seatIds = ['front_left', 'front_right', 'rear_left', 'rear_right'] as const;
 export type SeatId = (typeof seatIds)[number];
 // timestamp: epoch ms of the backend update that produced this state, not delivery time.
-export type SeatState = { seats: Record<SeatId, boolean>; timestamp: number };
+export type SeatState = { seats: Record<SeatId, boolean>; people?: Partial<Record<SeatId, string>>; timestamp: number };
 
 // Seat-classifier class names; must match the training scripts exactly
 // (FrontLeft=0, FrontRight=1, BackRight=2, BackLeft=3, Empty=4). The UI may display
@@ -48,6 +48,7 @@ export type TrainingMode = 'seat' | 'person' | 'separate' | 'joint';
 export type TrainingArchitecture = 'standard' | 'lite';
 export type TrainingLinkMode = 'canonical' | 'directed';
 export type StartTrainingPayload = {
+  clip_ids: number[];
   variant: TrainingVariant;
   epochs: number;
   mode: TrainingMode;

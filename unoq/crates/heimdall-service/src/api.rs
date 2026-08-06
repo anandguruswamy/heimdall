@@ -435,17 +435,49 @@ async fn run_training(
     Json(request): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let options = TrainingOptions::from_json(&request)?;
+    let selected_ids = request["clip_ids"]
+        .as_array()
+        .map(|values| {
+            values
+                .iter()
+                .map(|value| {
+                    value
+                        .as_i64()
+                        .filter(|id| *id > 0)
+                        .context("clip_ids must contain positive integer clip IDs")
+                })
+                .collect::<anyhow::Result<HashSet<_>>>()
+        })
+        .transpose()?;
+    if selected_ids.as_ref().is_some_and(HashSet::is_empty) {
+        return Err(anyhow::anyhow!("select at least one clip for training").into());
+    }
     let mut training_clips = Vec::new();
     for row in state.metadata.clips()? {
         let value = &row["value"];
+        let Some(id) = row["id"].as_i64() else {
+            continue;
+        };
+        let explicitly_selected = selected_ids
+            .as_ref()
+            .is_some_and(|selected| selected.contains(&id));
+        if selected_ids.is_some() && !explicitly_selected {
+            continue;
+        }
         if value["status"] != "complete" {
+            if explicitly_selected {
+                return Err(anyhow::anyhow!("selected clip {id:06} is not complete").into());
+            }
             continue;
         }
         let tag = &value["training"];
         let Some(seat) = tag["seat"].as_str() else {
+            if explicitly_selected {
+                return Err(anyhow::anyhow!("selected clip {id:06} has no seat tag").into());
+            }
             continue;
         };
-        if tag["exclude"] == true {
+        if selected_ids.is_none() && tag["exclude"] == true {
             continue;
         }
         // Clips without aligned CIR records cannot feed the dataset builder;
@@ -455,11 +487,13 @@ async fn run_training(
             .unwrap_or(0)
             == 0
         {
+            if explicitly_selected {
+                return Err(
+                    anyhow::anyhow!("selected clip {id:06} has no aligned CIR data").into(),
+                );
+            }
             continue;
         }
-        let Some(id) = row["id"].as_i64() else {
-            continue;
-        };
         let zip_path = state
             .clips
             .path(id)
@@ -470,6 +504,16 @@ async fn run_training(
             seat: seat.to_owned(),
             person: tag["person"].as_str().unwrap_or("").to_owned(),
         });
+    }
+    if let Some(selected_ids) = &selected_ids
+        && training_clips.len() != selected_ids.len()
+    {
+        let found = training_clips
+            .iter()
+            .map(|clip| clip.id)
+            .collect::<HashSet<_>>();
+        let missing = selected_ids.difference(&found).copied().min().unwrap_or(0);
+        return Err(anyhow::anyhow!("selected clip {missing:06} does not exist").into());
     }
     Ok(Json(state.training.start(training_clips, options)?))
 }
@@ -903,7 +947,7 @@ mod tests {
             .as_str()
             .unwrap()
             .to_owned();
-        assert!(error.contains("at least one tagged clip"), "{error}");
+        assert!(error.contains("at least one clip"), "{error}");
 
         let status = app
             .clone()

@@ -625,8 +625,14 @@ calibration remains before timestamps can be treated as accurate ranges.
   new Training UI and `Empty` class. A follow-up removed stale `qc_de` training
   paths: the deployed service now discovers this checkout's classifier toolkit
   and validates Torch/NumPy interoperability before selecting Python. It chose
-  `C:\Users\anand\miniconda3\python.exe`; the replacement binary SHA-256 is
-  `F3CC50C7BF70A4D6931942721DBA423263DEFA7E91BA92B08320E47A49FDA3CB`.
+  `C:\Users\anand\miniconda3\python.exe`. The Captured Clips table now uses
+  explicit row selection and bulk select/unselect/delete actions, and training
+  accepts only the selected `clip_ids`. The deployed bundle and empty-selection
+  API guard were verified. The Simulator tab is now Presence Detection; Empty
+  maps to no chair, and occupied-chair overlays show the stable predicted person
+  name instead of seat abbreviations. The served main/scene bundles were
+  verified; the replacement binary SHA-256 is
+  `F5BC279BA05E28C57A561E75AF75276514698CEA5ECE437B61F97F837C7A3BF6`.
 
 - Live migration in progress (2026-07-30): `heimdall-service agent` now keeps
   only CDC validation, local health, LED status support, and UDP forwarding;

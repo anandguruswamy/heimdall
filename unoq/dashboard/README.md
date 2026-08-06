@@ -26,9 +26,9 @@ Recognized payload fields include:
 
 When the backend is disconnected or a selected topic/link has not produced data, realistic synthetic frames remain available. Live frames always take precedence.
 
-## Simulator tab
+## Presence Detection tab
 
-The Simulator tab renders a Three.js cabin-occupancy scene for four seats (FL, FR, RL, RR). Seat states arrive through the `SeatFeed` interface in `src/lib/simulator-feed.ts`; the bundled `MockSeatFeed` emits changing multi-seat states and powers the temporary test-control panel. Replacing it with a real backend client only requires passing a different `SeatFeed` implementation to `SimulatorScene` in `App.svelte` — the scene component consumes `SeatState` updates exclusively through `subscribe()`.
+The Presence Detection tab renders a Three.js cabin-occupancy scene for four seats. Seat states arrive through the `SeatFeed` interface in `src/lib/simulator-feed.ts`; live five-class predictions map `Empty` to no occupied chair and carry the stable person name on the occupied seat. The cabin overlay shows that name only above an occupied chair. The bundled `MockSeatFeed` still powers the temporary test controls.
 
 The scene attempts to load a Tesla Model Y model from `public/models/tesla-model-y.glb` (not bundled). If you add one, it must be license-safe (CC0 or CC-BY) and its author, source, and license must be recorded here. The loader normalizes glTF's +Z-forward convention to the scene's nose-at-minus-Z frame (`MODEL_YAW`) and clips all model geometry above `CUTAWAY_Y` (1.15 m) so the seats and occupants stay visible regardless of the asset's roof materials. Until a model is provided, a stylized primitive SUV body renders as the fallback; the render loop and mock-feed timer run only while the tab is active and the document is visible.
 
@@ -41,6 +41,8 @@ The backend publishes every raw snapshot plus a rolling mean of the latest five 
 ## Training tab
 
 The Training tab captures labeled CIR clips and trains seat/person classifiers without leaving the dashboard. Tags use the five seat classes above; occupied clips require a person label, while Empty clears and disables person. Tags persist in backend SQLite metadata; `seat: null` removes a tag and `exclude: true` leaves it out of training. Untagged and CIR-less clips never train.
+
+The Captured Clips table uses a leading checkbox as the explicit training-set selector. Selecting one or more rows enables TRAIN and reveals SELECT ALL, UNSELECT, and DELETE bulk actions. The training request sends `clip_ids`; the backend trains only those records and rejects selected captures that are incomplete, untagged, missing CIR data, or absent. Legacy requests without `clip_ids` retain the older all-eligible/non-excluded behavior.
 
 TRAIN accepts variant, mode (`seat`, `person`, `separate`, or `joint`), architecture (`standard` or `lite`), link mode, LOS taps left/right, epochs, and early-stopping patience. One shared dataset stores seat and person targets. Separate mode uses independent backbones in one bundle; joint mode shares a backbone and masks person loss for Empty. Training uses class-weighted loss, deterministic seeds, and patience-based early stopping, then emits a structured result containing per-head accuracy/confusion and the saved checkpoint/manifest paths. Only one run may be active; logs continue to stream through `GET /api/training/status`.
 

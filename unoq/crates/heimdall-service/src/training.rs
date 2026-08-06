@@ -258,14 +258,8 @@ impl TrainingManager {
     }
 
     pub fn start(&self, clips: Vec<TrainingClip>, options: TrainingOptions) -> Result<Value> {
-        if options.mode != "person" {
-            for class in SEAT_CLASSES {
-                if !clips.iter().any(|clip| clip.seat == class) {
-                    bail!("training requires at least one tagged clip for {class}");
-                }
-            }
-        } else if !clips.iter().any(|clip| clip.seat == "Empty") {
-            bail!("person training requires at least one Empty clip for the n/a class");
+        if clips.is_empty() {
+            bail!("select at least one clip for training");
         }
         if clips
             .iter()
@@ -671,22 +665,13 @@ mod tests {
     }
 
     #[test]
-    fn start_requires_every_seat_class() {
+    fn start_requires_at_least_one_clip() {
         let manager = TrainingManager::new("training-test-unused", TrainingConfig::from_env());
-        let clips = ["FrontLeft", "FrontRight", "BackRight"]
-            .into_iter()
-            .map(|seat| TrainingClip {
-                id: 1,
-                zip_path: PathBuf::new(),
-                seat: seat.to_owned(),
-                person: String::new(),
-            })
-            .collect::<Vec<_>>();
         let error = manager
-            .start(clips, test_options())
+            .start(Vec::new(), test_options())
             .unwrap_err()
             .to_string();
-        assert!(error.contains("BackLeft"), "{error}");
+        assert!(error.contains("at least one clip"), "{error}");
         assert_eq!(manager.status(0)["status"], "idle");
     }
 

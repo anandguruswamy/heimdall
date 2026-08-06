@@ -224,7 +224,7 @@
   }
 
   function topicFor(tab: Tab): TopicKey {
-    return ({ 'Network Health':'health','Live Distance':'distance','Board Positions':'distance','Live CIR':'cir','CIR Waterfall':'waterfall','Slow-Time FFT':'slow-fft','Fast-Time FFT':'fast-fft','CFO':'cfo','Distance Calibration':'calibration','Radar Map':'cir','Simulator':'health','Training':'health' } as const)[tab];
+    return ({ 'Network Health':'health','Live Distance':'distance','Board Positions':'distance','Live CIR':'cir','CIR Waterfall':'waterfall','Slow-Time FFT':'slow-fft','Fast-Time FFT':'fast-fft','CFO':'cfo','Distance Calibration':'calibration','Radar Map':'cir','Presence Detection':'health','Training':'health' } as const)[tab];
   }
 
   function linkMetric(link: Link) {
@@ -589,12 +589,12 @@
 
     {#if active === 'Board Positions'}
       <BoardPositions {live} {api} {nodeCount} revision={liveRevision} />
-    {:else if active === 'Simulator'}
+    {:else if active === 'Presence Detection'}
       {#await simulatorImport() then module}
         {@const SimulatorScene = module.default}
         <SimulatorScene feed={simulatorFeed} live={liveSeatFeed} {api} />
       {:catch}
-        <section class="link-workspace"><p class="load-error">SIMULATOR MODULE FAILED TO LOAD · RELOAD THE PAGE</p></section>
+        <section class="link-workspace"><p class="load-error">PRESENCE DETECTION MODULE FAILED TO LOAD · RELOAD THE PAGE</p></section>
       {/await}
     {:else if active === 'Training'}
       <TrainingTab {api} boardPositions={frozenBoardPositions} />
