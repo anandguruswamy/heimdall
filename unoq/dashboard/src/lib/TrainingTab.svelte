@@ -341,7 +341,9 @@
     display: grid;
     gap: 7px;
     grid-template-columns: minmax(330px, 400px) minmax(0, 1fr);
-    grid-template-rows: minmax(0, auto) minmax(0, 1fr);
+    /* Both rows take fixed shares of the viewport so a growing clips table
+       can never squeeze the train/log row out; panels scroll internally. */
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
     grid-template-areas: 'capture clips' 'train log';
   }
   .capture-panel { grid-area: capture; }
@@ -407,6 +409,11 @@
   .log div { white-space: pre-wrap; overflow-wrap: anywhere; }
   .log .placeholder { color: #52636a; letter-spacing: .1em; }
 
+  /* Short viewports: let the whole tab scroll instead of crushing panels. */
+  @media (min-width: 901px) and (max-height: 640px) {
+    .training-layout { overflow-y: auto; grid-template-rows: minmax(300px, auto) minmax(300px, auto); }
+    .table-scroll { max-height: 45vh; }
+  }
   @media (max-width: 900px) {
     .training-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(3, auto) minmax(240px, 1fr); grid-template-areas: 'capture' 'clips' 'train' 'log'; overflow-y: auto; }
     .table-scroll { max-height: 300px; }

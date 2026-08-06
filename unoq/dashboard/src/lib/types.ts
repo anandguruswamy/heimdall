@@ -9,8 +9,8 @@ export const tabs = [
   'CFO',
   'Distance Calibration',
   'Radar Map',
-  'Simulator',
-  'Training'
+  'Training',
+  'Simulator'
 ] as const;
 
 export type Tab = (typeof tabs)[number];
