@@ -1,0 +1,13 @@
+# Fixed-seed short-run control for renderer/training optimization gates.
+name: ab-full-baseline-w100
+dataset_dir: datasets/stage1
+epochs: 100
+batch_size: 8
+seed: 0
+device: cuda
+max_steps: 200
+warmup_steps: 100
+log_every: 100
+eval_every: 100
+early_stop_patience: 0
+checkpoint_every: 1000

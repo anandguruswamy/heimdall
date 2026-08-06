@@ -71,7 +71,7 @@ def main(argv: list = None) -> None:
     (Path(args.out) / cfg.name).mkdir(parents=True, exist_ok=True)
     with open(Path(args.out) / cfg.name / "run-manifest.json", "w",
               encoding="utf-8") as f:
-        json.dump({"config": raw, "git_rev": rev}, f, indent=2)
+        json.dump({"config": cfg.__dict__, "git_rev": rev}, f, indent=2)
     result = train(cfg, out_dir=args.out)
     print(f"done: {result['steps']} steps, final loss {result['final_loss']:.4f}")
 

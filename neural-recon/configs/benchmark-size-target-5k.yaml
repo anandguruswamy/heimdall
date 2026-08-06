@@ -1,0 +1,27 @@
+# Long gate for the reduced production candidate before a full curriculum run.
+name: gate-d128-f512-e4-d3-g24-5k
+dataset_dir: datasets/stage1
+epochs: 100000
+batch_size: 8
+lr: 0.0001
+seed: 0
+device: cuda
+max_steps: 5000
+warmup_steps: 500
+log_every: 500
+eval_every: 500
+early_stop_patience: 0
+checkpoint_every: 1000
+surfel_pulse_backend: bank-16x
+capsule_attenuation_backend: compact
+compact_surfel_slots: true
+train_render_probability: 0.5
+train_render_batch_size: 1
+compile_model: true
+compile_set_loss: true
+model_d_model: 128
+model_heads: 4
+model_ffn: 512
+model_encoder_blocks: 4
+model_decoder_blocks: 3
+model_queries: 24

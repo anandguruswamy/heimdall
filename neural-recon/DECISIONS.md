@@ -700,3 +700,305 @@ Append dated entries. Never rewrite history; supersede with a new entry.
   comparison before investing in the deferred protocol breadth (other
   systems, remaining test sets, ablations, D1, calibration).
 - Verified: 77/77 tests pass (6 new in `test_eval_metrics.py`).
+
+## 2026-08-05 Batched renderer first pass: correct but slower, keep disabled
+
+- User directive: vectorize renderer execution while preserving the scalar
+  renderer as a fallback, then test and measure the improvement before
+  choosing a full-curriculum training budget.
+- Added `render_scene_batched`, which evaluates plane, surfel, and capsule
+  formulas over `[B,G,L,64]`, batches capsule quadrature and chord
+  attenuation, and selects the predicted type afterward. `render_scene`
+  remains unchanged. Training exposes the new path through
+  `TrainConfig.batched_renderer`, default `false`.
+- Forward output and gradients match the scalar reference in float64. A
+  subtle initial mismatch came from using one Gaussian-tail truncation for
+  every surfel; the final batched convolution masks each scene slot to the
+  exact truncation radius used by the scalar renderer. Local result: 80/80
+  tests pass. RTX 4090 result: the 3 batched equivalence/integration tests
+  pass.
+- Controlled RTX 4090 benchmark: complete synchronized optimizer steps,
+  fixed in-memory stage-2 batch, 3 warmups + 10 measured steps, CUDA 12.4 /
+  torch 2.6.0, PCIe gen4. Median results:
+
+  | Renderer | Batch | Step | Throughput | Peak allocated VRAM |
+  |---|---:|---:|---:|---:|
+  | pre-change scalar (rebuild scenes) | 8 | 0.0788 s | 102 samples/s | 0.42 GiB |
+  | hoisted scalar | 8 | 0.0731 s | 109 samples/s | 0.42 GiB |
+  | all-formulas batched | 8 | 0.0925 s | 87 samples/s | 2.02 GiB |
+  | hoisted scalar | 16 | 0.1066 s | 150 samples/s | 0.75 GiB |
+  | all-formulas batched | 16 | 0.1312 s | 122 samples/s | 4.35 GiB |
+  | pre-change scalar (rebuild scenes) | 32 | 0.3354 s | 95 samples/s | 1.40 GiB |
+  | hoisted scalar | 32 | 0.1761 s | 182 samples/s | 1.40 GiB |
+  | all-formulas batched | 32 | 0.2273 s | 141 samples/s | 8.45 GiB |
+
+- The original `render_predicted` rebuilt all `B` scenes inside each of its
+  `B` render iterations. Hoisting `pred_to_scene` out of that loop is the
+  actual improvement: 7.2% lower step latency at batch 8 and 47.5% at batch
+  32. The requested all-formulas vectorization is 23-29% slower than the
+  hoisted scalar path at equal batch size and uses 4.8-6x more VRAM, because
+  it computes two unused primitive formulas per slot and materializes
+  cross-slot occlusion tensors.
+- Decision: keep the batched implementation available and tested but
+  disabled; make the low-risk scene-conversion hoist the default scalar
+  behavior. This does not meet the order-of-magnitude reduction needed for
+  600k-1.2M optimizer steps in under six hours. Next optimization requires a
+  gate decision, likely type-compacted batching (batch only slots of each
+  predicted type) or renderer approximation/profiling rather than enabling
+  this path. Vast.ai instance `46868611` was stopped after measurement.
+
+## 2026-08-05 Renderer profile after batched no-go
+
+- Gate choice: profile kernels before selecting the next implementation.
+  PyTorch CPU+CUDA profiles captured one complete batch-32 optimizer step
+  after warmup for the hoisted scalar and all-formulas batched paths. The
+  benchmark tool now labels model, renderer, loss, backward, and optimizer
+  regions and can print operator/input-shape tables with `--profile`.
+- Scalar renderer is dispatch/synchronization bound, as hypothesized:
+  profiler-instrumented step totals include 9,456 `cudaLaunchKernel` calls,
+  5,158 `_local_scalar_dense` calls, and about 5,486 stream synchronizations.
+  The renderer consumed about 194 ms profiled CPU time but only 11.4 ms CUDA
+  time. Profiler overhead inflates wall time, so these figures diagnose the
+  ratio/call pattern rather than replace the unprofiled timing table above.
+- All-formulas batching changes the bottleneck rather than removing it. Its
+  renderer consumed about 65-76 ms CUDA time and retained about 5.8-6.0 GiB
+  during the renderer region. The largest single operation was surfel
+  broadening: a cuDNN convolution with input `[1,1,2595]` and weights
+  `[30720,1,2339]`, i.e. one output channel for every `B*G*L` path including
+  non-surfels; it used 35.9 ms CUDA forward plus 6.7 ms backward in the
+  shape-grouped profile.
+- Capsule chord attenuation is the other dominant expansion. Each path pass
+  materializes `[32,960,48,16,3]` (`B,G*L,G,CAPSULE_QUAD,xyz`) even though
+  only capsule-typed occluder slots matter. Across autograd, `mul` moved
+  about 12.1 GiB, `div` 4.4 GiB, `where` 2.9 GiB, and reductions allocated
+  about 0.8 GiB in the profiled step.
+- Profiling conclusion: do not spend effort on generic fusion or a stronger
+  GPU first. The next exact renderer should compact by predicted type before
+  evaluating formulas, broaden only surfel paths, and compact occluders to
+  capsule slots (preferably chunked/checkpointed to cap cross-slot autograd
+  storage). That targets both measured expansions while retaining the scalar
+  reference for equivalence tests. Instance `46868611` was stopped again
+  after profiling (`cur_state` and `intended_status` both `stopped`).
+
+## 2026-08-05 Cached surfel pulse backends
+
+- User-approved comparison of two additive replacements for runtime Gaussian
+  convolution, both capped at `sigma_tau = 15 ns`: `bank-16x` stores 128
+  broadened 16x kernels and directly interpolates sigma/time; `cache-1x-phase`
+  stores complete 64-tap pulses for 128 sigma bins and 129 fractional phases.
+  The latter's phases are generated once with the existing Kaiser-windowed
+  +/-8-tap sinc, then runtime interpolation preserves delay gradients. The
+  current dynamic convolution remains the default `exact` fallback.
+- Persistent float32 storage/build cost on RTX 4090: `bank-16x` 0.125 MiB and
+  about 0.16 s; `cache-1x-phase` 4.03 MiB and about 0.25-0.48 s. Caches are
+  built once before training warmup and excluded from steady-state timing.
+- Accuracy against analytic broadening: `bank-16x` pulse NRMSE 0.054% over a
+  0.01-15 ns sigma/delay sweep. The sinc phase cache is 0.066% NRMSE for
+  0.01-2 ns but 12.5% for 5-15 ns. This broad-pulse error is caused by the
+  exact renderer's hard +/-8 ns output crop while broad Gaussians are still
+  nonzero at that boundary, violating sinc reconstruction's band-limited
+  assumption. On representative mixed scenes, errors are much smaller:
+  0.0105% CIR NRMSE (`bank-16x`) and 0.0115% (`cache-1x-phase`). Geometry
+  gradient cosine exceeds 0.999999 for both, with 0.12-0.13% relative error.
+- Controlled complete-step medians, same seeded model/in-memory stage-2 batch,
+  3 warmups + 10 measured synchronized steps:
+
+  | Renderer | Batch | Exact | 16x bank | 1x phase cache |
+  |---|---:|---:|---:|---:|
+  | scalar-hoisted | 8 | 74.7 ms | 67.2 ms | 68.0 ms |
+  | scalar-hoisted | 32 | 174.5 ms | 171.6 ms | **167.2 ms** |
+  | all-formulas batched | 8 | 83.1 ms | **75.2 ms** | 77.5 ms |
+  | all-formulas batched | 32 | 192.6 ms | **173.8 ms** | **173.8 ms** |
+
+- At batched size 32, either cache is about 9.8% faster and reduces measured
+  peak allocation from 7.45 GiB to about 5.78 GiB (22%). CUDA profiling
+  confirms the `[30720,1,2339]` surfel convolution is gone: profiled renderer
+  CUDA time falls from roughly 65-76 ms to about 25.5 ms. The dominant
+  remaining expansion is capsule chord attenuation `[32,960,48,16,3]`.
+- Decision: retain both experimental backends, but prefer `bank-16x` for the
+  next training A/B because its full-range error is far lower for only 0.125
+  MiB storage. Do not make either the default until a short optimization run
+  confirms loss behavior. The fastest measured complete step was scalar plus
+  `cache-1x-phase`, but its 4.1% gain over scalar exact does not justify the
+  broad-sigma approximation as the primary path. Instance `46868611` was
+  stopped after profiling (`cur_state` and `intended_status` both `stopped`).
+
+## 2026-08-05 Capsule, matching, compilation, and reduced-physics pass
+
+- User directive: attack the largest remaining operations with capsule
+  optimization, loss/matching cleanup, caching/approximations, and less
+  physics work per optimizer step. All changes are opt-in; legacy capsule
+  attenuation, exact surfel convolution, full matching, and full physics
+  remain defaults.
+- Capsule attenuation now has `legacy`, `compact`, and `gaussian` backends.
+  `compact` gathers only capsule-typed slots, caches their axes/scales for the
+  render, evaluates the existing 16-point sigmoid quadrature jointly, and
+  removes scalar capsule Python loops. It matches legacy CIRs and geometry
+  gradients to numerical precision. The smooth closed-form Gaussian ellipsoid
+  approximation is finite and differentiable but produced about 15% scene CIR
+  NRMSE on the representative mixed scene, so it is retained for experiments
+  but rejected as the recommended path.
+- Exact loss/matching cleanup: Hungarian costs are constructed under
+  `no_grad`, one padded cost tensor crosses GPU->CPU per batch, outputs return
+  in one transfer, symmetry distance is branchless, set loss uses dense masked
+  gathers instead of repeated `nonzero/any`, and the same assignments are
+  reused for logging and validation. Reconstruction losses now correctly
+  ignore invalid links. Omitting rotation from the detached matching cost was
+  faster but matched only 75% of exact assignments, so `rot=0.5` remains.
+- Reduced physics options: `train_render_links` supports deterministic uniform
+  link sampling with inverse-probability valid-link scaling, and
+  `train_render_probability` supports stateless stochastic physics cadence
+  with inverse-probability loss scaling. Validation always renders all 20
+  links with exact surfel broadening and exact compact capsule attenuation.
+  Link sampling did not help latency on the scalar renderer (10 links measured
+  76.9 ms versus 73.1 ms for 20) because it retains the same Python/kernel
+  launch count; keep it experimental. A no-physics step measured 59.1 ms,
+  confirming cadence removes graph/launch work that link sampling cannot.
+- `compile_model` and `compile_set_loss` enable PyTorch Inductor while saving
+  checkpoint state from the unwrapped base model. Resume from a compiled run
+  was verified. The CUDA runtime image needs Ubuntu GCC 11.4 for Triton;
+  `tools/README.md` records this dependency. TF32 (`matmul_precision=high`)
+  measured 56.0 ms versus 55.4 ms at full precision and was rejected.
+- Fair frozen-model RTX 4090 measurements used identical set-loss-only warmup
+  state, batch 8, stage1-mini, and 10 synchronized complete steps on fresh
+  instance `46896750` (EPYC 7542, PCIe gen4 23.4 GB/s):
+
+  | Configuration | Median step |
+  |---|---:|
+  | exact surfel + legacy capsule + eager model/loss | 74.9 ms |
+  | 16x bank + exact compact capsule | 73.1 ms |
+  | above, 10 rendered links | 76.9 ms |
+  | above, physics skipped | 59.1 ms |
+  | above, compiled model | 58.4 ms |
+  | above, compiled model + compiled set loss | **55.4 ms** |
+  | compiled model/loss, physics skipped | **41.0 ms** |
+
+- At 50% physics probability, the measured weighted steady-state estimate is
+  `(55.4 + 41.0)/2 = 48.2 ms/step`, 35.7% below the 74.9 ms baseline. At 25%
+  it is 44.6 ms/step (40.5% lower), but physics-gradient variance is higher.
+  Even the safer 50% mode implies about 8.0 hours for 600k optimizer steps and
+  16.1 hours for 1.2M in the in-memory benchmark, so the under-six-hour full
+  reference target is still not met.
+- A short full-stage1, fixed-seed gate used the production 100-step warmup and
+  exact full-link validation. At step 100, baseline validation was loss 3.8549
+  / median center 0.469 m; optimized (16x bank, compact capsule, compiled
+  model/loss, 50% physics) was loss 3.8446 / center 0.436 m. This shows no
+  short-horizon degradation. Both later entered the known finite loss-spike
+  regime (baseline at resumed step 137, optimized at step 177), so long-run
+  convergence is not established. Compilation of both physics/no-physics
+  graphs dominates short-run wall time but is amortized in long runs.
+- Fresh disposable instance `46896750` was destroyed after testing. A queued
+  restart caused preserved instance `46868611` to start later; it was detected
+  and stopped immediately, then verified with both `cur_state` and
+  `intended_status` equal to `stopped`.
+
+## 2026-08-05 Reduced model, exact compact surfels, and stable full curriculum
+
+- Audit result: the 5-8M parameter target was not capacity-derived. The local
+  proposal specified FFN 512 but the implementation widened it to 1536 solely
+  to satisfy the target, taking the model from 2.55M to 5.18M parameters. The
+  current generators produce at most 23 primitives (stage-3/4 median 13,
+  observed maximum 23), so 48 decoder queries were also unjustified for the
+  current task. The persisted truth schema remains 48 slots; model queries are
+  now independent and configurable.
+- Architecture fields are explicit in `TrainConfig`, saved in checkpoints,
+  reconstructed by evaluation, and default to the legacy shape for old
+  checkpoint compatibility. The selected candidate is width 128, four heads,
+  FFN 512, four set-encoder blocks, three decoder blocks, and 24 queries:
+  **1,881,473 parameters**, 63.7% below the legacy 5,177,345. A 2.54M 6+4
+  candidate and 1.18M width-96 candidate were also gated; the 1.88M model had
+  the fastest no-physics floor (23.8 ms at batch 8) without narrowing the
+  representation.
+- Exact compact surfel-slot rendering jointly evaluates only slots classified
+  as surfels while retaining the scalar renderer as fallback. Output and
+  geometry gradients match the scalar `bank-16x` path. On a trained reduced
+  checkpoint with 40 surfel slots across batch 8, full-physics time fell from
+  214.7 ms to 73.0 ms (66%). Presence thresholding was rejected as the main
+  path: thresholds through 0.5 removed no work, while 0.75 introduced 1.5%
+  CIR NRMSE and still measured 176 ms.
+- Physics rendering can now uniformly sample scenes within an optimizer batch.
+  The set loss remains over all examples; the physics sample mean is unbiased.
+  Rendering one scene reduced trained batch-8 full-physics time to 31.9 ms.
+  At 50% cadence with the 23.8 ms no-physics floor this projects to 27.8
+  ms/step. Batch 32 measured 68.2 ms full physics and 49.9 ms without physics,
+  or 59.0 ms at 50% cadence. Therefore 150k batch-32 steps expose 4.8M examples
+  (the same count as 600k batch-8 steps) in about 2.46 benchmark hours before
+  infrequent exact validation.
+- Correctness/stability fixes discovered by the ramp:
+  - Empty slots now have zero rotation cost; unmatched and invalid-link
+    non-finite values are masked before nonlinear loss operations.
+  - Empty type/presence targets use DETR-style 0.1 no-object weight; otherwise
+    stage 1 converged to every slot empty.
+  - Center NLL now applies each coordinate's predicted variance independently;
+    the previous implementation exponentiated the sum of three log-variances.
+  - Center log variance is floored at its `log(0.05)` prior in NLL, preventing
+    uncertainty collapse from multiplying ordinary errors by `exp(6)`.
+  - Capsule `acos` is kept away from its infinite-gradient endpoint. The
+    branchless symmetry implementation previously evaluated that derivative
+    even for unselected plane/surfel branches, allowing `0*inf -> NaN`.
+  - Optimizer steps are rejected when gradient norm is non-finite. Before this
+    gate, one finite-loss/non-finite-gradient step made 148 parameter tensors
+    non-finite through gradient clipping.
+  - Scale regularization is evaluated in log space. Exponentiating unconstrained
+    unmatched-slot scales overflowed during the stage-1 to stage-2 transition.
+  - A rejected physics spike retries set-only; genuine set-loss spikes remain
+    rejected and cannot update the model.
+- Gate results: the finite-gradient 5k stage-1 run completed and overfit the
+  80-scene training split as expected (train median center 0.014 m); exact
+  validation was best much earlier, motivating a 500-step production stage 1.
+  The first production stage 1 completed at train loss 1.496 and exact val
+  loss 2.732 / center 0.915 m. A 1,000-step stage-2 transition gate initially
+  rejected heterogeneous outlier batches, stabilized after step 500, and
+  improved exact validation from loss 2.821 / center 0.928 m at step 500 to
+  loss 1.172 / center 0.791 m at step 1,000.
+- End-to-end profiling found that the in-memory benchmark omitted repeated CPU
+  preprocessing: every epoch reran fractional CIR alignment, phase
+  normalization, target shifting, and geometry construction for every sample.
+  `ShardDataset` now optionally caches prepared samples. Stage 4 reuses cached
+  CIR/target/truth tensors while rebuilding only its permuted node geometry.
+  In the repeated stage-2 transition gate, post-warm-cache intervals fell from
+  about 31 seconds/100 steps to 9.0-9.6 seconds/100 (90-96 ms/step), while exact
+  validation reached loss 1.353 / center 0.825 m at step 1,000. This projects
+  the complete 150k-step stages-2-4 run to roughly 3.8-5 hours including cache
+  population and infrequent validation, rather than the invalid 2.46-hour
+  in-memory-only estimate.
+- Full run design: stage 1 uses 500 steps; stages 2-4 use 50k steps each,
+  batch 32, LR 1e-4, 5k warmup, 50% physics cadence, one rendered scene,
+  compact surfels, compiled model/loss, and exact validation every 5k steps.
+  The active run is
+  `/root/heimdall/neural-recon/runs/full-reduced-cached-20260805` on preserved
+  Vast.ai instance `46868611`, warm-started from the successful cached stage-2
+  transition checkpoint. Do not treat the projection as a final wall-clock
+  result until stages 2-4 complete.
+
+## 2026-08-06 Validation-controlled curriculum rerun
+
+- The first cached 50k-per-stage run met the wall-clock target but overfit.
+  Stage 2 validation center was best at 0.314 m around 25k and ended at
+  0.363 m. Stage 3 was best at its first 5k evaluation (0.757 m) and ended at
+  0.946 m; validation NLL rose from 1.407 to 12.466. Stage 4 validation worsened
+  from loss 1.675 / center 0.954 m at 5k to 2.922 / 1.116 m at 10k and continued
+  degrading through 40k. The run was stopped; no numerical or rejected-step
+  failure caused this trend.
+- Root causes: 50k batch-32 steps expose each fixed 8k-stage training split
+  roughly 200 times; nuisance realizations are fixed; validation rooms are
+  deliberately disjoint by room-seed hash; stages replaced rather than mixed
+  prior data; and validation used only 16 scenes. The Gaussian NLL amplified
+  the displayed loss gap as training uncertainty became overconfident, while
+  center error degraded more moderately. Dataset caching is not causal because
+  preprocessing and stored nuisances were deterministic before caching.
+- The trainer now treats validation center error as the early-stop/checkpoint
+  metric. It saves `best_checkpoint.pt` with validation metadata, retains the
+  periodic/final `checkpoint.pt`, restores validation state on resume, and no
+  longer applies validation patience to noisy training-log windows.
+- New tuned curriculum: 64 fixed validation scenes every 1k steps, 0.005 m
+  minimum improvement, patience 3; stage caps 25k/10k/10k; and 20% previous-
+  stage replay in stages 3 and 4 (six replay plus 26 current samples per batch
+  32). Stage handoffs use the prior stage's `best_checkpoint.pt`.
+- The center uncertainty prior inside `regularizers` was increased from 0.01
+  to 1.0 (effective total-loss weight from 0.0001 to 0.01) to discourage
+  overconfident NLL predictions.
+- Active corrected run:
+  `/root/heimdall/neural-recon/runs/tuned-curriculum-20260806` on instance
+  `46868611`. Stage 2 validation improved from center 0.783 m at step 1k to
+  0.690 m at step 2k, and `best_checkpoint.pt` creation was verified.

@@ -27,6 +27,11 @@ def _kaiser(x: torch.Tensor, beta: float = _KAISER_BETA) -> torch.Tensor:
     return torch.where(arg > 0.0, w, torch.zeros_like(w))
 
 
+def windowed_sinc(x: torch.Tensor) -> torch.Tensor:
+    """Kaiser-windowed sinc coefficients with the renderer's +/-8-tap support."""
+    return _kaiser(x).to(x.dtype) * torch.sinc(x)
+
+
 def fractional_shift(x: torch.Tensor, delta_taps: torch.Tensor) -> torch.Tensor:
     """Delay `x` along its last axis by `delta_taps` taps (positive = later).
 
@@ -71,8 +76,7 @@ def _fractional_shift_real(x: torch.Tensor, delta_taps: torch.Tensor) -> torch.T
     rolled = torch.where(mask, xr.gather(1, idx), torch.zeros_like(xr))
 
     k = torch.arange(-_SINC_SUPPORT, _SINC_SUPPORT + 1, dtype=x.dtype, device=x.device)
-    w = _kaiser(k.view(1, 1, -1) + f).to(x.dtype)  # window centered on the delay
-    kernel = w * torch.sinc(k.view(1, 1, -1) + f)  # [B,1,2S+1]
+    kernel = windowed_sinc(k.view(1, 1, -1) + f)  # [B,1,2S+1]
 
     xp = F.pad(rolled[:, None, :], (_SINC_SUPPORT, _SINC_SUPPORT))
     out = F.conv1d(xp, kernel)  # [B, B, S]; row b convolved with every kernel

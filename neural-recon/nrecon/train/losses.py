@@ -16,6 +16,9 @@ from nrecon.sim.primitives import CAPSULE, PLANE, SURFEL, rot6d_to_matrix
 
 ENV_EPS = 1e-3
 FIRST_PATH_GUARD_TAPS = 5  # pre-first-path taps down-weighted in scene terms
+EMPTY_SLOT_WEIGHT = 0.1  # DETR-style no-object down-weighting
+CENTER_LOG_VAR_MIN = float(np.log(0.05))
+UNCERTAINTY_PRIOR_WEIGHT = 1.0
 
 
 @dataclass
@@ -43,43 +46,37 @@ def rotation_distance_so3(r1: torch.Tensor, r2: torch.Tensor) -> torch.Tensor:
 
 
 def symmetry_aware_rotation_distance(r1: torch.Tensor, r2: torch.Tensor,
-                                     prim_type: torch.Tensor) -> torch.Tensor:
+                                      prim_type: torch.Tensor) -> torch.Tensor:
     """Minimum SO(3) distance over the primitive's symmetry group.
 
     Planes: 4 diag-sign rotations (patch invariance). Surfels: 8 diag-sign
     flips (covariance invariance). Capsules: axial rotations ignored ->
     angle between principal axes.
     """
-    d = torch.zeros(r1.shape[:-2], dtype=r1.dtype, device=r1.device)
     eye = torch.eye(3, dtype=r1.dtype, device=r1.device)
-    signs = [torch.diag(torch.as_tensor([a, b, c], dtype=r1.dtype, device=r1.device))
-             for a in (1.0, -1.0) for b in (1.0, -1.0) for c in (1.0, -1.0)]
-    plane_group = [torch.eye(3, dtype=r1.dtype, device=r1.device),
-                   torch.diag(torch.as_tensor([-1.0, -1.0, 1.0], dtype=r1.dtype,
-                                              device=r1.device)),
-                   torch.diag(torch.as_tensor([-1.0, 1.0, -1.0], dtype=r1.dtype,
-                                              device=r1.device)),
-                   torch.diag(torch.as_tensor([1.0, -1.0, -1.0], dtype=r1.dtype,
-                                              device=r1.device))]
-    for t in (PLANE, SURFEL, CAPSULE):
-        mask = (prim_type == t)
-        if not mask.any():
-            continue
-        if t == CAPSULE:
-            ax1 = r1[mask][:, :, 2]
-            ax2 = r2[mask][:, :, 2]
-            cosv = (ax1 * ax2).sum(dim=-1).abs().clamp(-1.0, 1.0)
-            d[mask] = torch.acos(cosv)
-            continue
-        group = plane_group if t == PLANE else signs
-        best = torch.full((int(mask.sum()),), float("inf"), dtype=r1.dtype,
-                          device=r1.device)
-        for s in group:
-            err = (eye[None, :, :] - r1[mask].transpose(-1, -2) @ r2[mask] @ s[None]).norm(
-                dim=(-2, -1))
-            best = torch.minimum(best, err)
-        d[mask] = best
-    return d
+    signs = torch.stack([
+        torch.diag(torch.as_tensor([a, b, c], dtype=r1.dtype, device=r1.device))
+        for a in (1.0, -1.0) for b in (1.0, -1.0) for c in (1.0, -1.0)
+    ])
+    plane_group = signs[[0, 6, 5, 3]]
+
+    def grouped_distance(group: torch.Tensor) -> torch.Tensor:
+        relative = r1.transpose(-1, -2)[..., None, :, :] @ \
+            (r2[..., None, :, :] @ group)
+        return (eye - relative).norm(dim=(-2, -1)).min(dim=-1).values
+
+    plane = grouped_distance(plane_group)
+    surfel = grouped_distance(signs)
+    # Keep acos backward finite even when the capsule branch is not selected:
+    # torch.where's zero upstream gradient can otherwise meet acos'(1)=inf and
+    # produce NaN through 0*inf.
+    cosv = (r1[..., :, 2] * r2[..., :, 2]).sum(dim=-1).abs().clamp(
+        1e-7, 1.0 - 1e-7)
+    capsule = (torch.acos(cosv) - np.arccos(1.0 - 1e-7)).clamp(min=0.0)
+    distance = torch.zeros_like(plane)
+    distance = torch.where(prim_type == PLANE, plane, distance)
+    distance = torch.where(prim_type == SURFEL, surfel, distance)
+    return torch.where(prim_type == CAPSULE, capsule, distance)
 
 
 def match_slots(pred: dict, truth_type: torch.Tensor, truth_center: torch.Tensor,
@@ -94,49 +91,55 @@ def match_slots(pred: dict, truth_type: torch.Tensor, truth_center: torch.Tensor
         w = MatchWeights()
     device = pred["center"].device
     b, g = pred["center"].shape[:2]
-    rows, cols = [], []
-    for bi in range(b):
-        t_idx = torch.nonzero(truth_present[bi] > 0.5).squeeze(-1)
-        nt = t_idx.numel()
+    present_cpu = (truth_present.detach().cpu().numpy() > 0.5)
+    truth_indices = [np.flatnonzero(present_cpu[bi]) for bi in range(b)]
+    max_truth = max((idx.size for idx in truth_indices), default=0)
+    if max_truth > g:
+        raise ValueError(
+            f"model has {g} queries but batch contains {max_truth} primitives")
+    rows_cpu = np.full((b, g), -1, dtype=np.int64)
+    cols_cpu = np.full((b, g), -1, dtype=np.int64)
+    if max_truth == 0:
+        return (torch.as_tensor(rows_cpu, device=device),
+                torch.as_tensor(cols_cpu, device=device))
+
+    with torch.no_grad():
+        pred_type = pred["type_logits"].argmax(-1)
+        pred_rot = rot6d_to_matrix(pred["rot6d"]) if w.rot else None
+        pred_scale = torch.exp(pred["scale_log"])
+        costs = torch.full((b, g, max_truth), 1e6, dtype=torch.float64, device=device)
+        for bi, truth_idx_cpu in enumerate(truth_indices):
+            nt = truth_idx_cpu.size
+            if nt == 0:
+                continue
+            truth_idx = torch.as_tensor(truth_idx_cpu, dtype=torch.long, device=device)
+            tc = truth_center[bi, truth_idx]
+            tr = truth_rot[bi, truth_idx]
+            ts = truth_scale[bi, truth_idx]
+            tt = truth_type[bi, truth_idx]
+            cost = w.type * (pred_type[bi, :, None] != tt[None, :]).double()
+            cost = cost + w.center * torch.linalg.vector_norm(
+                pred["center"][bi, :, None, :] - tc[None, :, :], dim=-1)
+            cost = cost + w.scale * (
+                pred_scale[bi, :, None, :] - ts[None, :, :]).abs().sum(dim=-1)
+            if w.rot:
+                cost = cost + w.rot * symmetry_aware_rotation_distance(
+                    pred_rot[bi, :, None, :, :].expand(g, nt, 3, 3),
+                    tr[None, :, :, :].expand(g, nt, 3, 3),
+                    pred_type[bi, :, None].expand(g, nt))
+            costs[bi, :, :nt] = torch.nan_to_num(
+                cost, nan=1e6, posinf=1e6, neginf=1e6)
+        costs_cpu = costs.cpu().numpy()
+
+    for bi, truth_idx in enumerate(truth_indices):
+        nt = truth_idx.size
         if nt == 0:
-            rows.append(torch.full((g,), -1, dtype=torch.long, device=device))
-            cols.append(torch.full((g,), -1, dtype=torch.long, device=device))
             continue
-        tc = truth_center[bi, t_idx]
-        tr = truth_rot[bi, t_idx]
-        ts = truth_scale[bi, t_idx]
-        tt = truth_type[bi, t_idx]
-        pc = pred["center"][bi]
-        pr = rot6d_to_matrix(pred["rot6d"][bi])
-        ps = torch.exp(pred["scale_log"][bi])
-        cost = torch.zeros(g, nt, dtype=torch.float64, device=device)
-        cost += w.type * (pred["type_logits"][bi].argmax(-1)[:, None] != tt[None, :]).double()
-        cost += w.center * torch.linalg.vector_norm(pc[:, None, :] - tc[None, :, :], dim=-1)
-        cost += w.scale * (ps[:, None, :] - ts[None, :, :]).abs().sum(dim=-1)
-        cost += w.rot * symmetry_aware_rotation_distance(
-            pr[:, None, :, :].expand(g, nt, 3, 3),
-            tr[None, :, :, :].expand(g, nt, 3, 3),
-            pred["type_logits"][bi].argmax(-1)[:, None].expand(g, nt))
-        # A NaN/Inf prediction (e.g. a transient instability early in
-        # training, especially right after a curriculum warm-start into a
-        # new dataset) makes scipy's linear_sum_assignment raise
-        # "cost matrix is infeasible" and crash the whole run instead of
-        # letting RunMonitor's loss-based NaN/degenerate checks handle it
-        # gracefully. Sanitize to a large-but-finite cost so matching
-        # always succeeds; the (likely garbage) match for that step gets
-        # caught by the normal loss/degenerate monitoring instead.
-        cost = torch.nan_to_num(cost, nan=1e6, posinf=1e6, neginf=1e6)
-        # scipy needs a CPU array regardless of the compute device.
-        rr, cc = linear_sum_assignment(cost.detach().cpu().numpy())
-        rows_full = torch.full((g,), -1, dtype=torch.long, device=device)
-        rows_full[torch.as_tensor(rr, dtype=torch.long, device=device)] = \
-            torch.as_tensor(cc, dtype=torch.long, device=device)
-        cols_full = torch.full((g,), -1, dtype=torch.long, device=device)
-        matched = rows_full >= 0
-        cols_full[matched] = t_idx[rows_full[matched]]
-        rows.append(rows_full)
-        cols.append(cols_full)
-    return torch.stack(rows), torch.stack(cols)
+        rr, cc = linear_sum_assignment(costs_cpu[bi, :, :nt])
+        rows_cpu[bi, rr] = cc
+        cols_cpu[bi, rr] = truth_idx[cc]
+    return (torch.as_tensor(rows_cpu, device=device),
+            torch.as_tensor(cols_cpu, device=device))
 
 
 def set_loss(pred: dict, truth_type: torch.Tensor, truth_center: torch.Tensor,
@@ -152,42 +155,63 @@ def set_loss(pred: dict, truth_type: torch.Tensor, truth_center: torch.Tensor,
     # type CE: matched slots -> truth type; unmatched preds -> empty (0)
     empty = torch.zeros(b, g, dtype=torch.long, device=device)
     matched = rows >= 0
-    t_type = empty.clone()
-    t_type[matched] = truth_type[
-        torch.arange(b, device=device)[:, None].expand(b, g)[matched],
-        cols[matched]]
+    safe_cols = cols.clamp(min=0)
+    t_type = torch.gather(truth_type, 1, safe_cols)
+    t_type = torch.where(matched, t_type, empty)
+    type_weight = type_logits.new_ones(4)
+    type_weight[0] = EMPTY_SLOT_WEIGHT
     loss = loss + torch.nn.functional.cross_entropy(
-        type_logits.reshape(-1, 4), t_type.reshape(-1), reduction="mean")
+        type_logits.reshape(-1, 4), t_type.reshape(-1), weight=type_weight,
+        reduction="mean")
 
     # presence BCE: matched -> 1, unmatched preds -> 0
     p_target = matched.to(type_logits.dtype)
-    loss = loss + torch.nn.functional.binary_cross_entropy(
-        pred["presence"].squeeze(-1), p_target, reduction="mean")
+    presence_loss = torch.nn.functional.binary_cross_entropy(
+        pred["presence"].squeeze(-1), p_target, reduction="none")
+    presence_weight = torch.where(
+        matched, torch.ones_like(p_target),
+        torch.full_like(p_target, EMPTY_SLOT_WEIGHT))
+    loss = loss + (presence_loss * presence_weight).sum() / presence_weight.sum()
 
-    # center NLL with predicted sigma (bounded log-variance)
-    if matched.any():
-        mc = cols[matched]
-        bi = torch.arange(b, device=device)[:, None].expand(b, g)[matched]
-        e = (pred["center"][matched] - truth_center[bi, mc]).pow(2).sum(-1)
-        lv = pred["log_var_center"][matched].sum(-1)
-        nll = 0.5 * (e * torch.exp(-lv) + lv)
-        loss = loss + nll.mean()
+    def gather_truth(value: torch.Tensor) -> torch.Tensor:
+        index = safe_cols[(...,) + (None,) * (value.ndim - 2)].expand(
+            b, g, *value.shape[2:])
+        return torch.gather(value, 1, index)
 
-    # rotation (symmetry-aware) over matched slots
-    if matched.any():
-        pr = rot6d_to_matrix(pred["rot6d"][matched])
-        tr = truth_rot[bi, mc]
-        tt = truth_type[bi, mc]
-        rd = symmetry_aware_rotation_distance(pr, tr, tt)
-        loss = loss + rd.mean()
+    weight = matched.to(type_logits.dtype)
+    denominator = weight.sum().clamp(min=1.0)
+    target_center = gather_truth(truth_center)
+    geometry_mask = matched[..., None]
+    pred_center = torch.where(geometry_mask, pred["center"], target_center)
+    center_error = (pred_center - target_center).pow(2)
+    log_var_center = torch.where(
+        geometry_mask, pred["log_var_center"], torch.zeros_like(target_center))
+    log_var_center = log_var_center.clamp(min=CENTER_LOG_VAR_MIN)
+    center_nll = 0.5 * (
+        center_error * torch.exp(-log_var_center) + log_var_center).sum(-1)
+    loss = loss + (center_nll * weight).sum() / denominator
 
-    # log-scale L1 and rho L1 over matched slots
-    if matched.any():
-        s_err = (pred["scale_log"][matched] -
-                 torch.log(truth_scale[bi, mc].clamp(min=1e-9))).abs().sum(-1)
-        loss = loss + s_err.mean()
-        rho_err = (pred["rho"][matched] - truth_rho[bi, mc]).abs().sum(-1)
-        loss = loss + rho_err.mean()
+    tr = gather_truth(truth_rot)
+    tt = torch.gather(truth_type, 1, safe_cols)
+    identity6d = pred["rot6d"].new_tensor([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+    pred_rot6d = torch.where(
+        matched[..., None], pred["rot6d"], identity6d)
+    pr = rot6d_to_matrix(pred_rot6d)
+    rd = symmetry_aware_rotation_distance(pr, tr, tt)
+    loss = loss + (rd * weight).sum() / denominator
+
+    target_scale = gather_truth(truth_scale)
+    pred_scale_log = torch.where(
+        geometry_mask, pred["scale_log"], torch.zeros_like(target_scale))
+    target_scale_log = torch.where(
+        geometry_mask, torch.log(target_scale.clamp(min=1e-9)),
+        torch.zeros_like(target_scale))
+    s_err = (pred_scale_log - target_scale_log).abs().sum(-1)
+    loss = loss + (s_err * weight).sum() / denominator
+    target_rho = gather_truth(truth_rho)
+    pred_rho = torch.where(geometry_mask, pred["rho"], target_rho)
+    rho_err = (pred_rho - target_rho).abs().sum(-1)
+    loss = loss + (rho_err * weight).sum() / denominator
     return loss
 
 
@@ -195,11 +219,12 @@ def _phase_invariant_complex_loss(h_hat: torch.Tensor, h: torch.Tensor,
                                   eps: float = 1e-3) -> torch.Tensor:
     phi = torch.angle((h_hat.conj() * h).sum(dim=-1, keepdim=True))
     diff = h - h_hat * torch.exp(1j * phi)
-    return torch.sqrt(diff.abs() ** 2 + eps**2).mean()
+    return torch.sqrt(diff.abs() ** 2 + eps**2).mean(dim=-1)
 
 
 def render_losses(h_hat: torch.Tensor, h: torch.Tensor,
-                  link_valid: torch.Tensor) -> dict:
+                  link_valid: torch.Tensor, full_valid_count=None,
+                  sampling_probability: float = 1.0) -> dict:
     """Eq. (25) complex, Eq. (26) envelope, and 64-point FFT terms.
 
     Taps before the first-path guard are down-weighted for the scene terms
@@ -207,14 +232,26 @@ def render_losses(h_hat: torch.Tensor, h: torch.Tensor,
     """
     w = torch.ones_like(h)
     w[..., :FIRST_PATH_GUARD_TAPS] = 0.1
-    hh = h_hat * w
-    ht = h * w
-    cpx = _phase_invariant_complex_loss(hh, ht)
-    env = (torch.log(ENV_EPS + ht.abs()) -
-           torch.log(ENV_EPS + hh.abs())).abs().mean()
+    valid_links = link_valid.to(torch.bool)
+    hh = torch.where(valid_links[..., None], h_hat * w, torch.zeros_like(h_hat))
+    ht = torch.where(valid_links[..., None], h * w, torch.zeros_like(h))
+    valid = valid_links.to(hh.real.dtype)
+    if full_valid_count is None:
+        denominator = valid.sum()
+    else:
+        denominator = torch.as_tensor(full_valid_count, dtype=valid.dtype,
+                                      device=valid.device) * sampling_probability
+    denominator = denominator.clamp(min=1.0)
+
+    def reduce(per_link: torch.Tensor) -> torch.Tensor:
+        return (per_link * valid).sum() / denominator
+
+    cpx = reduce(_phase_invariant_complex_loss(hh, ht))
+    env = reduce((torch.log(ENV_EPS + ht.abs()) -
+                  torch.log(ENV_EPS + hh.abs())).abs().mean(dim=-1))
     fft_h = torch.fft.fft(hh, dim=-1).abs()
     fft_t = torch.fft.fft(ht, dim=-1).abs()
-    fft_term = (fft_h - fft_t).abs().mean()
+    fft_term = reduce((fft_h - fft_t).abs().mean(dim=-1))
     return {"cpx": cpx, "env": env, "fft": fft_term}
 
 
@@ -223,9 +260,9 @@ def regularizers(pred: dict) -> torch.Tensor:
     plane-overlap, uncertainty-prior."""
     loss = torch.zeros((), dtype=pred["center"].dtype, device=pred["center"].device)
     loss = loss + pred["presence"].mean()  # occupied-slot penalty
-    s = torch.exp(pred["scale_log"])
-    loss = loss + 0.1 * (s - 2.0).relu().mean()  # giant-surfel
-    loss = loss + 0.1 * (0.02 - s).relu().mean()  # near-zero-thickness
+    scale_log = pred["scale_log"]
+    loss = loss + 0.1 * (scale_log - np.log(2.0)).relu().mean()  # giant-surfel
+    loss = loss + 0.1 * (np.log(0.02) - scale_log).relu().mean()  # near-zero
     # plane-overlap repulsion
     idx = torch.arange(pred["center"].shape[1], device=pred["center"].device)
     mask = (pred["type_logits"].argmax(-1) == PLANE)
@@ -237,28 +274,45 @@ def regularizers(pred: dict) -> torch.Tensor:
     # uncertainty prior: predicted log-vars near log(0.05)
     lv0 = torch.log(torch.as_tensor(0.05, dtype=pred["center"].dtype,
                                     device=pred["center"].device))
-    loss = loss + 0.01 * (pred["log_var_center"] - lv0).pow(2).mean()
+    loss = loss + UNCERTAINTY_PRIOR_WEIGHT * (
+        pred["log_var_center"] - lv0).pow(2).mean()
     return loss
 
 
 def total_loss(pred: dict, truth, h_hat: torch.Tensor, h: torch.Tensor,
-               link_valid: torch.Tensor, w: LossWeights = None) -> dict:
+               link_valid: torch.Tensor, w: LossWeights = None,
+               return_matches: bool = False, full_valid_count=None,
+               sampling_probability: float = 1.0,
+               render_loss_scale: float = 1.0,
+               match_weights: MatchWeights = None,
+               set_loss_fn=None):
     """Compose Eq. (27). Per-part gradient-norm balancing is done by the
     trainer (running EMA of per-part grad norms scaling the weights)."""
     if w is None:
         w = LossWeights()
     rows, cols = match_slots(pred, truth["prim_type"], truth["prim_center"],
                              truth["prim_rot"], truth["prim_scale"],
-                             truth["prim_present"])
+                             truth["prim_present"], match_weights)
+    if h_hat is None:
+        zero = torch.zeros((), dtype=pred["center"].dtype, device=pred["center"].device)
+        rendered = {"cpx": zero, "env": zero, "fft": zero}
+    else:
+        rendered = render_losses(h_hat, h, link_valid, full_valid_count,
+                                 sampling_probability)
+    set_loss_impl = set_loss if set_loss_fn is None else set_loss_fn
     parts = {
-        "set": set_loss(pred, truth["prim_type"], truth["prim_center"],
-                        truth["prim_rot"], truth["prim_scale"], truth["prim_rho"],
-                        truth["prim_present"], rows, cols),
-        **render_losses(h_hat, h, link_valid),
+        "set": set_loss_impl(pred, truth["prim_type"], truth["prim_center"],
+                             truth["prim_rot"], truth["prim_scale"],
+                             truth["prim_rho"], truth["prim_present"], rows, cols),
+        **rendered,
         "reg": regularizers(pred),
     }
     total = (w.set_ * parts["set"] + w.cpx * parts["cpx"]
-             + w.env * parts["env"] + w.fft * parts["fft"]
+             * render_loss_scale
+             + w.env * parts["env"] * render_loss_scale
+             + w.fft * parts["fft"] * render_loss_scale
              + w.reg * parts["reg"])
     parts["total"] = total
+    if return_matches:
+        return parts, (rows, cols)
     return parts

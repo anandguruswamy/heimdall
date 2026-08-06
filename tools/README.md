@@ -117,6 +117,16 @@ x86-64 interpreter as radar-map (under ARM64 emulation). Exact pins are in
 | PyYAML | 6.0.3 | CPython 3.10 Windows x86-64 wheel (cached, same asset as west setup) | Config files | [PyPI](https://pypi.org/project/PyYAML/6.0.3/) |
 | pytest | 9.1.1 | pure-Python wheel | Test entry | [PyPI](https://pypi.org/project/pytest/9.1.1/) |
 
+CUDA curriculum hosts use the pinned Vast.ai container below. `gcc` is needed
+only when `TrainConfig.compile_model` enables PyTorch Inductor; it is installed
+from the image's Ubuntu repository because the runtime image does not include a
+C compiler.
+
+| Tool | Required version | Host asset | Purpose | Download |
+|---|---|---|---|---|
+| PyTorch CUDA image | 2.6.0, CUDA 12.4, cuDNN 9 | Linux x86-64 container | CUDA training and profiling | [Docker Hub](https://hub.docker.com/r/pytorch/pytorch/tags?name=2.6.0-cuda12.4-cudnn9-runtime) |
+| GCC | 11.4.0 | Ubuntu 22.04 x86-64 `gcc` package | Inductor/Triton runtime compilation for `torch.compile` | [Ubuntu package](https://packages.ubuntu.com/jammy/gcc) |
+
 ## Vast.ai host tooling
 
 `tools/venv-vastai/` (gitignored) holds the `vastai` CLI used for the Phase 6

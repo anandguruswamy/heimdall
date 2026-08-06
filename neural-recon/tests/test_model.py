@@ -87,10 +87,24 @@ def test_forward_shapes_full_and_masked():
     assert torch.isfinite(out_m["center"]).all()
 
 
-def test_parameter_count_in_range():
+def test_legacy_default_parameter_count():
     net = _make_net(dtype=torch.float32)
-    n = net.count_parameters()
-    assert 5e6 <= n <= 8e6, n
+    assert net.count_parameters() == 5_177_345
+
+
+def test_reduced_architecture_from_config():
+    net = HeimdallSetNet.from_config({
+        "model_d_model": 128,
+        "model_heads": 4,
+        "model_ffn": 512,
+        "model_encoder_blocks": 4,
+        "model_decoder_blocks": 3,
+        "model_queries": 24,
+    })
+    assert net.count_parameters() == 1_881_473
+    raw = net(torch.randn(2, 20, 64, 3), torch.randn(2, 20, 11),
+              torch.ones(2, 20, dtype=torch.bool))
+    assert raw["center"].shape == (2, 24, 3)
 
 
 def test_node_relabel_invariance():

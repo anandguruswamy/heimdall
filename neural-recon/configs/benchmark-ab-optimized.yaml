@@ -1,0 +1,18 @@
+# Same batches/objective as benchmark-ab-baseline, with measured optimizations.
+name: ab-full-optimized-w100-v200
+dataset_dir: datasets/stage1
+epochs: 100
+batch_size: 8
+seed: 0
+device: cuda
+max_steps: 200
+warmup_steps: 100
+log_every: 100
+eval_every: 100
+early_stop_patience: 0
+checkpoint_every: 1000
+surfel_pulse_backend: bank-16x
+capsule_attenuation_backend: compact
+train_render_probability: 0.5
+compile_model: true
+compile_set_loss: true

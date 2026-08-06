@@ -1,8 +1,7 @@
 # Run 2 (Algorithm 1 step 2, plan/phase-6-training.md): stage-2 dataset
 # (10k scenes, planes + 1-5 cm node jitter, noiseless). GPU-only (renderer-
-# in-the-loop; see train-run1-gpu-sanity.yaml for the batch-size note --
-# batch 8 stays optimal since render_predicted's per-sample loop does not
-# batch efficiently on GPU). Warm-started from run 1's checkpoint via
+# in-the-loop; see train-run1-gpu-sanity.yaml and DECISIONS.md for measured
+# renderer optimization results). Warm-started from run 1's checkpoint via
 # --init-checkpoint at launch (paths differ per host, not hardcoded here).
 # max_minutes is the real stop condition; epochs is set high so it never
 # binds first.

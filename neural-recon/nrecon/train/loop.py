@@ -22,11 +22,16 @@ from nrecon.constants import G_MAX, directed_links
 from nrecon.model.net import HeimdallSetNet
 from nrecon.model.preprocess import geometry_features
 from nrecon.seeding import seed_all
-from nrecon.sim.primitives import SceneTensors, rot6d_to_matrix
+from nrecon.sim.primitives import EMPTY, SceneTensors, rot6d_to_matrix
 from nrecon.sim.pulse import correlation_kernel, make_template_v1
-from nrecon.sim.render import render_scene
+from nrecon.sim.render import (
+    SurfelPulseLookup,
+    build_surfel_pulse_lookup,
+    render_scene,
+    render_scene_batched,
+)
 from nrecon.train.data import ShardDataset, collate, to_device
-from nrecon.train.losses import LossWeights, match_slots, total_loss
+from nrecon.train.losses import LossWeights, MatchWeights, set_loss, total_loss
 
 
 @dataclass
@@ -49,6 +54,7 @@ class TrainConfig:
     weights: dict = field(default_factory=lambda: LossWeights().__dict__)
     # monitoring / early stop
     eval_every: int = 50  # val evaluation cadence (steps); 0 disables
+    val_scenes: int = 16
     early_stop_patience: int = 4  # eval windows without improvement
     early_stop_min_delta: float = 1e-4
     max_steps: int = 0  # hard step cap; 0 = epochs * batches
@@ -56,8 +62,34 @@ class TrainConfig:
     device: str = "cpu"  # "cpu" or "cuda" (or "cuda:N"); model/kernel/batches moved here
     init_checkpoint: str = ""  # curriculum warm-start: load model weights only
                                # (fresh optimizer/step=0) from a PRIOR run's
-                               # checkpoint.pt; ignored if this run already
-                               # has its own checkpoint to resume from
+                                # checkpoint.pt; ignored if this run already
+                                # has its own checkpoint to resume from
+    batched_renderer: bool = False  # opt in; scalar renderer remains the fallback
+    surfel_pulse_backend: str = "exact"  # exact, bank-16x, or cache-1x-phase
+    surfel_sigma_bins: int = 128
+    surfel_phase_bins: int = 128
+    surfel_sigma_max_ns: float = 15.0
+    capsule_attenuation_backend: str = "legacy"  # legacy, compact, or gaussian
+    train_render_links: int = 0  # 0 renders all directed links
+    train_render_probability: float = 1.0
+    train_render_batch_size: int = 0  # 0 renders every scene in the optimizer batch
+    train_render_presence_threshold: float = 0.0
+    compact_surfel_slots: bool = False
+    match_rotation_weight: float = 0.5
+    compile_model: bool = False
+    compile_set_loss: bool = False
+    matmul_precision: str = "highest"  # "high" enables TF32 on supported CUDA GPUs
+    # Legacy defaults preserve existing checkpoint compatibility. Reduced
+    # architectures opt in explicitly through training configs.
+    model_d_model: int = 128
+    model_heads: int = 4
+    model_ffn: int = 1536
+    model_encoder_blocks: int = 6
+    model_decoder_blocks: int = 4
+    model_queries: int = 48
+    cache_prepared_dataset: bool = False
+    replay_dataset_dir: str = ""
+    replay_fraction: float = 0.0
 
 
 class RunMonitor:
@@ -71,20 +103,10 @@ class RunMonitor:
         self.history = []
 
     def check_loss(self, total: float, step: int) -> str | None:
-        """Returns a stop reason or None. NaN/inf -> immediate stop."""
+        """Returns a stop reason for a non-finite training loss."""
         if not (total == total) or total in (float("inf"), float("-inf")):
             self.stop_reason = f"non-finite loss {total} at step {step}"
             return self.stop_reason
-        if total < self.best - self.cfg.early_stop_min_delta:
-            self.best = total
-            self.plateau = 0
-        else:
-            self.plateau += 1
-            if self.cfg.early_stop_patience and \
-                    self.plateau >= self.cfg.early_stop_patience:
-                self.stop_reason = (f"loss plateau at {total:.4f} for "
-                                    f"{self.plateau} eval windows")
-                return self.stop_reason
         return None
 
     def check_degenerate(self, pred: dict) -> str | None:
@@ -102,8 +124,9 @@ class RunMonitor:
 
 
 def evaluate(model: torch.nn.Module, ds: ShardDataset, kernel: torch.Tensor,
-             weights: LossWeights, cfg: TrainConfig, n: int = 16,
-             device=None) -> dict:
+              weights: LossWeights, cfg: TrainConfig, n: int = 16,
+              device=None, surfel_lookup: SurfelPulseLookup = None,
+              set_loss_fn=None) -> dict:
     """Mean loss and matched-center error on a fixed val subset."""
     model.eval()
     losses = []
@@ -115,15 +138,14 @@ def evaluate(model: torch.nn.Module, ds: ShardDataset, kernel: torch.Tensor,
             if device is not None:
                 batch = to_device(batch, device)
             pred = model(batch["x"], batch["geom"], batch["valid"])
-            h_hat = render_predicted(pred, batch, kernel)
-            parts = total_loss(pred, batch["truth"], h_hat, batch["target"],
-                               batch["valid"], weights)
+            h_hat = render_predicted(pred, batch, kernel,
+                                     batched=cfg.batched_renderer,
+                                     surfel_lookup=None,
+                                     capsule_attenuation_backend="compact")
+            parts, (rows, cols) = total_loss(
+                pred, batch["truth"], h_hat, batch["target"], batch["valid"],
+                weights, return_matches=True, set_loss_fn=set_loss_fn)
             losses.append(float(parts["total"]))
-            rows, cols = match_slots(pred, batch["truth"]["prim_type"],
-                                     batch["truth"]["prim_center"],
-                                     batch["truth"]["prim_rot"],
-                                     batch["truth"]["prim_scale"],
-                                     batch["truth"]["prim_present"])
             matched = rows >= 0
             if matched.any():
                 mc = cols[matched]
@@ -146,7 +168,8 @@ SCENE_CENTER_CLAMP = 50.0  # m; well beyond any plausible room (PROVISIONAL safe
 SCENE_SCALE_LOG_MAX = 3.0  # log(20 m); matches RunMonitor's giant-surfel threshold
 
 
-def pred_to_scene(pred: dict, batch: dict, dtype=torch.float32) -> SceneTensors:
+def pred_to_scene(pred: dict, batch: dict, dtype=torch.float32,
+                  presence_threshold: float = 0.0) -> SceneTensors:
     """Network heads -> one SceneTensors per batch element.
 
     Clamps `center`/`scale_log` to a generous but finite range: the raw
@@ -160,11 +183,16 @@ def pred_to_scene(pred: dict, batch: dict, dtype=torch.float32) -> SceneTensors:
     network's own (unclamped) prediction used for the loss/matching.
     """
     b = pred["center"].shape[0]
+    type_id = pred["type_logits"].argmax(-1).detach()
+    if presence_threshold > 0.0:
+        type_id = type_id.masked_fill(
+            pred["presence"][..., 0].detach() < presence_threshold, EMPTY)
+    type_id = type_id.cpu()
     scenes = []
     for bi in range(b):
         g = pred["center"].shape[1]
         scene = SceneTensors.empty(g, dtype=dtype)
-        scene.type_id = pred["type_logits"][bi].argmax(-1)
+        scene.type_id = type_id[bi]
         scene.presence = pred["presence"][bi, :, 0]
         # nan_to_num first: torch.clamp leaves actual NaN as NaN (only
         # bounds finite values), so a NaN prediction would otherwise still
@@ -187,14 +215,58 @@ def pred_to_scene(pred: dict, batch: dict, dtype=torch.float32) -> SceneTensors:
     return scenes
 
 
+def pred_to_batched_scene(pred: dict, dtype=torch.float32,
+                          presence_threshold: float = 0.0) -> SceneTensors:
+    """Network heads -> one SceneTensors whose fields retain [B,G,...]."""
+    center = torch.nan_to_num(
+        pred["center"], nan=0.0, posinf=SCENE_CENTER_CLAMP,
+        neginf=-SCENE_CENTER_CLAMP).clamp(-SCENE_CENTER_CLAMP, SCENE_CENTER_CLAMP)
+    rot6d = torch.nan_to_num(pred["rot6d"], nan=0.0, posinf=1.0, neginf=-1.0)
+    scale_log = torch.nan_to_num(
+        pred["scale_log"], nan=SCENE_SCALE_LOG_MAX,
+        posinf=SCENE_SCALE_LOG_MAX,
+        neginf=-SCENE_SCALE_LOG_MAX).clamp(max=SCENE_SCALE_LOG_MAX)
+    complex_dtype = torch.complex128 if dtype == torch.float64 else torch.complex64
+    type_id = pred["type_logits"].argmax(-1)
+    if presence_threshold > 0.0:
+        type_id = type_id.masked_fill(
+            pred["presence"][..., 0].detach() < presence_threshold, EMPTY)
+    return SceneTensors(
+        type_id=type_id,
+        presence=pred["presence"][..., 0],
+        center=center.to(dtype),
+        rot6d=rot6d.to(dtype),
+        scale_log=scale_log.to(dtype),
+        rho=torch.complex(pred["rho"][..., 0], pred["rho"][..., 1]).to(complex_dtype),
+        roughness=pred["roughness"][..., 0].to(dtype),
+        atten=pred["atten"][..., 0].to(dtype),
+        dynamic_p=pred["dynamic"][..., 0].to(dtype),
+    )
+
+
 def render_predicted(pred: dict, batch: dict, kernel: torch.Tensor,
-                     dtype=torch.float32) -> torch.Tensor:
+                     dtype=torch.float32, batched: bool = False,
+                      surfel_lookup: SurfelPulseLookup = None,
+                      capsule_attenuation_backend: str = "legacy",
+                      links=None, presence_threshold: float = 0.0,
+                      compact_surfel_slots: bool = False) -> torch.Tensor:
     """Render predicted scenes -> [B, L, 64] complex (LOS at 0)."""
+    if batched:
+        scene = pred_to_batched_scene(pred, dtype, presence_threshold)
+        return render_scene_batched(
+            scene, batch["node_pos"].to(dtype), kernel.to(dtype),
+            surfel_lookup=surfel_lookup,
+            capsule_attenuation_backend=capsule_attenuation_backend,
+            links=links) / 4.0
     b = pred["center"].shape[0]
+    scenes = pred_to_scene(pred, batch, dtype, presence_threshold)
     outs = []
     for bi in range(b):
-        scene = pred_to_scene(pred, batch, dtype)[bi]
-        h = render_scene(scene, batch["node_pos"][bi], kernel.to(dtype))
+        h = render_scene(scenes[bi], batch["node_pos"][bi], kernel.to(dtype),
+                          surfel_lookup=surfel_lookup,
+                          capsule_attenuation_backend=capsule_attenuation_backend,
+                          compact_surfel_slots=compact_surfel_slots,
+                          skip_zero_presence=False, links=links)
         outs.append(h / 4.0)  # accumulator domain -> pipeline domain
     return torch.stack(outs)
 
@@ -255,17 +327,44 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError(
             f"device={cfg.device!r} requested but torch.cuda.is_available() is False")
+    torch.set_float32_matmul_precision(cfg.matmul_precision)
     kernel = _kernel().to(device)
+    if cfg.surfel_pulse_backend == "exact":
+        surfel_lookup = None
+    else:
+        surfel_lookup = build_surfel_pulse_lookup(
+            kernel.to(torch.float32), cfg.surfel_pulse_backend,
+            sigma_bins=cfg.surfel_sigma_bins,
+            phase_bins=cfg.surfel_phase_bins,
+            sigma_max_ns=cfg.surfel_sigma_max_ns)
     amp_enabled = bool(cfg.amp and device.type == "cuda")
 
     train_ds = ShardDataset(cfg.dataset_dir, "train", kernel.cpu(),
-                            permute_labels=cfg.permute_labels, seed=cfg.seed)
-    val_ds = ShardDataset(cfg.dataset_dir, "val", kernel.cpu(), seed=cfg.seed + 1)
-    model = HeimdallSetNet().to(device).train()
-    optim = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.wd)
+                            permute_labels=cfg.permute_labels, seed=cfg.seed,
+                            cache_prepared=cfg.cache_prepared_dataset)
+    val_ds = ShardDataset(
+        cfg.dataset_dir, "val", kernel.cpu(), seed=cfg.seed + 1,
+        cache_prepared=cfg.cache_prepared_dataset)
+    if not 0.0 <= cfg.replay_fraction < 1.0:
+        raise ValueError("replay_fraction must be in [0,1)")
+    replay_count = round(cfg.batch_size * cfg.replay_fraction)
+    if replay_count and not cfg.replay_dataset_dir:
+        raise ValueError("replay_dataset_dir is required when replay_fraction > 0")
+    replay_ds = None if not replay_count else ShardDataset(
+        cfg.replay_dataset_dir, "train", kernel.cpu(), seed=cfg.seed + 2,
+        cache_prepared=cfg.cache_prepared_dataset)
+    current_samples_per_batch = cfg.batch_size - replay_count
+    if current_samples_per_batch <= 0:
+        raise ValueError("replay_fraction leaves no current-stage samples")
+    base_model = HeimdallSetNet.from_config(cfg).to(device).train()
+    model = base_model
+    optim = torch.optim.AdamW(base_model.parameters(), lr=cfg.lr, weight_decay=cfg.wd)
 
     start_step = 0
+    best_val_center = float("inf")
+    val_plateau = 0
     ckpt = out / "checkpoint.pt"
+    best_ckpt = out / "best_checkpoint.pt"
     if ckpt.exists():
         # weights_only=False: PyTorch >=2.6 defaults torch.load to
         # weights_only=True, which cannot unpickle our checkpoint (its
@@ -273,18 +372,24 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
         # unpickler on a numpy scalar). Our own checkpoints are trusted
         # (never loaded from an untrusted source).
         state = torch.load(ckpt, map_location="cpu", weights_only=False)
-        model.load_state_dict(state["model"])
+        base_model.load_state_dict(state["model"])
         optim.load_state_dict(state["optim"])
         _optimizer_state_to_device(optim, device)
         start_step = state["step"]
+        best_val_center = state.get("best_val_center", best_val_center)
+        val_plateau = state.get("val_plateau", 0)
         print(f"resumed from step {start_step}")
     elif cfg.init_checkpoint:
         init_state = torch.load(cfg.init_checkpoint, map_location="cpu",
                                 weights_only=False)
-        model.load_state_dict(init_state["model"])
+        base_model.load_state_dict(init_state["model"])
         print(f"curriculum warm-start: loaded weights from "
               f"{cfg.init_checkpoint} (its step {init_state['step']}); "
-              f"optimizer and step count start fresh")
+               f"optimizer and step count start fresh")
+
+    if cfg.compile_model:
+        model = torch.compile(base_model)
+    compiled_set_loss = torch.compile(set_loss) if cfg.compile_set_loss else None
 
     weights = LossWeights(**cfg.weights)
     balancer = GradNormBalancer(weights, power=cfg.balance_power) if cfg.balance_every else None
@@ -303,6 +408,17 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
     indices = list(range(len(train_ds)))
     step = start_step
     total_steps = cfg.max_steps or (cfg.epochs * len(indices))
+
+    def save_checkpoint(path: Path, checkpoint_step: int, val=None) -> None:
+        torch.save({
+            "model": base_model.state_dict(),
+            "optim": optim.state_dict(),
+            "step": checkpoint_step,
+            "config": cfg.__dict__,
+            "best_val_center": best_val_center,
+            "val_plateau": val_plateau,
+            "validation": val,
+        }, path)
     last_log = time.perf_counter()
     run_start = time.perf_counter()
     nonfinite_streak = 0
@@ -317,7 +433,7 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
             train_ds.permute_epoch()
         rng = np.random.default_rng(cfg.seed + epoch)
         rng.shuffle(indices)
-        for bi in range(0, len(indices), cfg.batch_size):
+        for bi in range(0, len(indices), current_samples_per_batch):
             if step >= total_steps:
                 break
             if cfg.max_minutes and (time.perf_counter() - run_start) / 60.0 >= cfg.max_minutes:
@@ -325,23 +441,101 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
                       f"({cfg.max_minutes} min)", flush=True)
                 monitor.stop_reason = "max_minutes reached"
                 break
-            batch_idx = indices[bi:bi + cfg.batch_size]
+            batch_idx = indices[bi:bi + current_samples_per_batch]
             if train_ds.permute_labels:
                 samples = [train_ds.__getitem_permuted__(i) for i in batch_idx]
             else:
                 samples = [train_ds[i] for i in batch_idx]
+            if replay_ds is not None:
+                replay_rng = np.random.default_rng(cfg.seed + 4_000_003 + step)
+                replay_indices = replay_rng.choice(
+                    len(replay_ds), size=replay_count, replace=False)
+                samples.extend(replay_ds[int(i)] for i in replay_indices)
             batch = to_device(collate(samples), device)
+            if not 0.0 < cfg.train_render_probability <= 1.0:
+                raise ValueError("train_render_probability must be in (0,1]")
+            physics_rng = np.random.default_rng(cfg.seed + 2_000_003 + step)
+            compute_physics = physics_rng.random() < cfg.train_render_probability
+            render_batch_indices = None
+            render_batch = batch
+            if compute_physics and cfg.train_render_batch_size:
+                render_source_size = batch["x"].shape[0]
+                if not 0 < cfg.train_render_batch_size <= render_source_size:
+                    raise ValueError(
+                        "train_render_batch_size must be in "
+                        f"[1,{render_source_size}], got {cfg.train_render_batch_size}")
+                batch_rng = np.random.default_rng(cfg.seed + 3_000_003 + step)
+                selected = np.sort(batch_rng.choice(
+                    render_source_size, size=cfg.train_render_batch_size,
+                    replace=False))
+                render_batch_indices = torch.as_tensor(
+                    selected, dtype=torch.long, device=device)
+                render_batch = {
+                    key: value.index_select(0, render_batch_indices)
+                    if torch.is_tensor(value) and value.shape[0] == render_source_size
+                    else value
+                    for key, value in batch.items()
+                }
+            all_links = directed_links(batch["node_pos"].shape[1])
+            if compute_physics and cfg.train_render_links:
+                if not 0 < cfg.train_render_links <= len(all_links):
+                    raise ValueError(
+                        f"train_render_links must be in [1,{len(all_links)}], "
+                        f"got {cfg.train_render_links}")
+                link_rng = np.random.default_rng(cfg.seed + 1_000_003 + step)
+                link_indices_np = np.sort(link_rng.choice(
+                    len(all_links), size=cfg.train_render_links, replace=False))
+                render_links = [all_links[i] for i in link_indices_np]
+                link_indices = torch.as_tensor(
+                    link_indices_np, dtype=torch.long, device=device)
+                render_target = render_batch["target"].index_select(1, link_indices)
+                render_valid = render_batch["valid"].index_select(1, link_indices)
+                sampling_probability = cfg.train_render_links / len(all_links)
+                full_valid_count = render_batch["valid"].sum()
+            elif compute_physics:
+                render_links = None
+                render_target = render_batch["target"]
+                render_valid = render_batch["valid"]
+                sampling_probability = 1.0
+                full_valid_count = None
+            else:
+                render_links = None
+                render_target = None
+                render_valid = batch["valid"]
+                sampling_probability = 1.0
+                full_valid_count = None
 
-            def closure():
+            def closure(include_physics: bool):
                 optim.zero_grad()
                 with torch.autocast("cuda", enabled=amp_enabled):
                     pred = model(batch["x"], batch["geom"], batch["valid"])
-                h_hat = render_predicted(pred, batch, kernel)
-                parts = total_loss(pred, batch["truth"], h_hat, batch["target"],
-                                   batch["valid"], weights)
+                h_hat = None
+                if include_physics:
+                    render_pred = pred if render_batch_indices is None else {
+                        key: value.index_select(0, render_batch_indices)
+                        for key, value in pred.items()
+                    }
+                    h_hat = render_predicted(render_pred, render_batch, kernel,
+                                             batched=cfg.batched_renderer,
+                                             surfel_lookup=surfel_lookup,
+                                              capsule_attenuation_backend=
+                                              cfg.capsule_attenuation_backend,
+                                              links=render_links,
+                                              presence_threshold=
+                                              cfg.train_render_presence_threshold,
+                                              compact_surfel_slots=
+                                              cfg.compact_surfel_slots)
+                parts, matches = total_loss(
+                    pred, batch["truth"], h_hat, render_target, render_valid,
+                    weights, return_matches=True,
+                    full_valid_count=full_valid_count,
+                    sampling_probability=sampling_probability,
+                    render_loss_scale=1.0 / cfg.train_render_probability,
+                    match_weights=MatchWeights(rot=cfg.match_rotation_weight),
+                    set_loss_fn=compiled_set_loss)
                 total = parts["total"]
                 scaler.scale(total).backward()
-                return pred, parts
+                return pred, parts, matches
 
             # Broad exception guard (defense in depth): an extreme/degenerate
             # predicted primitive can occasionally blow up UWBRender's
@@ -355,7 +549,7 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
             # crashing the whole (potentially many-hour, unattended) run.
             failure_reason = None
             try:
-                pred, parts = closure()
+                pred, parts, matches = closure(compute_physics)
                 total_val = float(parts["total"].detach())
                 if not (total_val == total_val) or total_val in (float("inf"), float("-inf")):
                     failure_reason = f"non-finite loss {total_val}"
@@ -375,6 +569,26 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
                         f"{LOSS_SPIKE_MULT}x EMA ({loss_ema:.4f}) / floor {LOSS_SPIKE_ABS_FLOOR}")
             except Exception as exc:  # noqa: BLE001 - intentionally broad, see comment above
                 failure_reason = f"exception {exc!r}"
+            if failure_reason is not None and compute_physics:
+                failed_parts = " ".join(
+                    f"{name}={float(value.detach()):.4f}"
+                    for name, value in parts.items() if torch.is_tensor(value)) \
+                    if parts is not None else "unavailable"
+                print(f"PHYSICS STEP REJECTED at step {step + 1}: "
+                      f"{failure_reason}; {failed_parts}; retrying set-only",
+                      flush=True)
+                try:
+                    pred, parts, matches = closure(False)
+                    total_val = float(parts["total"].detach())
+                    if (total_val == total_val) and total_val not in (
+                            float("inf"), float("-inf")) and (
+                            loss_ema is None or total_val <= max(
+                                LOSS_SPIKE_MULT * loss_ema, LOSS_SPIKE_ABS_FLOOR)):
+                        failure_reason = None
+                    else:
+                        failure_reason = f"set-only retry loss {total_val}"
+                except Exception as exc:  # noqa: BLE001 - same guarded step
+                    failure_reason = f"set-only retry exception {exc!r}"
             if failure_reason is not None:
                 nonfinite_streak += 1
                 print(f"STEP FAILED at step {step + 1}: {failure_reason} "
@@ -386,10 +600,23 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
                         f"non-finite loss/exception for {nonfinite_streak} consecutive steps")
                     break
                 continue
+            scaler.unscale_(optim)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.clip)
+            if not torch.isfinite(grad_norm):
+                nonfinite_streak += 1
+                print(f"STEP FAILED at step {step + 1}: non-finite gradient norm "
+                      f"{float(grad_norm)} (streak "
+                      f"{nonfinite_streak}/{NONFINITE_STREAK_LIMIT}); skipping "
+                      "optimizer step", flush=True)
+                optim.zero_grad(set_to_none=True)
+                scaler.update()
+                if nonfinite_streak >= NONFINITE_STREAK_LIMIT:
+                    monitor.stop_reason = (
+                        f"non-finite gradient for {nonfinite_streak} consecutive steps")
+                    break
+                continue
             nonfinite_streak = 0
             loss_ema = total_val if loss_ema is None else 0.98 * loss_ema + 0.02 * total_val
-            scaler.unscale_(optim)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.clip)
             scaler.step(optim)
             scaler.update()
             with torch.no_grad():
@@ -403,11 +630,7 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
 
             if step % cfg.log_every == 0 or step == 1:
                 with torch.no_grad():
-                    rows, cols = match_slots(pred, batch["truth"]["prim_type"],
-                                             batch["truth"]["prim_center"],
-                                             batch["truth"]["prim_rot"],
-                                             batch["truth"]["prim_scale"],
-                                             batch["truth"]["prim_present"])
+                    rows, cols = matches
                     matched = rows >= 0
                     mc = cols[matched]
                     bi = torch.arange(pred["center"].shape[0], device=pred["center"].device
@@ -442,22 +665,39 @@ def train(cfg: TrainConfig, out_dir: str = "runs") -> dict:
                     print(f"DEGENERATE: {degen}", flush=True)
 
             if cfg.eval_every and step % cfg.eval_every == 0:
-                val = evaluate(model, val_ds, kernel, weights, cfg, device=device)
+                val = evaluate(model, val_ds, kernel, weights, cfg, device=device,
+                               surfel_lookup=surfel_lookup,
+                               set_loss_fn=compiled_set_loss, n=cfg.val_scenes)
                 val_writer.writerow([step, val["val_loss"], val["val_med_center"],
                                      time.perf_counter() - run_start])
                 val_f.flush()
                 print(f"val step {step}: loss {val['val_loss']:.4f} "
                       f"medCenter {val['val_med_center']:.3f}", flush=True)
+                val_center = val["val_med_center"]
+                if np.isfinite(val_center) and \
+                        val_center < best_val_center - cfg.early_stop_min_delta:
+                    best_val_center = val_center
+                    val_plateau = 0
+                    save_checkpoint(best_ckpt, step, val)
+                    print(f"new best checkpoint: center {best_val_center:.3f} m",
+                          flush=True)
+                else:
+                    val_plateau += 1
+                    if cfg.early_stop_patience and \
+                            val_plateau >= cfg.early_stop_patience:
+                        monitor.stop_reason = (
+                            f"validation center did not improve for "
+                            f"{val_plateau} evaluations")
+                        print(f"EARLY STOP: {monitor.stop_reason}", flush=True)
 
             if step % cfg.checkpoint_every == 0:
-                torch.save({"model": model.state_dict(),
-                            "optim": optim.state_dict(), "step": step,
-                            "config": cfg.__dict__}, ckpt)
+                save_checkpoint(ckpt, step)
+            if monitor.stop_reason:
+                break
         if monitor.stop_reason:
             break
 
-    torch.save({"model": model.state_dict(), "optim": optim.state_dict(),
-                "step": step, "config": cfg.__dict__}, ckpt)
+    save_checkpoint(ckpt, step)
     log_f.close()
     final_loss = float(parts["total"].detach()) if parts is not None else float("nan")
     return {"steps": step, "final_loss": final_loss}

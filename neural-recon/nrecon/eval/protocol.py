@@ -52,7 +52,7 @@ def _kernel():
 
 def load_network(checkpoint: str, device: torch.device) -> HeimdallSetNet:
     state = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    model = HeimdallSetNet().to(device)
+    model = HeimdallSetNet.from_config(state.get("config", {})).to(device)
     model.load_state_dict(state["model"])
     model.eval()
     return model

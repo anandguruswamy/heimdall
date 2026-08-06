@@ -26,13 +26,15 @@ G = 48
 
 class ShardDataset:
     def __init__(self, dataset_dir: str, split: str, kernel: torch.Tensor,
-                 permute_labels: bool = False, dtype=torch.float32,
-                 seed: int = 0):
+                  permute_labels: bool = False, dtype=torch.float32,
+                  seed: int = 0, cache_prepared: bool = False):
         self.dir = Path(dataset_dir)
         self.split = split
         self.kernel = kernel
         self.permute_labels = permute_labels
         self.dtype = dtype
+        self.cache_prepared = cache_prepared
+        self.prepared = {}
         self.links = directed_links(5)
         self._load_manifest()
         self._load_shards()
@@ -60,8 +62,13 @@ class ShardDataset:
         return len(self.manifest)
 
     def __getitem__(self, i: int) -> dict:
+        if i in self.prepared:
+            return self.prepared[i]
         rec = self._record(self.manifest[i]["index"])
-        return self._prepare(rec)
+        sample = self._prepare(rec)
+        if self.cache_prepared:
+            self.prepared[i] = sample
+        return sample
 
     def _prepare(self, rec: dict, perm: np.ndarray = None) -> dict:
         """One record -> (x, geom, valid, truth, target)."""
@@ -109,6 +116,17 @@ class ShardDataset:
             self.permutations.append(self.rng.permutation(5))
 
     def __getitem_permuted__(self, i: int) -> dict:
+        if self.cache_prepared:
+            sample = self[i]
+            perm = self.permutations[i % len(self.permutations)]
+            inv = np.argsort(perm)
+            node_pos = sample["node_pos"][torch.as_tensor(inv)]
+            links = [(int(perm[a]), int(perm[b])) for a, b in self.links]
+            return {
+                **sample,
+                "geom": geometry_features(node_pos.numpy(), links).to(self.dtype),
+                "node_pos": node_pos,
+            }
         rec = self._record(self.manifest[i]["index"])
         perm = self.permutations[i % len(self.permutations)]
         return self._prepare(rec, perm)
