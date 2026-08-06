@@ -634,8 +634,12 @@ calibration remains before timestamps can be treated as accurate ranges.
   chairs unassigned and show the stable identity in the cabin center. Presence
   Detection now exposes one 1-300 snapshot majority window shared by person-name
   voting and seat-position probability smoothing. The served UI and backend
-  validation were verified; the replacement binary SHA-256 is
-  `526C303DFC4C285C8A077F4FE1B39D0F95476BAE14C78AF620BF7AB225B2290B`.
+  validation were verified. Capture deadlines now complete independently of
+  gateway input, and startup marks interrupted `capturing` rows failed; this
+  recovered stuck clips 6/7 and a disposable no-input deadline capture passed.
+  Calibrated is now the default Training-panel variant (raw remains selectable).
+  The replacement binary SHA-256 is
+  `039CB1514AFDCB5EB5DA31EF3FBBAA9D94DF6107A60C4FE308A8E646DED46DDA`.
 
 - Live migration in progress (2026-07-30): `heimdall-service agent` now keeps
   only CDC validation, local health, LED status support, and UDP forwarding;

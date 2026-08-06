@@ -43,7 +43,7 @@ pub struct TrainingOptions {
 impl TrainingOptions {
     pub fn from_json(value: &Value) -> Result<Self> {
         let options = Self {
-            variant: value["variant"].as_str().unwrap_or("raw").to_owned(),
+            variant: value["variant"].as_str().unwrap_or("calibrated").to_owned(),
             mode: value["mode"].as_str().unwrap_or("seat").to_owned(),
             architecture: value["architecture"]
                 .as_str()

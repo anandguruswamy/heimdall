@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
     thread,
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
@@ -59,6 +60,18 @@ impl ClipManager {
     pub fn new(root: impl AsRef<Path>, metadata: Arc<Metadata>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(&root)?;
+        for row in metadata.clips()? {
+            if row["value"]["status"] != "capturing" {
+                continue;
+            }
+            let Some(id) = row["id"].as_i64() else {
+                continue;
+            };
+            let mut value = row["value"].clone();
+            value["status"] = json!("failed");
+            value["error"] = json!("service restarted during capture");
+            metadata.update_clip(id, &value)?;
+        }
         Ok(Self {
             root: Arc::new(root.canonicalize()?),
             metadata,
@@ -120,6 +133,12 @@ impl ClipManager {
             records: Vec::new(),
             cir_samples: Vec::new(),
         });
+        drop(state);
+        let manager = self.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_secs(duration_s as u64));
+            manager.finish_due(deadline_ns);
+        });
         Ok(row)
     }
 
@@ -143,16 +162,7 @@ impl ClipManager {
                     }
                 }
             }
-            let mut completed = Vec::new();
-            let mut index = 0;
-            while index < state.active.len() {
-                if received_ns >= state.active[index].deadline_ns {
-                    completed.push(state.active.remove(index));
-                } else {
-                    index += 1;
-                }
-            }
-            completed
+            take_due(&mut state.active, received_ns)
         };
         for clip in completed {
             self.finalize_async(clip);
@@ -161,6 +171,13 @@ impl ClipManager {
 
     pub fn has_active_clips(&self) -> bool {
         !self.state.lock().active.is_empty()
+    }
+
+    fn finish_due(&self, at_ns: i64) {
+        let completed = take_due(&mut self.state.lock().active, at_ns);
+        for clip in completed {
+            self.finalize_async(clip);
+        }
     }
 
     pub fn ingest_cir(&self, received_ns: i64, samples: Vec<AlignedCirSample>) {
@@ -234,6 +251,19 @@ impl ClipManager {
             }
         });
     }
+}
+
+fn take_due(active: &mut Vec<ActiveClip>, at_ns: i64) -> Vec<ActiveClip> {
+    let mut completed = Vec::new();
+    let mut index = 0;
+    while index < active.len() {
+        if at_ns >= active[index].deadline_ns {
+            completed.push(active.remove(index));
+        } else {
+            index += 1;
+        }
+    }
+    completed
 }
 
 fn finalize(root: &Path, metadata: &Metadata, clip: &ActiveClip) -> Result<()> {
@@ -313,7 +343,57 @@ fn finalize(root: &Path, metadata: &Metadata, clip: &ActiveClip) -> Result<()> {
 mod tests {
     use super::*;
     use heimdall_protocol::{RecordKind, encode_record};
-    use std::{io::Read, time::Duration};
+    use std::io::Read;
+
+    #[test]
+    fn startup_marks_interrupted_captures_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let metadata = Metadata::open(dir.path().join("clips.db")).unwrap();
+        let row = metadata
+            .add_clip(&json!({
+                "status": "capturing",
+                "name": "interrupted",
+                "deadline_ns": 10,
+                "duration_s": 10,
+            }))
+            .unwrap();
+        let id = row["id"].as_i64().unwrap();
+        ClipManager::new(dir.path().join("clips"), metadata.clone()).unwrap();
+        let recovered = metadata.clip(id).unwrap().unwrap();
+        assert_eq!(recovered["value"]["status"], "failed");
+        assert_eq!(
+            recovered["value"]["error"],
+            "service restarted during capture"
+        );
+    }
+
+    #[test]
+    fn deadline_releases_slot_without_more_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let metadata = Metadata::open(dir.path().join("clips.db")).unwrap();
+        let manager = ClipManager::new(dir.path().join("clips"), metadata.clone()).unwrap();
+        let started = manager
+            .start(&json!({"name": "no input", "duration_s": 60}), json!({}), 0)
+            .unwrap();
+        let id = started["id"].as_i64().unwrap();
+        manager.finish_due(60_000_000_000);
+        assert!(!manager.has_active_clips());
+        for _ in 0..100 {
+            if metadata.clip(id).unwrap().unwrap()["value"]["status"] == "failed" {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            metadata.clip(id).unwrap().unwrap()["value"]["status"],
+            "failed"
+        );
+        assert!(
+            manager
+                .start(&json!({"name": "next"}), json!({}), 100_000_000_000)
+                .is_ok()
+        );
+    }
 
     #[test]
     fn clip_uses_complete_records_and_is_downloadable() {
@@ -330,7 +410,10 @@ mod tests {
         assert_eq!(started["value"]["pre_seconds"].as_i64(), None);
         assert_eq!(started["value"]["duration_s"].as_i64(), Some(10));
         manager.ingest(DEFAULT_CLIP_DURATION_S * 500_000_000, &after);
-        manager.ingest(DEFAULT_CLIP_DURATION_S * 1_000_000_000 + 1_000_000_000, &before);
+        manager.ingest(
+            DEFAULT_CLIP_DURATION_S * 1_000_000_000 + 1_000_000_000,
+            &before,
+        );
         for _ in 0..100 {
             if metadata.clip(id).unwrap().unwrap()["value"]["status"] == "complete" {
                 break;
@@ -386,7 +469,10 @@ mod tests {
         );
         let record = encode_record(RecordKind::Heartbeat, 0, 1, &[0; 12]).unwrap();
         manager.ingest(DEFAULT_CLIP_DURATION_S * 500_000_000, &record);
-        manager.ingest(DEFAULT_CLIP_DURATION_S * 1_000_000_000 + 1_000_000_000, &record);
+        manager.ingest(
+            DEFAULT_CLIP_DURATION_S * 1_000_000_000 + 1_000_000_000,
+            &record,
+        );
         for _ in 0..100 {
             if metadata.clip(id).unwrap().unwrap()["value"]["status"] == "complete" {
                 break;
@@ -405,7 +491,11 @@ mod tests {
             .unwrap()
             .read_to_string(&mut ndjson)
             .unwrap();
-        let first: Value = ndjson.lines().next().map(|line| serde_json::from_str(line).unwrap()).unwrap();
+        let first: Value = ndjson
+            .lines()
+            .next()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .unwrap();
         assert_eq!(first["from"].as_u64(), Some(0));
         assert_eq!(first["to"].as_u64(), Some(1));
         assert_eq!(first["round"].as_u64(), Some(7));
@@ -420,12 +510,19 @@ mod tests {
         let start = |request: Value| -> Value {
             let metadata = Metadata::open(dir.path().join("clips.db")).unwrap();
             let manager = ClipManager::new(dir.path().join("clips"), metadata.clone()).unwrap();
-            manager
-                .start(&request, json!({"epoch": 1}), 0)
-                .unwrap()
+            manager.start(&request, json!({"epoch": 1}), 0).unwrap()
         };
-        assert_eq!(start(json!({"name": "t", "duration_s": 25}))["value"]["duration_s"].as_i64(), Some(25));
-        assert_eq!(start(json!({"name": "t", "duration_s": 3600}))["value"]["duration_s"].as_i64(), Some(60));
-        assert_eq!(start(json!({"name": "t"}))["value"]["duration_s"].as_i64(), Some(10));
+        assert_eq!(
+            start(json!({"name": "t", "duration_s": 25}))["value"]["duration_s"].as_i64(),
+            Some(25)
+        );
+        assert_eq!(
+            start(json!({"name": "t", "duration_s": 3600}))["value"]["duration_s"].as_i64(),
+            Some(60)
+        );
+        assert_eq!(
+            start(json!({"name": "t"}))["value"]["duration_s"].as_i64(),
+            Some(10)
+        );
     }
 }

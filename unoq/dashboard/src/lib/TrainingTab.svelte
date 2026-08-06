@@ -41,7 +41,7 @@
   let captureMessage = $state('');
   let captureError = $state(false);
 
-  let variant = $state<TrainingVariant>('raw');
+  let variant = $state<TrainingVariant>('calibrated');
   let mode = $state<TrainingMode>('seat');
   let architecture = $state<TrainingArchitecture>('standard');
   let linkMode = $state<TrainingLinkMode>('canonical');
@@ -59,6 +59,7 @@
   let destroyed = false;
 
   const selectable = $derived(clips.filter(canSelectClip));
+  const backendCaptureActive = $derived(clips.some((clip) => clip.status === 'capturing'));
   const selectedClips = $derived(clips.filter((clip) => selectedIds.includes(clip.id)));
   const selectedTrainable = $derived(selectable.filter((clip) => selectedIds.includes(clip.id)));
   const trainingStatus = $derived(String(training?.status ?? 'idle'));
@@ -124,7 +125,7 @@
   }
 
   async function capture() {
-    if (captureState === 'capturing') return;
+    if (captureState === 'capturing' || backendCaptureActive) return;
     captureState = 'capturing';
     captureProgress = 0;
     captureError = false;
@@ -274,7 +275,7 @@
 
 <section class="training-layout">
   <article class="panel capture-panel">
-    <header><span>CAPTURE LABELED CLIP</span><b>{captureState === 'capturing' ? `${Math.round(captureProgress)}%` : 'READY'}</b></header>
+    <header><span>CAPTURE LABELED CLIP</span><b>{captureState === 'capturing' ? `${Math.round(captureProgress)}%` : backendCaptureActive ? 'ACTIVE' : 'READY'}</b></header>
     <div class="panel-body">
       <label>NAME<input maxlength="120" bind:value={captureName} placeholder="Optional label" /></label>
       <label>NOTE<input maxlength="2000" bind:value={captureNote} placeholder="Optional context" /></label>
@@ -283,7 +284,7 @@
         <label>SEAT TAG<select value={captureSeat} onchange={(e) => setCaptureSeat(e.currentTarget.value)}><option value="">— untagged —</option>{#each seatClasses as seat}<option value={seat}>{seatDisplay[seat]}</option>{/each}</select></label>
       </div>
       <label>PERSON<input maxlength="60" bind:value={capturePerson} disabled={captureSeat === 'Empty'} placeholder={captureSeat === 'Empty' ? 'N/A for empty' : 'Who is seated'} /></label>
-      <button class="snapshot" onclick={capture} disabled={captureState === 'capturing'}>{captureState === 'capturing' ? `CAPTURING ${Math.round(captureProgress)}%` : `CAPTURE ${captureDurationS} S CLIP`}</button>
+      <button class="snapshot" onclick={capture} disabled={captureState === 'capturing' || backendCaptureActive}>{captureState === 'capturing' ? `CAPTURING ${Math.round(captureProgress)}%` : backendCaptureActive ? 'CAPTURE ALREADY ACTIVE' : `CAPTURE ${captureDurationS} S CLIP`}</button>
       <div class="capture-progress"><i style={`width:${captureProgress}%`}></i></div>
       {#if captureMessage}<p class="note" class:error={captureError}>{captureMessage}</p>{/if}
     </div>
