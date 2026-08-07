@@ -22,11 +22,19 @@
   let seatState = $state<SeatState | null>(null);
   let autoMode = $state(false);
   let bodySource = $state<'fallback' | 'gltf'>('fallback');
+  // Camera auto-rotation; when off, the idle-resume timer stays silenced too.
+  let autoRotateEnabled = $state(true);
   let container: HTMLDivElement;
   let canvas: HTMLCanvasElement;
   const labelEls: Partial<Record<SeatId, HTMLSpanElement>> = {};
   let setSeats: ((seats: Record<SeatId, boolean>) => void) | undefined;
   let resubscribeFeed: (() => void) | undefined;
+  let applyAutoRotate: ((enabled: boolean) => void) | undefined;
+
+  function toggleAutoRotate() {
+    autoRotateEnabled = !autoRotateEnabled;
+    applyAutoRotate?.(autoRotateEnabled);
+  }
 
   // Live model inference: predictions arrive through the LiveSeatFeed while
   // active; the mock feed and its manual controls are overridden.
@@ -192,7 +200,7 @@
     controls.target.set(0, 0.55, 0.15);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
-    controls.autoRotate = true;
+    controls.autoRotate = autoRotateEnabled;
     controls.autoRotateSpeed = 0.5;
     controls.minDistance = 2.6;
     controls.maxDistance = 9;
@@ -200,7 +208,8 @@
     controls.maxPolarAngle = 1.38;
     let resumeTimer: ReturnType<typeof setTimeout> | undefined;
     controls.addEventListener('start', () => { controls.autoRotate = false; clearTimeout(resumeTimer); });
-    controls.addEventListener('end', () => { clearTimeout(resumeTimer); resumeTimer = setTimeout(() => { controls.autoRotate = true; }, 6000); });
+    controls.addEventListener('end', () => { clearTimeout(resumeTimer); resumeTimer = setTimeout(() => { controls.autoRotate = autoRotateEnabled; }, 6000); });
+    applyAutoRotate = (enabled) => { clearTimeout(resumeTimer); controls.autoRotate = enabled; };
 
     scene.add(new THREE.HemisphereLight(0x9fb8c4, 0x0a0e12, 0.55));
     const key = new THREE.DirectionalLight(0xeef4ff, 2.4);
@@ -485,6 +494,7 @@
       renderer.forceContextLoss();
       setSeats = undefined;
       resubscribeFeed = undefined;
+      applyAutoRotate = undefined;
     };
   });
 </script>
@@ -567,6 +577,7 @@
           <p class="note">External seat feed connected · manual test controls are available with the mock feed only.</p>
         {/if}
       </div>
+      <button class="auto" class:active={autoRotateEnabled} onclick={toggleAutoRotate}>{autoRotateEnabled ? 'CAMERA AUTO-ROTATE · ON' : 'CAMERA AUTO-ROTATE · OFF'}</button>
       <dl class="status">
         <dt>LAST UPDATE</dt><dd>{lastUpdate}</dd>
         <dt>OCCUPIED</dt><dd>{occupiedShort} · {occupiedCount}/4</dd>
@@ -585,7 +596,7 @@
         {/each}
       </div>
       {#if liveActive && !liveInfo.latest && liveInfo.person}<div class="person-only-label">{liveInfo.person}</div>{/if}
-      <div class="hint">DRAG ORBIT · WHEEL ZOOM · AUTO-ROTATES WHEN IDLE</div>
+      <div class="hint">DRAG ORBIT · WHEEL ZOOM{autoRotateEnabled ? ' · AUTO-ROTATES WHEN IDLE' : ''}</div>
     </div>
   </article>
 </section>
