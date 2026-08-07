@@ -19,13 +19,13 @@ reconstruction of the environment, all computed on-device.
 
 ## Team
 
-| Name | Email |
+| Name | Email (@gmail.com)|
 | --- | --- |
-| Anand Guruswamy | anand.me AT Gmail Dot com |
-| Ehsan Hosseini | ehsan.hosseini AT Gmail Dot com |
-| Jianxiu Li | lijianxiu2019 AT Gmail Dot com |
-| Saisundar Sridharan | saisundar2 AT Gmail Dot com  |
-| Simarjit Singh | simar.rajput AT Gmail Dot com |
+| Anand Guruswamy | anand.me |
+| Ehsan Hosseini | ehsan.hosseini |
+| Jianxiu Li | lijianxiu2019 |
+| Saisundar Sridharan | saisundar2  |
+| Simarjit Singh | simar.rajput |
 
 ## Current status
 
