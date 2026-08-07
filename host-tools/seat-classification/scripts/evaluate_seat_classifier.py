@@ -27,6 +27,9 @@ def main():
     mode = checkpoint.get("model_mode", "seat")
     if mode == "person":
         raise SystemExit("person-only checkpoint has no seat head to evaluate")
+    if mode == "multilabel" or checkpoint.get("multi_label"):
+        raise SystemExit("multilabel checkpoints are evaluated by the trainer's test "
+                         "report or live inference; this tool covers single-label heads")
     mean, std = np.asarray(checkpoint["norm_mean"]), np.asarray(checkpoint["norm_std"])
     if "model_mode" in checkpoint:
         names = list(checkpoint["seat_names"])

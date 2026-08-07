@@ -73,7 +73,7 @@ export class HeimdallApi {
     const response=await fetch(`${this.base}/clips/${id}`,{method:'DELETE'});
     if (!response.ok && response.status !== 404) throw new Error(`DELETE /clips/${id}: HTTP ${response.status}`);
   }
-  setClipTraining(id: number, payload: { seat: SeatClass | null; person?: string; exclude?: boolean }): Promise<unknown> {
+  setClipTraining(id: number, payload: { seat: SeatClass | null; seats?: SeatClass[]; person?: string; exclude?: boolean }): Promise<unknown> {
     return this.send(`/clips/${id}/training`, 'POST', payload);
   }
   startTraining(payload: StartTrainingPayload): Promise<unknown> {

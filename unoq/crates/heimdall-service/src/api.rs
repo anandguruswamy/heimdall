@@ -387,18 +387,65 @@ async fn tag_clip(
     if value["status"] == "capturing" {
         return Err(anyhow::anyhow!("wait for the capture to complete before tagging").into());
     }
-    let seat = match &request["seat"] {
+    // Multi-seat tags arrive as a `seats` array (occupied classes only). It
+    // is authoritative when present; a single entry collapses to the plain
+    // single tag so existing consumers keep one canonical representation.
+    let seats = match &request["seats"] {
         Value::Null => None,
-        Value::String(seat) if SEAT_CLASSES.contains(&seat.as_str()) => Some(seat.clone()),
+        Value::Array(items) => {
+            let mut names: Vec<&str> = Vec::new();
+            for item in items {
+                let name = item.as_str().filter(|name| SEAT_CLASSES[..4].contains(name));
+                let Some(name) = name else {
+                    if item == "Empty" {
+                        return Err(anyhow::anyhow!(
+                            "seats cannot include Empty; tag an empty cabin with seat \"Empty\""
+                        )
+                        .into());
+                    }
+                    return Err(anyhow::anyhow!(
+                        "seats must contain only FrontLeft, FrontRight, BackRight, or BackLeft"
+                    )
+                    .into());
+                };
+                if names.contains(&name) {
+                    return Err(anyhow::anyhow!("seats must not repeat a seat").into());
+                }
+                names.push(name);
+            }
+            if names.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "seats must contain at least one seat, or pass seat null to remove the tag"
+                )
+                .into());
+            }
+            let ordered: Vec<&str> = SEAT_CLASSES[..4]
+                .iter()
+                .copied()
+                .filter(|name| names.contains(name))
+                .collect();
+            Some(ordered)
+        }
         _ => {
-            return Err(anyhow::anyhow!(
-                "seat must be null or one of FrontLeft, FrontRight, BackRight, BackLeft, Empty"
-            )
-            .into());
+            return Err(anyhow::anyhow!("seats must be an array of seat class names").into());
         }
     };
+    let seat = match &seats {
+        Some(ordered) => Some(ordered[0].to_owned()),
+        None => match &request["seat"] {
+            Value::Null => None,
+            Value::String(seat) if SEAT_CLASSES.contains(&seat.as_str()) => Some(seat.clone()),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "seat must be null or one of FrontLeft, FrontRight, BackRight, BackLeft, Empty"
+                )
+                .into());
+            }
+        },
+    };
     let requested_person = request["person"].as_str().unwrap_or("").trim();
-    let person = if seat.as_deref() == Some("Empty") {
+    let multi_seat = seats.as_ref().is_some_and(|ordered| ordered.len() >= 2);
+    let person = if seat.as_deref() == Some("Empty") || multi_seat {
         ""
     } else {
         requested_person
@@ -408,12 +455,16 @@ async fn tag_clip(
     }
     match seat {
         Some(seat) => {
-            value["training"] = serde_json::json!({
+            let mut training = serde_json::json!({
                 "seat": seat,
                 "person": person,
                 "exclude": request["exclude"] == true,
                 "updated_ns": crate::metadata::now_ns(),
             });
+            if multi_seat && let Some(ordered) = &seats {
+                training["seats"] = json!(ordered);
+            }
+            value["training"] = training;
         }
         None => {
             if let Some(object) = value.as_object_mut() {
@@ -503,6 +554,16 @@ async fn run_training(
             zip_path,
             seat: seat.to_owned(),
             person: tag["person"].as_str().unwrap_or("").to_owned(),
+            seats: tag["seats"]
+                .as_array()
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
         });
     }
     if let Some(selected_ids) = &selected_ids
@@ -544,6 +605,10 @@ async fn inference_start(
     if smoothing_window.is_some_and(|value| !(1..=300).contains(&value)) {
         return Err(anyhow::anyhow!("smoothing_window must be between 1 and 300 snapshots").into());
     }
+    let threshold = request["threshold"].as_f64();
+    if threshold.is_some_and(|value| !(0.05..=0.95).contains(&value)) {
+        return Err(anyhow::anyhow!("threshold must be between 0.05 and 0.95").into());
+    }
     // The model manifest, not its filename, decides whether these references
     // are required. Passing an empty option is harmless for raw checkpoints.
     let taps = state.pipeline.lock().frozen_reference_taps();
@@ -552,6 +617,7 @@ async fn inference_start(
         model,
         frozen_refs,
         smoothing_window,
+        threshold,
     )?))
 }
 
@@ -929,6 +995,46 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        // Multi-seat tags: normalized to bit order, person forced empty, and
+        // the seat field mirrors the first bit for legacy readers.
+        let response = app
+            .clone()
+            .oneshot(tag_request(
+                r#"{"seats":["BackRight","FrontLeft"],"person":"Ada"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let stored = metadata.clip(id).unwrap().unwrap();
+        assert_eq!(
+            stored["value"]["training"]["seats"],
+            json!(["FrontLeft", "BackRight"])
+        );
+        assert_eq!(stored["value"]["training"]["seat"], "FrontLeft");
+        assert_eq!(stored["value"]["training"]["person"], "");
+
+        // A single-entry seats array collapses to the plain single tag.
+        let response = app
+            .clone()
+            .oneshot(tag_request(r#"{"seats":["BackRight"],"person":"Ada"}"#))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let stored = metadata.clip(id).unwrap().unwrap();
+        assert!(stored["value"]["training"]["seats"].is_null());
+        assert_eq!(stored["value"]["training"]["seat"], "BackRight");
+        assert_eq!(stored["value"]["training"]["person"], "Ada");
+
+        for bad in [
+            r#"{"seats":["Empty"]}"#,
+            r#"{"seats":["FrontLeft","FrontLeft"]}"#,
+            r#"{"seats":[]}"#,
+            r#"{"seats":["MiddleSeat"]}"#,
+        ] {
+            let response = app.clone().oneshot(tag_request(bad)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR, "{bad}");
+        }
 
         let response = app
             .clone()

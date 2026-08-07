@@ -37,6 +37,10 @@ const FRAME_QUEUE_CAPACITY: usize = 4;
 const STDERR_TAIL_LINES: usize = 8;
 const RATE_WINDOW_NS: i64 = 5_000_000_000;
 const IDLE_STOP_GRACE: Duration = Duration::from_secs(30);
+/// A smoothed multilabel bit within this distance of the threshold is
+/// flagged uncertain (the multilabel analogue of the 0.6 confidence gate).
+const UNCERTAIN_MARGIN: f64 = 0.1;
+const MULTILABEL_SEAT_BITS: [&str; 4] = ["FrontLeft", "FrontRight", "BackRight", "BackLeft"];
 
 fn directed_links() -> impl Iterator<Item = (u8, u8)> {
     (0..N_NODES).flat_map(|a| (0..N_NODES).filter(move |b| *b != a).map(move |b| (a, b)))
@@ -55,6 +59,7 @@ struct FeatureContract {
     variant: String,
     mode: String,
     smoothing_window: usize,
+    threshold: f64,
 }
 
 impl Default for FeatureContract {
@@ -67,6 +72,7 @@ impl Default for FeatureContract {
             variant: "raw".to_owned(),
             mode: "seat".to_owned(),
             smoothing_window: 5,
+            threshold: 0.5,
         }
     }
 }
@@ -127,17 +133,28 @@ impl FeatureContract {
         {
             bail!("classifier manifest feature dimensions are inconsistent");
         }
+        // crop:"full" declares the full uncropped capture window (the
+        // multilabel datasets); taps_left=0/taps_right=63 alone would mean a
+        // marker-centered crop, which is a different feature space.
+        let legacy_full = value["crop"].as_str() == Some("full");
+        if legacy_full && n_taps != CAPTURE_TAPS {
+            bail!("crop=full manifests must cover all {CAPTURE_TAPS} capture taps");
+        }
         Ok(Self {
             links,
             taps_left,
             taps_right,
-            legacy_full: false,
+            legacy_full,
             variant: value["variant"].as_str().unwrap_or("raw").to_owned(),
             mode: value["model_mode"].as_str().unwrap_or("seat").to_owned(),
             smoothing_window: value["smoothing_window"]
                 .as_u64()
                 .unwrap_or(5)
                 .clamp(1, 300) as usize,
+            threshold: value["threshold"]
+                .as_f64()
+                .filter(|threshold| (0.05..=0.95).contains(threshold))
+                .unwrap_or(0.5),
         })
     }
 
@@ -262,20 +279,58 @@ impl Default for RunState {
 #[derive(Default)]
 struct PredictionSmoother {
     window: usize,
+    threshold: f64,
     seat: VecDeque<Vec<f64>>,
+    bits: VecDeque<Vec<f64>>,
     person: VecDeque<Vec<f64>>,
     person_labels: VecDeque<String>,
 }
 
 impl PredictionSmoother {
-    fn reset(&mut self, window: usize) {
+    fn reset(&mut self, window: usize, threshold: f64) {
         self.window = window.max(1);
+        self.threshold = threshold;
         self.seat.clear();
+        self.bits.clear();
         self.person.clear();
         self.person_labels.clear();
     }
 
     fn update(&mut self, value: &mut Value) {
+        // Multilabel lines carry disjoint keys and never touch the
+        // single-label smoothing state below.
+        if let Some(raw_bits) = probability_vector(&value["raw_seat_bits"]) {
+            if value.get("raw_seat_occupied").is_none() {
+                value["raw_seat_occupied"] = json!(
+                    raw_bits
+                        .iter()
+                        .map(|bit| *bit >= self.threshold)
+                        .collect::<Vec<_>>()
+                );
+            }
+            push_probabilities(&mut self.bits, raw_bits, self.window);
+            let stable = average_probabilities(&self.bits);
+            let occupied: Vec<bool> = stable.iter().map(|bit| *bit >= self.threshold).collect();
+            let uncertain_bits: Vec<bool> = stable
+                .iter()
+                .map(|bit| (bit - self.threshold).abs() < UNCERTAIN_MARGIN)
+                .collect();
+            let names: Vec<&str> = MULTILABEL_SEAT_BITS
+                .iter()
+                .zip(&occupied)
+                .filter(|(_, on)| **on)
+                .map(|(name, _)| *name)
+                .collect();
+            value["stable_seat_bits"] = json!(stable);
+            value["stable_seat_occupied"] = json!(occupied);
+            value["stable_occupied_seats"] = json!(names);
+            value["stable_occupied_count"] = json!(names.len());
+            value["uncertain_bits"] = json!(uncertain_bits);
+            value["uncertain"] = json!(uncertain_bits.iter().any(|bit| *bit));
+            value["mode"] = json!("multilabel");
+            value["threshold"] = json!(self.threshold);
+            return;
+        }
         let raw_seat = value["raw_seat"]
             .as_str()
             .or_else(|| value["seat"].as_str())
@@ -489,18 +544,23 @@ impl InferenceManager {
             .get((ordered_latency.len().saturating_sub(1) * 95) / 100)
             .copied()
             .unwrap_or(0.0);
+        let mut features = json!({
+            "mode": state.features.mode,
+            "variant": state.features.variant,
+            "links": state.features.links.len(),
+            "taps_left": state.features.taps_left,
+            "taps_right": state.features.taps_right,
+            "taps": state.features.width(),
+            "smoothing_window": state.features.smoothing_window,
+        });
+        if state.features.mode == "multilabel" {
+            // Conditional so single-label status payloads stay byte-identical.
+            features["threshold"] = json!(state.features.threshold);
+        }
         json!({
             "status": state.phase.name(),
             "model": state.model,
-            "features": {
-                "mode": state.features.mode,
-                "variant": state.features.variant,
-                "links": state.features.links.len(),
-                "taps_left": state.features.taps_left,
-                "taps_right": state.features.taps_right,
-                "taps": state.features.width(),
-                "smoothing_window": state.features.smoothing_window,
-            },
+            "features": features,
             "started_ns": if state.started_ns == 0 { Value::Null } else { json!(state.started_ns) },
             "predictions": state.predictions,
             "dropped_frames": state.dropped_frames,
@@ -525,6 +585,7 @@ impl InferenceManager {
         model_name: &str,
         frozen_refs: Option<BTreeMap<(u8, u8), Vec<[f64; 2]>>>,
         smoothing_window: Option<usize>,
+        threshold: Option<f64>,
     ) -> Result<Value> {
         let model_name = model_name.trim();
         if model_name.is_empty()
@@ -563,6 +624,12 @@ impl InferenceManager {
             }
             features.smoothing_window = smoothing_window;
         }
+        if let Some(threshold) = threshold {
+            if !(0.05..=0.95).contains(&threshold) {
+                bail!("threshold must be between 0.05 and 0.95");
+            }
+            features.threshold = threshold;
+        }
         let variant = if features.variant == "calibrated" {
             let refs = frozen_refs.context(
                 "the calibrated model subtracts frozen board references; freeze the board first",
@@ -589,11 +656,19 @@ impl InferenceManager {
         if matches!(state.phase, Phase::Starting | Phase::Running) {
             bail!("live inference is already running");
         }
-        let mut child = Command::new(&self.inner.config.python)
+        let mut command = Command::new(&self.inner.config.python);
+        command
             .arg("-u")
             .arg("live_infer_seats.py")
             .arg("--checkpoint")
-            .arg(&checkpoint)
+            .arg(&checkpoint);
+        if features.mode == "multilabel" {
+            // Keep the worker's raw occupancy booleans consistent with the
+            // smoother's stable ones — the manifest (or the API override) is
+            // the single threshold authority.
+            command.arg("--threshold").arg(features.threshold.to_string());
+        }
+        let mut child = command
             .current_dir(&scripts)
             .env("PYTHONUTF8", "1")
             .env("PYTHONIOENCODING", "utf-8")
@@ -619,6 +694,7 @@ impl InferenceManager {
 
         let generation = state.generation + 1;
         let smoothing_window = features.smoothing_window;
+        let smoothing_threshold = features.threshold;
         let (frame_tx, frame_rx) = sync_channel::<String>(FRAME_QUEUE_CAPACITY);
         *state = RunState {
             generation,
@@ -631,7 +707,7 @@ impl InferenceManager {
             frame_tx: Some(frame_tx),
             ..RunState::default()
         };
-        state.smoother.reset(smoothing_window);
+        state.smoother.reset(smoothing_window, smoothing_threshold);
         drop(state);
         self.inner.active.store(true, Ordering::Release);
 
@@ -658,7 +734,8 @@ impl InferenceManager {
             state.frame_tx = None;
             state.assembler = FrameAssembler::default();
             let smoothing_window = state.features.smoothing_window;
-            state.smoother.reset(smoothing_window);
+            let smoothing_threshold = state.features.threshold;
+            state.smoother.reset(smoothing_window, smoothing_threshold);
             state.child.take()
         };
         if let Some(mut child) = child {
@@ -767,6 +844,7 @@ impl InferenceManager {
                 if value.get("seat").is_none()
                     && value.get("raw_seat").is_none()
                     && value.get("raw_person").is_none()
+                    && value.get("raw_seat_bits").is_none()
                 {
                     continue;
                 }
@@ -994,6 +1072,7 @@ mod tests {
             variant: "raw".to_owned(),
             mode: "seat".to_owned(),
             smoothing_window: 5,
+            threshold: 0.5,
         };
         assert_eq!(round_half_away_from_zero(sample.marker_aligned), 2);
         assert_eq!(
@@ -1005,7 +1084,7 @@ mod tests {
     #[test]
     fn smoother_preserves_raw_and_emits_stable_empty() {
         let mut smoother = PredictionSmoother::default();
-        smoother.reset(3);
+        smoother.reset(3, 0.5);
         let mut first = json!({
             "raw_seat": "FrontLeft",
             "raw_seat_probs": [0.7, 0.1, 0.1, 0.05, 0.05],
@@ -1035,10 +1114,85 @@ mod tests {
         let (stream, _) = broadcast::channel(8);
         let manager = InferenceManager::new(TrainingConfig::from_env(), stream);
         for bad in ["", "model", "../x.pt", "a/b.pt", "a\\b.pt"] {
-            assert!(manager.start(bad, None, None).is_err(), "{bad:?}");
+            assert!(manager.start(bad, None, None, None).is_err(), "{bad:?}");
         }
         assert_eq!(manager.status()["status"], "idle");
         assert!(!manager.wants_frames());
+    }
+
+    #[test]
+    fn smoother_multilabel_bits_are_isolated_from_single_label_path() {
+        let mut smoother = PredictionSmoother::default();
+        smoother.reset(2, 0.5);
+        let mut first = json!({
+            "frame_id": 1,
+            "raw_seat_bits": [0.9, 0.1, 0.8, 0.0],
+        });
+        smoother.update(&mut first);
+        assert_eq!(first["raw_seat_bits"], json!([0.9, 0.1, 0.8, 0.0]));
+        assert_eq!(first["raw_seat_occupied"], json!([true, false, true, false]));
+        assert_eq!(first["stable_seat_occupied"], json!([true, false, true, false]));
+        assert_eq!(first["stable_occupied_seats"], json!(["FrontLeft", "BackRight"]));
+        assert_eq!(first["stable_occupied_count"], json!(2));
+        assert_eq!(first["mode"], "multilabel");
+        assert_eq!(first["threshold"], json!(0.5));
+        assert!(first.get("stable_seat").is_none());
+        assert!(first.get("probs").is_none());
+        // Second snapshot drags the mean of bit 0 to 0.55: occupied but
+        // within the uncertainty margin of the threshold.
+        let mut second = json!({
+            "frame_id": 2,
+            "raw_seat_bits": [0.2, 0.1, 0.9, 0.0],
+        });
+        smoother.update(&mut second);
+        assert_eq!(second["stable_seat_occupied"], json!([true, false, true, false]));
+        assert_eq!(second["uncertain_bits"], json!([true, false, false, false]));
+        assert_eq!(second["uncertain"], json!(true));
+        // An interleaved single-label payload still produces exactly the
+        // classic keys, untouched by the bits queue.
+        let mut single = json!({
+            "raw_seat": "FrontLeft",
+            "raw_seat_probs": [0.7, 0.1, 0.1, 0.05, 0.05],
+        });
+        smoother.update(&mut single);
+        assert_eq!(single["stable_seat"], "FrontLeft");
+        assert!(single.get("stable_seat_bits").is_none());
+        assert!(single.get("stable_occupied_count").is_none());
+    }
+
+    #[test]
+    fn feature_contract_reads_crop_full_and_threshold() {
+        let dir = std::env::temp_dir().join(format!(
+            "heimdall-manifest-test-{}-{}",
+            std::process::id(),
+            now_ns()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let checkpoint = dir.join("classifier_multilabel_standard_raw.pt");
+        std::fs::write(&checkpoint, b"stub").unwrap();
+        let link_order: Vec<[u8; 2]> = directed_links().map(|(a, b)| [a, b]).collect();
+        let manifest = |extra: &str| {
+            format!(
+                "{{\"schema_version\":2,\"model_mode\":\"multilabel\",\"variant\":\"raw\",\
+                 \"link_order\":{},\"n_links\":20,\"n_taps\":64,\"taps_left\":0,\
+                 \"taps_right\":63{extra}}}",
+                serde_json::to_string(&link_order).unwrap()
+            )
+        };
+        let manifest_path = dir.join("classifier_multilabel_standard_raw.manifest.json");
+        std::fs::write(&manifest_path, manifest(",\"crop\":\"full\",\"threshold\":0.7")).unwrap();
+        let features = FeatureContract::load(&checkpoint).unwrap();
+        assert!(features.legacy_full);
+        assert_eq!(features.width(), CAPTURE_TAPS);
+        assert_eq!(features.mode, "multilabel");
+        assert_eq!(features.threshold, 0.7);
+        // Without the crop declaration the same taps mean a marker-centered
+        // window, and the threshold falls back to the default.
+        std::fs::write(&manifest_path, manifest("")).unwrap();
+        let features = FeatureContract::load(&checkpoint).unwrap();
+        assert!(!features.legacy_full);
+        assert_eq!(features.threshold, 0.5);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn frame_samples(round: u32) -> Vec<AlignedCirSample> {
@@ -1087,12 +1241,14 @@ mod tests {
             .unwrap()
             .iter()
             .filter_map(|row| row["name"].as_str())
-            .find(|name| name.contains("data_raw") && !name.contains("shuffled"))
+            .find(|name| {
+                name.contains("data_raw") && !name.contains("shuffled") && !name.contains("multilabel")
+            })
             .expect("a raw checkpoint under models/")
             .to_owned();
-        manager.start(&model, None, None).unwrap();
+        manager.start(&model, None, None, None).unwrap();
         assert!(
-            manager.start(&model, None, None).is_err(),
+            manager.start(&model, None, None, None).is_err(),
             "second start must be rejected"
         );
         assert!(
@@ -1130,7 +1286,7 @@ mod tests {
         // (this also proves the previous child is not lingering as the only
         // holder of the checkpoint or pipes).
         assert!(wait_for(
-            || manager.start(&model, None, None).is_ok(),
+            || manager.start(&model, None, None, None).is_ok(),
             Duration::from_secs(5)
         ));
         assert!(
@@ -1141,6 +1297,53 @@ mod tests {
             "restart: {:?}",
             manager.status()
         );
+        manager.stop("test");
+        assert_eq!(manager.status()["status"], "idle");
+    }
+
+    /// Multilabel loop against the real interpreter and the team-trained
+    /// checkpoint: run explicitly with `cargo test -- --ignored multilabel`.
+    #[test]
+    #[ignore = "requires the configured python interpreter with torch and a multilabel checkpoint"]
+    fn live_inference_multilabel_end_to_end() {
+        let (stream, _receiver) = broadcast::channel(64);
+        let manager = InferenceManager::new(TrainingConfig::from_env(), stream);
+        let models = manager.models().unwrap();
+        let model = models
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["mode"] == "multilabel" && row["variant"] == "raw")
+            .map(|row| row["name"].as_str().unwrap().to_owned())
+            .expect("a raw multilabel checkpoint with manifest under models/");
+        manager.start(&model, None, None, None).unwrap();
+        assert_eq!(manager.status()["features"]["mode"], "multilabel");
+        assert_eq!(manager.status()["features"]["threshold"], 0.5);
+        assert_eq!(manager.status()["features"]["taps"], 64);
+        assert!(
+            wait_for(
+                || manager.status()["status"] == "running",
+                Duration::from_secs(30)
+            ),
+            "model load: {:?}",
+            manager.status()
+        );
+        manager.ingest_cir(&frame_samples(0));
+        assert!(
+            wait_for(
+                || manager.status()["predictions"].as_u64().unwrap_or(0) >= 1,
+                Duration::from_secs(10)
+            ),
+            "prediction: {:?}",
+            manager.status()
+        );
+        let last = manager.status()["last"].clone();
+        assert_eq!(last["raw_seat_bits"].as_array().unwrap().len(), 4);
+        assert_eq!(last["stable_seat_bits"].as_array().unwrap().len(), 4);
+        assert_eq!(last["stable_seat_occupied"].as_array().unwrap().len(), 4);
+        assert_eq!(last["mode"], "multilabel");
+        assert!(last.get("stable_seat").is_none(), "{last}");
+        assert!(last.get("probs").is_none(), "{last}");
         manager.stop("test");
         assert_eq!(manager.status()["status"], "idle");
     }

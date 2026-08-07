@@ -63,9 +63,9 @@ impl TrainingOptions {
         }
         if !matches!(
             options.mode.as_str(),
-            "seat" | "person" | "separate" | "joint"
+            "seat" | "person" | "separate" | "joint" | "multilabel"
         ) {
-            bail!("mode must be seat, person, separate, or joint");
+            bail!("mode must be seat, person, separate, joint, or multilabel");
         }
         if !matches!(options.architecture.as_str(), "standard" | "lite") {
             bail!("architecture must be standard or lite");
@@ -192,6 +192,10 @@ pub struct TrainingClip {
     pub zip_path: PathBuf,
     pub seat: String,
     pub person: String,
+    /// All tagged seats in bit order; empty for legacy single tags (then
+    /// `seat` alone is authoritative). Two or more entries mark a
+    /// multi-person clip, which only multilabel runs may train on.
+    pub seats: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -261,18 +265,47 @@ impl TrainingManager {
         if clips.is_empty() {
             bail!("select at least one clip for training");
         }
-        if clips
-            .iter()
-            .any(|clip| clip.seat != "Empty" && clip.person.trim().is_empty())
-        {
-            bail!("every occupied training clip requires a person label");
-        }
-        if options.mode != "seat"
-            && !clips
+        if options.mode == "multilabel" {
+            // The multilabel builder derives seat bits from folder names by
+            // substring containment, so a person label embedding a seat class
+            // name (or the TwoPeople marker) would silently flip bits.
+            let corrupt = clip_id_list(clips.iter().filter(|clip| {
+                let person: String = clip
+                    .person
+                    .chars()
+                    .filter(char::is_ascii_alphanumeric)
+                    .collect();
+                SEAT_CLASSES.iter().any(|seat| person.contains(seat))
+                    || person.contains("TwoPeople")
+            }));
+            if !corrupt.is_empty() {
+                bail!(
+                    "clips {corrupt} have person labels containing a seat class name or \
+                     \"TwoPeople\", which would corrupt the folder-name label encoding; \
+                     rename those person tags first"
+                );
+            }
+        } else {
+            let multi = clip_id_list(clips.iter().filter(|clip| clip.seats.len() >= 2));
+            if !multi.is_empty() {
+                bail!(
+                    "clips {multi} are tagged with multiple seats; switch the \
+                     classification mode to multi person (multi-label) or retag them"
+                );
+            }
+            if clips
                 .iter()
-                .any(|clip| clip.seat != "Empty" && !clip.person.trim().is_empty())
-        {
-            bail!("person training requires at least one occupied clip with a person label");
+                .any(|clip| clip.seat != "Empty" && clip.person.trim().is_empty())
+            {
+                bail!("every occupied training clip requires a person label");
+            }
+            if options.mode != "seat"
+                && !clips
+                    .iter()
+                    .any(|clip| clip.seat != "Empty" && !clip.person.trim().is_empty())
+            {
+                bail!("person training requires at least one occupied clip with a person label");
+            }
         }
         let run_id = {
             let mut state = self.state.lock();
@@ -337,6 +370,14 @@ impl TrainingManager {
                 self.config.python.display()
             );
         }
+        let multilabel = options.mode == "multilabel";
+        if multilabel && !scripts.join("build_car_dataset_multilabel.py").is_file() {
+            bail!(
+                "multi-person training requires build_car_dataset_multilabel.py under {} \
+                 (update host-tools/seat-classification or set HEIMDALL_SEATCLASS_ROOT)",
+                scripts.display()
+            );
+        }
         // Only the current run's workspace is kept on disk.
         let _ = fs::remove_dir_all(self.work_root.as_ref());
         let work = self.work_root.join(format!("run-{run_id:06}"));
@@ -346,33 +387,53 @@ impl TrainingManager {
             .with_context(|| format!("create training workspace {}", source.display()))?;
         self.log(run_id, format!("exporting {} tagged clips", clips.len()));
         for clip in clips {
-            let folder = export_clip(&source, clip)?;
+            let folder = export_clip(&source, clip, multilabel)?;
             self.log(run_id, format!("  clip {:06} -> {folder}", clip.id));
         }
         let taps_left = options.taps_left.to_string();
         let taps_right = options.taps_right.to_string();
-        self.run_python(
-            run_id,
-            &scripts,
-            &[
-                OsStr::new("build_seat_dataset.py"),
-                OsStr::new("--dataset-dir"),
-                source.as_os_str(),
-                OsStr::new("--out-root"),
-                dataset.as_os_str(),
-                OsStr::new("--link-mode"),
-                OsStr::new(&options.link_mode),
-                OsStr::new("--taps-left"),
-                OsStr::new(&taps_left),
-                OsStr::new("--taps-right"),
-                OsStr::new(&taps_right),
-            ],
-            "dataset build",
-        )?;
+        if multilabel {
+            // Fixed 20-link / full-64-tap geometry; --stamp "" gives the
+            // predictable data_<variant>_multilabel folder the trainer
+            // resolves from --data-dir data_<variant>.
+            self.run_python(
+                run_id,
+                &scripts,
+                &[
+                    OsStr::new("build_car_dataset_multilabel.py"),
+                    OsStr::new("--dataset-dir"),
+                    source.as_os_str(),
+                    OsStr::new("--out-root"),
+                    dataset.as_os_str(),
+                    OsStr::new("--stamp"),
+                    OsStr::new(""),
+                ],
+                "dataset build",
+            )?;
+        } else {
+            self.run_python(
+                run_id,
+                &scripts,
+                &[
+                    OsStr::new("build_seat_dataset.py"),
+                    OsStr::new("--dataset-dir"),
+                    source.as_os_str(),
+                    OsStr::new("--out-root"),
+                    dataset.as_os_str(),
+                    OsStr::new("--link-mode"),
+                    OsStr::new(&options.link_mode),
+                    OsStr::new("--taps-left"),
+                    OsStr::new(&taps_left),
+                    OsStr::new("--taps-right"),
+                    OsStr::new(&taps_right),
+                ],
+                "dataset build",
+            )?;
+        }
         let data_dir = format!("data_{}", options.variant);
         let epochs_value = options.epochs.to_string();
         let patience_value = options.patience.to_string();
-        let args = vec![
+        let mut args = vec![
             OsStr::new("train_seat_classifier.py"),
             OsStr::new("--dataset-root"),
             dataset.as_os_str(),
@@ -380,13 +441,19 @@ impl TrainingManager {
             OsStr::new(&data_dir),
             OsStr::new("--mode"),
             OsStr::new(&options.mode),
-            OsStr::new("--architecture"),
-            OsStr::new(&options.architecture),
+        ];
+        if !multilabel {
+            // Architecture is a single-label concept; multilabel runs use the
+            // trainer's default and the fixed builder geometry above.
+            args.push(OsStr::new("--architecture"));
+            args.push(OsStr::new(&options.architecture));
+        }
+        args.extend([
             OsStr::new("--epochs"),
             OsStr::new(&epochs_value),
             OsStr::new("--patience"),
             OsStr::new(&patience_value),
-        ];
+        ]);
         self.run_python(run_id, &scripts, &args, "training")?;
         let state = self.state.lock();
         Ok(parse_result(&state.log))
@@ -479,22 +546,56 @@ impl TrainingManager {
     }
 }
 
+/// Sorted, comma-separated zero-padded clip ids for error messages.
+fn clip_id_list<'a>(clips: impl Iterator<Item = &'a TrainingClip>) -> String {
+    let mut ids: Vec<i64> = clips.map(|clip| clip.id).collect();
+    ids.sort_unstable();
+    ids.iter()
+        .map(|id| format!("{id:06}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Extract aligned-cirs.ndjson + metadata.json from a stored clip zip into
-/// `clip-<id>-<Seat><Person>/`, the folder-name label encoding that
-/// build_seat_dataset.py parses.
-fn export_clip(source_root: &Path, clip: &TrainingClip) -> Result<String> {
+/// `clip-<id>-<Seat><Person>/` (single tags) or, for multilabel runs with two
+/// or more seats, `clip-<id>-<Seat><Seat>TwoPeople/` in bit order — the
+/// folder-name label encodings build_seat_dataset.py and
+/// build_car_dataset_multilabel.py parse. The training-label.json sidecar is
+/// the exact-label channel and takes precedence in the builders.
+fn export_clip(source_root: &Path, clip: &TrainingClip, multilabel: bool) -> Result<String> {
     let person: String = clip
         .person
         .chars()
         .filter(char::is_ascii_alphanumeric)
         .collect();
-    let folder = format!("clip-{:06}-{}{}", clip.id, clip.seat, person);
+    // Defensive normalization: bit order, no duplicates, ignore unknown names.
+    let mut seats: Vec<&str> = SEAT_CLASSES[..4]
+        .iter()
+        .copied()
+        .filter(|name| clip.seats.iter().any(|seat| seat == name))
+        .collect();
+    if seats.is_empty() && clip.seat != "Empty" {
+        seats.push(clip.seat.as_str());
+    }
+    let (folder, label) = if multilabel && seats.len() >= 2 {
+        (
+            format!("clip-{:06}-{}TwoPeople", clip.id, seats.concat()),
+            json!({"seat": seats[0], "seats": seats, "person": "multiple"}),
+        )
+    } else if multilabel {
+        (
+            format!("clip-{:06}-{}{}", clip.id, clip.seat, person),
+            json!({"seat": &clip.seat, "seats": seats, "person": &clip.person}),
+        )
+    } else {
+        (
+            format!("clip-{:06}-{}{}", clip.id, clip.seat, person),
+            json!({"seat": &clip.seat, "person": &clip.person}),
+        )
+    };
     let dir = source_root.join(&folder);
     fs::create_dir_all(&dir)?;
-    fs::write(
-        dir.join("training-label.json"),
-        serde_json::to_vec(&json!({"seat": &clip.seat, "person": &clip.person}))?,
-    )?;
+    fs::write(dir.join("training-label.json"), serde_json::to_vec(&label)?)?;
     let file =
         File::open(&clip.zip_path).with_context(|| format!("open stored clip {:06}", clip.id))?;
     let mut zip =
@@ -632,8 +733,9 @@ mod tests {
             zip_path,
             seat: "FrontLeft".to_owned(),
             person: "Simarjit Singh!".to_owned(),
+            seats: Vec::new(),
         };
-        let folder = export_clip(dir.path(), &clip).unwrap();
+        let folder = export_clip(dir.path(), &clip, false).unwrap();
         assert_eq!(folder, "clip-000013-FrontLeftSimarjitSingh");
         assert!(
             dir.path()
@@ -659,8 +761,9 @@ mod tests {
             zip_path,
             seat: "BackLeft".to_owned(),
             person: String::new(),
+            seats: Vec::new(),
         };
-        let error = export_clip(dir.path(), &clip).unwrap_err().to_string();
+        let error = export_clip(dir.path(), &clip, false).unwrap_err().to_string();
         assert!(error.contains("aligned-cirs.ndjson"), "{error}");
     }
 
@@ -673,6 +776,87 @@ mod tests {
             .to_string();
         assert!(error.contains("at least one clip"), "{error}");
         assert_eq!(manager.status(0)["status"], "idle");
+    }
+
+    fn multilabel_options() -> TrainingOptions {
+        TrainingOptions::from_json(&json!({"variant": "raw", "mode": "multilabel", "epochs": 1}))
+            .unwrap()
+    }
+
+    fn tagged_clip(id: i64, seat: &str, person: &str, seats: &[&str]) -> TrainingClip {
+        TrainingClip {
+            id,
+            zip_path: PathBuf::from("unused.zip"),
+            seat: seat.to_owned(),
+            person: person.to_owned(),
+            seats: seats.iter().map(|&name| name.to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn options_accept_multilabel_and_reject_unknown_modes() {
+        assert_eq!(multilabel_options().mode, "multilabel");
+        let error = match TrainingOptions::from_json(&json!({"mode": "multi"})) {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("mode 'multi' must be rejected"),
+        };
+        assert!(error.contains("multilabel"), "{error}");
+    }
+
+    #[test]
+    fn export_clip_multilabel_folder_names_follow_bit_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("clip-000021.zip");
+        stored_clip_zip(&zip_path, true);
+        let mut clip = tagged_clip(21, "BackLeft", "", &["BackLeft", "FrontRight"]);
+        clip.zip_path = zip_path.clone();
+        let folder = export_clip(dir.path(), &clip, true).unwrap();
+        assert_eq!(folder, "clip-000021-FrontRightBackLeftTwoPeople");
+        let label: Value = serde_json::from_slice(
+            &fs::read(dir.path().join(&folder).join("training-label.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(label["seats"], json!(["FrontRight", "BackLeft"]));
+        assert_eq!(label["person"], "multiple");
+
+        let mut empty = tagged_clip(22, "Empty", "", &[]);
+        empty.zip_path = zip_path.clone();
+        let folder = export_clip(dir.path(), &empty, true).unwrap();
+        assert_eq!(folder, "clip-000022-Empty");
+        let label: Value = serde_json::from_slice(
+            &fs::read(dir.path().join(&folder).join("training-label.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(label["seats"], json!([]));
+
+        // Single tags export the same folder name in both pipelines.
+        let mut single = tagged_clip(23, "FrontLeft", "Ada", &["FrontLeft"]);
+        single.zip_path = zip_path;
+        let folder = export_clip(dir.path(), &single, true).unwrap();
+        assert_eq!(folder, "clip-000023-FrontLeftAda");
+    }
+
+    #[test]
+    fn start_rejects_mode_mismatched_clips() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = TrainingManager::new(dir.path(), TrainingConfig::from_env());
+        let multi = tagged_clip(7, "FrontLeft", "", &["FrontLeft", "BackRight"]);
+        let error = manager
+            .start(vec![multi.clone()], test_options())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("000007") && error.contains("multi person"), "{error}");
+
+        let corrupt = tagged_clip(9, "FrontLeft", "BackLefty", &["FrontLeft"]);
+        let error = manager
+            .start(vec![corrupt], multilabel_options())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("000009") && error.contains("person labels"), "{error}");
+
+        // Multilabel runs accept person-less single-seat clips and multi tags.
+        let quiet = tagged_clip(11, "FrontLeft", "", &["FrontLeft"]);
+        assert!(manager.start(vec![quiet, multi], multilabel_options()).is_ok());
     }
 
     #[test]

@@ -7,17 +7,20 @@ import sys
 import numpy as np
 import torch
 
-from train_seat_classifier import SeatCNN, build_model
+from train_seat_classifier import (SeatCNN, build_model, multilabel_result_payload,
+                                   resolve_checkpoint_mode)
 
 
 def _load(checkpoint):
-    mode = checkpoint.get("model_mode")
-    if mode is None:
+    mode = resolve_checkpoint_mode(checkpoint)
+    if checkpoint.get("model_mode") is None:
+        # Legacy SeatCNN checkpoints: 4/5-way softmax, or the team-trained
+        # multilabel generation marked only by multi_label=True.
         names = list(checkpoint["class_names"])
         mean = np.asarray(checkpoint["norm_mean"])
         model = SeatCNN(mean.shape[0], mean.shape[1], len(names))
         model.load_state_dict(checkpoint["state_dict"])
-        return model, "seat", names, []
+        return model, mode, names, []
     seat_names = list(checkpoint.get("seat_names", []))
     person_names = list(checkpoint.get("person_names", []))
     model = build_model(mode, checkpoint["architecture"], int(checkpoint["n_links"]),
@@ -33,9 +36,16 @@ def _probabilities(logits):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--threshold", type=float, default=None,
+                        help="multilabel per-seat decision threshold "
+                             "(default: checkpoint value, else 0.5)")
     args = parser.parse_args()
+    if args.threshold is not None and not 0.0 < args.threshold < 1.0:
+        parser.error("--threshold must be strictly between 0 and 1")
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     model, mode, seat_names, person_names = _load(checkpoint)
+    threshold = (args.threshold if args.threshold is not None
+                 else float(checkpoint.get("threshold", 0.5)))
     model.eval()
     torch.set_num_threads(2)
     try:
@@ -58,15 +68,29 @@ def main():
     except (RuntimeError, TypeError, ValueError):
         # Legacy/runtime combinations that cannot trace still use eager mode.
         model.eval()
-    readiness = {
-        "ready": True, "mode": mode, "seat_classes": seat_names,
-        "person_classes": person_names, "classes": seat_names or person_names,
-        "variant": variant, "jit_optimized": jit_optimized,
-        "features": {"shape": list(mean.shape), "input": "cropped_magnitude",
-                     "link_mode": str(checkpoint.get("link_mode", "unknown")),
-                     "taps_left": int(checkpoint.get("taps_left", 0)),
-                     "taps_right": int(checkpoint.get("taps_right", mean.shape[1] - 1))},
-    }
+    if mode == "multilabel":
+        # seat_classes/classes stay empty so no five-class consumer misfires
+        # on the four independent bit names.
+        readiness = {
+            "ready": True, "mode": mode, "seat_bits": seat_names,
+            "seat_classes": [], "person_classes": [], "classes": [],
+            "threshold": threshold, "variant": variant, "jit_optimized": jit_optimized,
+            "features": {"shape": list(mean.shape), "input": "magnitude",
+                         "link_mode": str(checkpoint.get("link_mode", "directed")),
+                         "taps_left": int(checkpoint.get("taps_left", 0)),
+                         "taps_right": int(checkpoint.get("taps_right", mean.shape[1] - 1)),
+                         "crop": str(checkpoint.get("crop", "full"))},
+        }
+    else:
+        readiness = {
+            "ready": True, "mode": mode, "seat_classes": seat_names,
+            "person_classes": person_names, "classes": seat_names or person_names,
+            "variant": variant, "jit_optimized": jit_optimized,
+            "features": {"shape": list(mean.shape), "input": "cropped_magnitude",
+                         "link_mode": str(checkpoint.get("link_mode", "unknown")),
+                         "taps_left": int(checkpoint.get("taps_left", 0)),
+                         "taps_right": int(checkpoint.get("taps_right", mean.shape[1] - 1))},
+        }
     print(json.dumps(readiness, separators=(",", ":")), flush=True)
 
     for line in sys.stdin:
@@ -83,6 +107,12 @@ def main():
                 output = model(torch.from_numpy(x.astype(np.float32))[None, None])
             if isinstance(output, torch.Tensor):
                 output = {"seat": output}
+            if mode == "multilabel":
+                probabilities = torch.sigmoid(output["seat"][0]).cpu().numpy()
+                payload = multilabel_result_payload(probabilities, seat_names, threshold,
+                                                    frame.get("frame_id"), frame.get("ts"))
+                print(json.dumps(payload, separators=(",", ":")), flush=True)
+                continue
             result = {"frame_id": frame.get("frame_id"), "ts": frame.get("ts")}
             seat_index = None
             if "seat" in output:

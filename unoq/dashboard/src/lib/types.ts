@@ -44,7 +44,7 @@ export const seatClasses = ['FrontLeft', 'FrontRight', 'BackRight', 'BackLeft', 
 export type SeatClass = (typeof seatClasses)[number];
 
 export type TrainingVariant = 'raw' | 'calibrated';
-export type TrainingMode = 'seat' | 'person' | 'separate' | 'joint';
+export type TrainingMode = 'seat' | 'person' | 'separate' | 'joint' | 'multilabel';
 export type TrainingArchitecture = 'standard' | 'lite';
 export type TrainingLinkMode = 'canonical' | 'directed';
 export type StartTrainingPayload = {

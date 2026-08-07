@@ -13,6 +13,9 @@ export interface SeatFeed {
 export const classSeatIds: readonly (SeatId | null)[] = ['front_left', 'front_right', 'rear_right', 'rear_left', null];
 
 export type SeatPrediction = { seat: SeatClass; seatIndex: number; probs: number[]; person: string | null; frameId: number | null; ts: number };
+// Multilabel checkpoints: four independent per-seat probabilities in bit
+// order FrontLeft, FrontRight, BackRight, BackLeft (they do not sum to 1).
+export type SeatBits = { probs: number[]; occupied: boolean[]; uncertainBits: boolean[]; threshold: number };
 export type LiveInfo = {
   latest: SeatPrediction | null;
   raw: SeatPrediction | null;
@@ -21,6 +24,8 @@ export type LiveInfo = {
   stableClass: SeatClass | null;
   person: string | null;
   uncertain: boolean;
+  bits: SeatBits | null;
+  mode: 'single' | 'multilabel';
 };
 
 // Stable backend predictions are authoritative. The majority vote remains only
@@ -37,6 +42,8 @@ export class LiveSeatFeed implements SeatFeed {
   private stableIndex: number | null = null;
   private person: string | null = null;
   private uncertain = false;
+  private bits: SeatBits | null = null;
+  private mode: 'single' | 'multilabel' = 'single';
   private lastTs = Date.now();
 
   subscribe(listener: SeatListener): () => void {
@@ -54,6 +61,14 @@ export class LiveSeatFeed implements SeatFeed {
   push(payload: Record<string, unknown>): void {
     const ts = Number(payload.ts);
     this.lastTs = Number.isFinite(ts) && ts > 0 ? ts : Date.now();
+    if (Object.hasOwn(payload, 'stable_seat_bits') || Object.hasOwn(payload, 'raw_seat_bits')) {
+      this.pushBits(payload);
+      return;
+    }
+    // A single-label payload ends any multilabel run (e.g. another client
+    // swapped checkpoints) so stale bits never keep rendering.
+    this.mode = 'single';
+    this.bits = null;
     const hasStable = Object.hasOwn(payload, 'stable_seat') || Object.hasOwn(payload, 'stable_seat_probs');
     this.raw = this.parsePrediction(payload.raw_seat ?? payload.seat, payload.raw_seat_probs ?? payload.probs, payload.raw_person ?? payload.person, payload);
 
@@ -105,6 +120,31 @@ export class LiveSeatFeed implements SeatFeed {
     this.emitInfo();
   }
 
+  // Multilabel payloads: the backend smoother already averaged the bits and
+  // applied the threshold; every occupied bit lights its seat independently
+  // (including none of them for an empty cabin).
+  private pushBits(payload: Record<string, unknown>): void {
+    const probs = this.probabilities(payload.stable_seat_bits ?? payload.raw_seat_bits);
+    if (!probs || probs.length !== 4) return;
+    const rawThreshold = Number(payload.threshold);
+    const threshold = Number.isFinite(rawThreshold) && rawThreshold > 0 && rawThreshold < 1 ? rawThreshold : 0.5;
+    const occupied = this.booleans(payload.stable_seat_occupied ?? payload.raw_seat_occupied)
+      ?? probs.map((value) => value >= threshold);
+    const uncertainBits = this.booleans(payload.uncertain_bits)
+      ?? probs.map((value) => Math.abs(value - threshold) < 0.1);
+    this.mode = 'multilabel';
+    this.bits = { probs, occupied, uncertainBits, threshold };
+    this.latest = null;
+    this.raw = null;
+    this.stablePrediction = null;
+    this.stableIndex = null;
+    this.votes = [];
+    this.person = null;
+    this.uncertain = payload.uncertain === true;
+    this.emitSeats();
+    this.emitInfo();
+  }
+
   reset(): void {
     this.votes = [];
     this.latest = null;
@@ -113,6 +153,8 @@ export class LiveSeatFeed implements SeatFeed {
     this.stableIndex = null;
     this.person = null;
     this.uncertain = false;
+    this.bits = null;
+    this.mode = 'single';
     this.lastTs = Date.now();
     this.emitSeats();
     this.emitInfo();
@@ -126,7 +168,9 @@ export class LiveSeatFeed implements SeatFeed {
       stable: this.stableIndex === null ? null : classSeatIds[this.stableIndex],
       stableClass: this.stableIndex === null ? null : seatClasses[this.stableIndex],
       person: this.person,
-      uncertain: this.uncertain
+      uncertain: this.uncertain,
+      bits: this.bits,
+      mode: this.mode
     };
   }
 
@@ -154,6 +198,12 @@ export class LiveSeatFeed implements SeatFeed {
     return probabilities && probabilities.length > 0 && probabilities.every(Number.isFinite) ? probabilities : null;
   }
 
+  private booleans(value: unknown): boolean[] | null {
+    return Array.isArray(value) && value.length === 4 && value.every((item) => typeof item === 'boolean')
+      ? (value as boolean[])
+      : null;
+  }
+
   private personName(value: unknown): string | null {
     if (typeof value !== 'string' || !value.trim() || value.trim().toLowerCase() === 'n/a') return null;
     return value.trim();
@@ -161,6 +211,13 @@ export class LiveSeatFeed implements SeatFeed {
 
   private snapshot(): SeatState {
     const seats = Object.fromEntries(seatIds.map((id) => [id, false])) as Record<SeatId, boolean>;
+    if (this.mode === 'multilabel') {
+      this.bits?.occupied.forEach((occupied, index) => {
+        const seat = classSeatIds[index];
+        if (occupied && seat) seats[seat] = true;
+      });
+      return { seats, timestamp: this.lastTs };
+    }
     const stableSeat = this.stableIndex === null ? null : classSeatIds[this.stableIndex];
     if (stableSeat) seats[stableSeat] = true;
     const person = this.latest?.person?.trim();

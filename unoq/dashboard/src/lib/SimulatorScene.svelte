@@ -36,12 +36,19 @@
   let liveNote = $state('');
   let liveModel = $state('');
   let liveRate = $state(0);
-  let liveInfo = $state<LiveInfo>({ latest: null, raw: null, stablePrediction: null, stable: null, stableClass: null, person: null, uncertain: false });
-  let models = $state<{ name: string; modifiedMs: number }[]>([]);
+  let liveInfo = $state<LiveInfo>({ latest: null, raw: null, stablePrediction: null, stable: null, stableClass: null, person: null, uncertain: false, bits: null, mode: 'single' });
+  let models = $state<{ name: string; modifiedMs: number; mode: string }[]>([]);
   let selectedModel = $state('');
   let smoothingWindow = $state(5);
+  let liveMode = $state('');
   let statusTimer: ReturnType<typeof setTimeout> | undefined;
   const classIndexForSeat: Record<SeatId, number> = { front_left: 0, front_right: 1, rear_right: 2, rear_left: 3 };
+  // Bit order FrontLeft, FrontRight, BackRight, BackLeft displayed as FL/FR/RR/RL.
+  const bitShorts = ['FL', 'FR', 'RR', 'RL'] as const;
+  const multilabelLive = $derived(liveMode === 'multilabel' || liveInfo.mode === 'multilabel');
+  const multiOccupied = $derived(multilabelLive && liveInfo.bits
+    ? (liveInfo.bits.occupied.map((on, index) => (on ? bitShorts[index] : null)).filter(Boolean) as string[])
+    : null);
 
   const occupiedCount = $derived(seatState ? seatIds.filter((id) => seatState!.seats[id]).length : 0);
   const occupiedShort = $derived(seatState ? seatDefs.filter((def) => seatState!.seats[def.id]).map((def) => def.short).join('+') || 'NONE' : '—');
@@ -64,7 +71,7 @@
       const list = await api.inferenceModels();
       models = Array.isArray(list)
         ? (list as Record<string, unknown>[])
-            .map((row) => ({ name: String(row.name ?? ''), modifiedMs: Number(row.modified_ms ?? 0) }))
+            .map((row) => ({ name: String(row.name ?? ''), modifiedMs: Number(row.modified_ms ?? 0), mode: String(row.mode ?? '') }))
             .filter((row) => row.name)
         : [];
     } catch {
@@ -84,6 +91,7 @@
     liveStatus = status;
     liveError = status === 'error' ? message || 'Live inference failed' : '';
     liveNote = status === 'off' ? message : '';
+    liveMode = '';
     live.reset();
     resubscribeFeed?.();
     autoMode = mock?.auto ?? false;
@@ -98,6 +106,7 @@
       liveRate = Number(status.rate_hz ?? 0) || 0;
       const features = status.features as Record<string, unknown> | undefined;
       smoothingWindow = Number(features?.smoothing_window ?? smoothingWindow) || smoothingWindow;
+      liveMode = String(features?.mode ?? liveMode);
       const phase = String(status.status ?? '');
       if (phase === 'running' || phase === 'starting') {
         liveStatus = phase;
@@ -119,6 +128,7 @@
     liveModel = String(status.model ?? '');
     const features = status.features as Record<string, unknown> | undefined;
     smoothingWindow = Number(features?.smoothing_window ?? smoothingWindow) || smoothingWindow;
+    liveMode = String(features?.mode ?? '');
     liveError = '';
     liveNote = '';
     resubscribeFeed?.();
@@ -489,7 +499,7 @@
       <label class="model-pick">MODEL
         <select bind:value={selectedModel} disabled={liveActive || liveStatus === 'starting' || !models.length}>
           {#if !models.length}<option value="">NO CHECKPOINTS FOUND</option>{/if}
-          {#each models as model (model.name)}<option value={model.name}>{model.name}</option>{/each}
+          {#each models as model (model.name)}<option value={model.name}>{model.name}{model.mode ? ` · ${model.mode.toUpperCase()}` : ''}</option>{/each}
         </select>
       </label>
       <label class="model-pick smoothing-window">COMMON MAJORITY WINDOW <output>{smoothingWindow} snapshot{smoothingWindow === 1 ? '' : 's'}</output>
@@ -498,12 +508,27 @@
       {#if liveActive}
         <dl class="status live-readout">
           <dt>STATE</dt><dd class:uncertain={liveInfo.uncertain}>{liveStatus === 'running' ? (liveInfo.uncertain ? 'RUNNING · UNCERTAIN' : 'RUNNING') : 'STARTING'}</dd>
+          <dt>MODE</dt><dd>{multilabelLive ? 'MULTI-PERSON' : 'SINGLE-PERSON'}</dd>
           <dt>MODEL</dt><dd class="wrap">{liveModel || selectedModel}</dd>
           <dt>RATE</dt><dd>{liveRate.toFixed(1)} Hz</dd>
-          <dt>PREDICTED</dt><dd>{liveInfo.latest?.seat.replace(/(?!^)([A-Z])/g, ' $1').toUpperCase() ?? (liveInfo.person ? 'PERSON ONLY' : '—')}</dd>
+          <dt>PREDICTED</dt><dd>{multiOccupied ? (multiOccupied.length ? `${multiOccupied.join('+')} · ${multiOccupied.length}/4` : 'EMPTY CABIN') : liveInfo.latest?.seat.replace(/(?!^)([A-Z])/g, ' $1').toUpperCase() ?? (liveInfo.person ? 'PERSON ONLY' : '—')}</dd>
           {#if liveInfo.person}<dt>PERSON</dt><dd>{liveInfo.person}</dd>{/if}
         </dl>
-        {#if liveInfo.latest}
+        {#if multilabelLive && liveInfo.bits}
+          {@const bits = liveInfo.bits}
+          <div class="confidence">
+            {#each seatDefs as def (def.id)}
+              {@const index = classIndexForSeat[def.id]}
+              {@const prob = bits.probs[index] ?? 0}
+              <div class="bar" class:top={bits.occupied[index]} class:uncertain={bits.uncertainBits[index]}>
+                <span>{def.short}</span>
+                <i><b style={`width:${Math.min(100, Math.round(prob * 100))}%`}></b></i>
+                <small>{Math.round(prob * 100)}%</small>
+              </div>
+            {/each}
+          </div>
+          <p class="note">INDEPENDENT PER-SEAT PROBABILITIES · DO NOT SUM TO 100% · FILLED = OVER THRESHOLD ({Math.round(bits.threshold * 100)}%)</p>
+        {:else if liveInfo.latest}
           <div class="confidence">
             {#each seatDefs as def (def.id)}
               {@const prob = liveInfo.latest.probs[classIndexForSeat[def.id]] ?? 0}
@@ -518,7 +543,11 @@
       {/if}
       {#if liveStatus === 'error'}<p class="note error-note">{liveError}</p>{/if}
       {#if liveNote}<p class="note">{liveNote}</p>{/if}
-      <p class="note">LIVE MODEL · SINGLE OCCUPANT OR EMPTY · backend stable predictions are used directly; raw-only output falls back to local majority smoothing.</p>
+      {#if multilabelLive}
+        <p class="note">LIVE MODEL · MULTI-PERSON · four independent seat detectors; any combination including an empty cabin is possible.</p>
+      {:else}
+        <p class="note">LIVE MODEL · SINGLE OCCUPANT OR EMPTY · backend stable predictions are used directly; raw-only output falls back to local majority smoothing.</p>
+      {/if}
 
       <div class="test-block" class:overridden={liveActive}>
         <p class="section-label">TEST CONTROLS{liveActive ? ' · OVERRIDDEN BY LIVE' : ''}</p>
@@ -593,6 +622,8 @@
   .confidence .bar small{text-align:right}
   .confidence .bar.top{color:#45e0c1}
   .confidence .bar.top b{background:#45e0c1;box-shadow:0 0 7px #45e0c144}
+  .confidence .bar.uncertain{color:#f4bd62}
+  .confidence .bar.uncertain b{background:#f4bd62;box-shadow:0 0 7px #f4bd6244}
   .error-note{color:#f4bd62}
   .section-label{margin:14px 0 8px;padding-top:10px;border-top:1px solid #1c282d;color:#718188;font:8px DM Mono,monospace;letter-spacing:.1em}
   .test-block.overridden{opacity:.45}

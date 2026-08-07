@@ -22,20 +22,44 @@
     error: string;
     durationS: number;
     seat: SeatClass | null;
+    seats: SeatClass[];
     person: string;
     exclude: boolean;
     hasCir: boolean;
   };
 
+  // Occupied seats in multilabel bit order (Empty is never a bit).
+  const occupiedSeats = seatClasses.slice(0, 4) as SeatClass[];
+  const seatShort: Record<SeatClass, string> = { FrontLeft: 'FL', FrontRight: 'FR', BackRight: 'RR', BackLeft: 'RL', Empty: 'E' };
+
   let clips = $state<ClipRow[]>([]);
   let selectedIds = $state<number[]>([]);
   let clipsMessage = $state('');
+
+  const KIND_STORAGE_KEY = 'heimdall.training.classifierKind';
+  function storedKind(): 'single' | 'multilabel' {
+    try {
+      return localStorage.getItem(KIND_STORAGE_KEY) === 'multilabel' ? 'multilabel' : 'single';
+    } catch {
+      return 'single';
+    }
+  }
+  let classifierKind = $state<'single' | 'multilabel'>(storedKind());
+  const multiKind = $derived(classifierKind === 'multilabel');
+  $effect(() => {
+    try {
+      localStorage.setItem(KIND_STORAGE_KEY, classifierKind);
+    } catch { /* storage blocked; the selector still works for this session */ }
+  });
 
   let captureName = $state('');
   let captureNote = $state('');
   let captureDurationS = $state(10);
   let captureSeat = $state<SeatClass | ''>('');
   let capturePerson = $state('');
+  // Multi-person capture tag: selected occupied seats, or the explicit Empty.
+  let captureSeats = $state<SeatClass[]>([]);
+  let captureEmpty = $state(false);
   let captureState = $state<'idle' | 'capturing'>('idle');
   let captureProgress = $state(0);
   let captureMessage = $state('');
@@ -70,7 +94,37 @@
   const personConfusion = $derived(matrixFrom(trainingResult?.person_confusion ?? trainingResult?.person_confusion_matrix, personClasses.length));
   const seatAccuracy = $derived(numberFrom(trainingResult?.seat_accuracy, trainingResult?.seat_test_accuracy, trainingResult?.test_seat_accuracy, trainingResult?.test_accuracy));
   const personAccuracy = $derived(numberFrom(trainingResult?.person_accuracy, trainingResult?.person_test_accuracy, trainingResult?.test_person_accuracy));
-  const canTrain = $derived(selectedIds.length > 0 && !trainingRunning && captureState !== 'capturing');
+  // Multilabel results replace the confusion matrix with per-seat metrics.
+  const multilabelResult = $derived(trainingResult?.model_mode === 'multilabel' ? trainingResult : null);
+  const perSeatMetrics = $derived.by(() => {
+    const perSeat = multilabelResult?.per_seat as Record<string, Record<string, unknown>> | undefined;
+    if (!perSeat) return null;
+    const rows = occupiedSeats
+      .filter((seat) => typeof perSeat[seat] === 'object' && perSeat[seat] !== null)
+      .map((seat) => ({ seat, ...perSeat[seat] } as { seat: SeatClass } & Record<string, unknown>));
+    return rows.length === occupiedSeats.length ? rows : null;
+  });
+  const subsetAccuracy = $derived(numberFrom(multilabelResult?.subset_accuracy));
+  const meanBitAccuracy = $derived(numberFrom(multilabelResult?.mean_bit_accuracy));
+  // Person labels embedding a seat class name (or the TwoPeople marker) would
+  // corrupt the multilabel folder-name encoding; the backend rejects them at
+  // run start and the UI warns earlier.
+  function personCorrupts(person: string): boolean {
+    const sanitized = person.replace(/[^0-9A-Za-z]/g, '');
+    return [...occupiedSeats, 'Empty', 'TwoPeople'].some((name) => sanitized.includes(name));
+  }
+  const selectedMultiTagged = $derived(selectedClips.filter((clip) => clip.seats.length >= 2));
+  const selectedCorruptPersons = $derived(multiKind ? selectedClips.filter((clip) => personCorrupts(clip.person)) : []);
+  const modeMismatch = $derived.by(() => {
+    if (!multiKind && selectedMultiTagged.length) {
+      return `${selectedMultiTagged.length} SELECTED CLIP${selectedMultiTagged.length === 1 ? ' HAS' : 'S HAVE'} MULTI-SEAT TAGS · SWITCH TO MULTI-PERSON MODE OR RETAG`;
+    }
+    if (multiKind && selectedCorruptPersons.length) {
+      return `PERSON LABELS ON CLIP${selectedCorruptPersons.length === 1 ? '' : 'S'} ${selectedCorruptPersons.map((clip) => String(clip.id).padStart(6, '0')).join(', ')} CONTAIN A SEAT CLASS NAME · RENAME BEFORE MULTI-PERSON TRAINING`;
+    }
+    return '';
+  });
+  const canTrain = $derived(selectedIds.length > 0 && !trainingRunning && captureState !== 'capturing' && !modeMismatch);
 
   function canSelectClip(clip: ClipRow): boolean {
     return clip.status !== 'capturing';
@@ -99,6 +153,9 @@
       const tag = (v.training ?? null) as Record<string, unknown> | null;
       const manifest = (v.manifest ?? {}) as Record<string, unknown>;
       const seat = seatClasses.find((name) => name === tag?.seat) ?? null;
+      const taggedSeats = Array.isArray(tag?.seats)
+        ? occupiedSeats.filter((name) => (tag.seats as unknown[]).includes(name))
+        : seat && seat !== 'Empty' ? [seat] : [];
       return {
         id: Number(record.id),
         name: String(v.name ?? ''),
@@ -106,6 +163,7 @@
         error: String(v.error ?? ''),
         durationS: Number(v.duration_s ?? manifest.duration_s ?? 0),
         seat,
+        seats: taggedSeats,
         person: seat === 'Empty' ? '' : String(tag?.person ?? ''),
         exclude: tag?.exclude === true,
         hasCir: Number(manifest.aligned_cir_records ?? 0) > 0,
@@ -147,12 +205,25 @@
         const row = clips.find((clip) => clip.id === clipId);
         if (row?.status === 'complete') {
           captureProgress = 100;
-          const person = captureSeat === 'Empty' ? '' : capturePerson.trim();
-          if (captureSeat) {
-            await tag(clipId, captureSeat, person, false);
-            captureMessage = `Clip ${clipId} captured and tagged ${seatDisplay[captureSeat]}${person ? ` · ${person}` : ''}`;
+          if (multiKind) {
+            if (captureEmpty) {
+              await tag(clipId, 'Empty', '', false);
+              captureMessage = `Clip ${clipId} captured and tagged EMPTY`;
+            } else if (captureSeats.length) {
+              const person = captureSeats.length === 1 ? capturePerson.trim() : '';
+              await tagSeats(clipId, captureSeats, person, false);
+              captureMessage = `Clip ${clipId} captured and tagged ${captureSeats.map((seat) => seatDisplay[seat]).join(' + ')}${person ? ` · ${person}` : ''}`;
+            } else {
+              captureMessage = `Clip ${clipId} captured · assign seat tags to include it in training`;
+            }
           } else {
-            captureMessage = `Clip ${clipId} captured · assign a seat tag to include it in training`;
+            const person = captureSeat === 'Empty' ? '' : capturePerson.trim();
+            if (captureSeat) {
+              await tag(clipId, captureSeat, person, false);
+              captureMessage = `Clip ${clipId} captured and tagged ${seatDisplay[captureSeat]}${person ? ` · ${person}` : ''}`;
+            } else {
+              captureMessage = `Clip ${clipId} captured · assign a seat tag to include it in training`;
+            }
           }
           captureState = 'idle';
           return;
@@ -175,6 +246,42 @@
     } catch (error) {
       clipsMessage = error instanceof Error ? error.message : `Clip ${id} could not be tagged`;
     }
+  }
+
+  // Multi-person tags: one seat keeps the canonical single shape, two or more
+  // send the seats array (person is unavailable there), none removes the tag.
+  async function tagSeats(id: number, seats: SeatClass[], person: string, exclude: boolean) {
+    try {
+      if (!seats.length) await api.setClipTraining(id, { seat: null });
+      else if (seats.length === 1) await api.setClipTraining(id, { seat: seats[0], person, exclude });
+      else await api.setClipTraining(id, { seat: seats[0], seats, person: '', exclude });
+      await refreshClips();
+    } catch (error) {
+      clipsMessage = error instanceof Error ? error.message : `Clip ${id} could not be tagged`;
+    }
+  }
+
+  function toggleCaptureSeat(seat: SeatClass) {
+    captureEmpty = false;
+    captureSeats = captureSeats.includes(seat)
+      ? captureSeats.filter((name) => name !== seat)
+      : occupiedSeats.filter((name) => name === seat || captureSeats.includes(name));
+    if (captureSeats.length !== 1) capturePerson = '';
+  }
+
+  function toggleCaptureEmpty() {
+    captureEmpty = !captureEmpty;
+    if (captureEmpty) {
+      captureSeats = [];
+      capturePerson = '';
+    }
+  }
+
+  function toggleRowSeat(clip: ClipRow, seat: SeatClass) {
+    const seats = clip.seats.includes(seat)
+      ? clip.seats.filter((name) => name !== seat)
+      : occupiedSeats.filter((name) => name === seat || clip.seats.includes(name));
+    void tagSeats(clip.id, seats, seats.length === 1 ? clip.person : '', clip.exclude);
   }
 
   function setSelected(id: number, selected: boolean) {
@@ -215,7 +322,7 @@
     if (!canTrain) return;
     trainMessage = '';
     try {
-      const started = await api.startTraining({ clip_ids: [...selectedIds], variant, epochs, mode, architecture, link_mode: linkMode, taps_left: tapsLeft, taps_right: tapsRight, patience }) as Record<string, unknown>;
+      const started = await api.startTraining({ clip_ids: [...selectedIds], variant, epochs, mode: multiKind ? 'multilabel' : mode, architecture, link_mode: linkMode, taps_left: tapsLeft, taps_right: tapsRight, patience }) as Record<string, unknown>;
       runId = Number(started.run_id ?? 0);
       logLines = [];
       logNext = 0;
@@ -274,16 +381,40 @@
 </script>
 
 <section class="training-layout">
+  <div class="panel mode-bar">
+    <label>CLASSIFICATION MODE
+      <select bind:value={classifierKind} disabled={trainingRunning || captureState === 'capturing'}>
+        <option value="single">Single person</option>
+        <option value="multilabel">Multi person (multi-label)</option>
+      </select>
+    </label>
+    <p class="note">{multiKind ? 'ONE INDEPENDENT DETECTOR PER SEAT · TAG ANY SEAT COMBINATION INCLUDING EMPTY' : 'ONE OCCUPANT OR EMPTY · FIVE-CLASS CLASSIFIER'}</p>
+  </div>
   <article class="panel capture-panel">
     <header><span>CAPTURE LABELED CLIP</span><b>{captureState === 'capturing' ? `${Math.round(captureProgress)}%` : backendCaptureActive ? 'ACTIVE' : 'READY'}</b></header>
     <div class="panel-body">
       <label>NAME<input maxlength="120" bind:value={captureName} placeholder="Optional label" /></label>
       <label>NOTE<input maxlength="2000" bind:value={captureNote} placeholder="Optional context" /></label>
-      <div class="pair">
-        <label>LENGTH<select bind:value={captureDurationS}>{#each [5, 10, 15, 30, 60] as seconds}<option value={seconds}>{seconds} s</option>{/each}</select></label>
-        <label>SEAT TAG<select value={captureSeat} onchange={(e) => setCaptureSeat(e.currentTarget.value)}><option value="">— untagged —</option>{#each seatClasses as seat}<option value={seat}>{seatDisplay[seat]}</option>{/each}</select></label>
-      </div>
-      <label>PERSON<input maxlength="60" bind:value={capturePerson} disabled={captureSeat === 'Empty'} placeholder={captureSeat === 'Empty' ? 'N/A for empty' : 'Who is seated'} /></label>
+      {#if multiKind}
+        <div class="pair single">
+          <label>LENGTH<select bind:value={captureDurationS}>{#each [5, 10, 15, 30, 60] as seconds}<option value={seconds}>{seconds} s</option>{/each}</select></label>
+        </div>
+        <p class="chips-label">SEAT TAGS</p>
+        <div class="seat-chips">
+          {#each occupiedSeats as seat (seat)}
+            <button type="button" class:active={captureSeats.includes(seat)} onclick={() => toggleCaptureSeat(seat)}>{seatDisplay[seat]}</button>
+          {/each}
+          <button type="button" class="empty-chip" class:active={captureEmpty} onclick={toggleCaptureEmpty}>EMPTY</button>
+        </div>
+        <label>PERSON<input maxlength="60" bind:value={capturePerson} disabled={captureSeats.length !== 1 || captureEmpty} placeholder={captureEmpty ? 'N/A for empty' : captureSeats.length > 1 ? 'N/A · multiple occupants' : captureSeats.length === 1 ? 'Who is seated' : 'Pick exactly one seat first'} /></label>
+        {#if capturePerson && personCorrupts(capturePerson)}<p class="note error">PERSON NAMES MAY NOT CONTAIN A SEAT CLASS NAME OR "TWOPEOPLE" IN MULTI-PERSON MODE</p>{/if}
+      {:else}
+        <div class="pair">
+          <label>LENGTH<select bind:value={captureDurationS}>{#each [5, 10, 15, 30, 60] as seconds}<option value={seconds}>{seconds} s</option>{/each}</select></label>
+          <label>SEAT TAG<select value={captureSeat} onchange={(e) => setCaptureSeat(e.currentTarget.value)}><option value="">— untagged —</option>{#each seatClasses as seat}<option value={seat}>{seatDisplay[seat]}</option>{/each}</select></label>
+        </div>
+        <label>PERSON<input maxlength="60" bind:value={capturePerson} disabled={captureSeat === 'Empty'} placeholder={captureSeat === 'Empty' ? 'N/A for empty' : 'Who is seated'} /></label>
+      {/if}
       <button class="snapshot" onclick={capture} disabled={captureState === 'capturing' || backendCaptureActive}>{captureState === 'capturing' ? `CAPTURING ${Math.round(captureProgress)}%` : backendCaptureActive ? 'CAPTURE ALREADY ACTIVE' : `CAPTURE ${captureDurationS} S CLIP`}</button>
       <div class="capture-progress"><i style={`width:${captureProgress}%`}></i></div>
       {#if captureMessage}<p class="note" class:error={captureError}>{captureMessage}</p>{/if}
@@ -313,12 +444,22 @@
               <td class="mono">{String(clip.id).padStart(6, '0')}</td>
               <td class="name">{clip.name || '—'}</td>
               <td>
-                <select value={clip.seat ?? ''} disabled={clip.status !== 'complete'} onchange={(e) => { const seat = seatFrom(e.currentTarget.value); void tag(clip.id, seat, seat === 'Empty' ? '' : clip.person, clip.exclude); }}>
-                  <option value="">—</option>
-                  {#each seatClasses as seat}<option value={seat}>{seatDisplay[seat]}</option>{/each}
-                </select>
+                {#if multiKind}
+                  <div class="row-chips">
+                    {#each occupiedSeats as seat, index (seat)}
+                      <button type="button" class:active={clip.seats.includes(seat)} disabled={clip.status !== 'complete'} title={seatDisplay[seat]} onclick={() => toggleRowSeat(clip, seat)}>{['FL', 'FR', 'RR', 'RL'][index]}</button>
+                    {/each}
+                    <button type="button" class="empty-chip" class:active={clip.seat === 'Empty'} disabled={clip.status !== 'complete'} title="Empty cabin" onclick={() => void tag(clip.id, clip.seat === 'Empty' ? null : 'Empty', '', clip.exclude)}>E</button>
+                  </div>
+                {:else}
+                  <select value={clip.seats.length >= 2 ? '__multi__' : clip.seat ?? ''} disabled={clip.status !== 'complete'} onchange={(e) => { const seat = seatFrom(e.currentTarget.value); void tag(clip.id, seat, seat === 'Empty' ? '' : clip.person, clip.exclude); }}>
+                    <option value="">—</option>
+                    {#if clip.seats.length >= 2}<option value="__multi__">{clip.seats.map((seat) => seatShort[seat]).join('+')} · MULTI</option>{/if}
+                    {#each seatClasses as seat}<option value={seat}>{seatDisplay[seat]}</option>{/each}
+                  </select>
+                {/if}
               </td>
-              <td><input value={clip.person} maxlength="60" disabled={!clip.seat || clip.seat === 'Empty'} placeholder={clip.seat === 'Empty' ? 'N/A' : '—'} onchange={(e) => void tag(clip.id, clip.seat, e.currentTarget.value.trim(), clip.exclude)} /></td>
+              <td><input value={clip.person} maxlength="60" disabled={clip.seats.length >= 2 || (multiKind ? clip.seats.length !== 1 : (!clip.seat || clip.seat === 'Empty'))} placeholder={clip.seat === 'Empty' ? 'N/A' : clip.seats.length >= 2 ? 'N/A · multiple' : '—'} onchange={(e) => void tag(clip.id, clip.seat, e.currentTarget.value.trim(), clip.exclude)} /></td>
               <td class="mono">{clip.durationS ? `${clip.durationS}s` : '—'}</td>
             </tr>
           {/each}
@@ -333,36 +474,88 @@
     <header><span>TRAIN CIR CLASSIFIER</span><b class:running={trainingRunning}>{trainingStatus.toUpperCase()}</b></header>
     <div class="panel-body">
       <div class="coverage">
-        {#each seatClasses as seat}
-          <div class:missing={!selectedTrainable.some((clip) => clip.seat === seat)}>
-            <span>{seatDisplay[seat]}</span>
-            <b>{selectedTrainable.filter((clip) => clip.seat === seat).length}</b>
+        {#if multiKind}
+          {#each occupiedSeats as seat}
+            <div class:missing={!selectedTrainable.some((clip) => clip.seats.includes(seat))}>
+              <span>{seatDisplay[seat]}</span>
+              <b>{selectedTrainable.filter((clip) => clip.seats.includes(seat)).length}</b>
+            </div>
+          {/each}
+          <div class:missing={!selectedTrainable.some((clip) => clip.seat === 'Empty')}>
+            <span>EMPTY</span>
+            <b>{selectedTrainable.filter((clip) => clip.seat === 'Empty').length}</b>
           </div>
-        {/each}
+        {:else}
+          {#each seatClasses as seat}
+            <div class:missing={!selectedTrainable.some((clip) => clip.seat === seat)}>
+              <span>{seatDisplay[seat]}</span>
+              <b>{selectedTrainable.filter((clip) => clip.seat === seat).length}</b>
+            </div>
+          {/each}
+        {/if}
       </div>
-      <div class="pair">
-        <label>VARIANT<select bind:value={variant} disabled={trainingRunning}><option value="raw">raw</option><option value="calibrated">calibrated</option></select></label>
-        <label>MODEL MODE<select bind:value={mode} disabled={trainingRunning}><option value="seat">seat</option><option value="person">person</option><option value="separate">separate</option><option value="joint">joint</option></select></label>
-      </div>
-      <div class="pair">
-        <label>ARCHITECTURE<select bind:value={architecture} disabled={trainingRunning}><option value="standard">standard</option><option value="lite">lite</option></select></label>
-        <label>LINK MODE<select bind:value={linkMode} disabled={trainingRunning}><option value="canonical">canonical · one per reciprocal link</option><option value="directed">directed</option></select></label>
-      </div>
-      <div class="pair triple">
-        <label>TAPS LEFT<input type="number" min="0" bind:value={tapsLeft} disabled={trainingRunning} /></label>
-        <label>TAPS RIGHT<input type="number" min="0" bind:value={tapsRight} disabled={trainingRunning} /></label>
-        <label>PATIENCE<input type="number" min="0" bind:value={patience} disabled={trainingRunning} /></label>
-      </div>
-      <div class="pair single">
-        <label>EPOCHS<input type="number" min="1" max="500" bind:value={epochs} disabled={trainingRunning} /></label>
-      </div>
+      {#if multiKind}
+        <div class="pair triple">
+          <label>VARIANT<select bind:value={variant} disabled={trainingRunning}><option value="raw">raw</option><option value="calibrated">calibrated</option></select></label>
+          <label>PATIENCE<input type="number" min="0" bind:value={patience} disabled={trainingRunning} /></label>
+          <label>EPOCHS<input type="number" min="1" max="500" bind:value={epochs} disabled={trainingRunning} /></label>
+        </div>
+        <p class="note">MULTI-LABEL · FIXED 20-LINK / 64-TAP FULL-WINDOW GEOMETRY · ONE INDEPENDENT DETECTOR PER SEAT</p>
+      {:else}
+        <div class="pair">
+          <label>VARIANT<select bind:value={variant} disabled={trainingRunning}><option value="raw">raw</option><option value="calibrated">calibrated</option></select></label>
+          <label>MODEL MODE<select bind:value={mode} disabled={trainingRunning}><option value="seat">seat</option><option value="person">person</option><option value="separate">separate</option><option value="joint">joint</option></select></label>
+        </div>
+        <div class="pair">
+          <label>ARCHITECTURE<select bind:value={architecture} disabled={trainingRunning}><option value="standard">standard</option><option value="lite">lite</option></select></label>
+          <label>LINK MODE<select bind:value={linkMode} disabled={trainingRunning}><option value="canonical">canonical · one per reciprocal link</option><option value="directed">directed</option></select></label>
+        </div>
+        <div class="pair triple">
+          <label>TAPS LEFT<input type="number" min="0" bind:value={tapsLeft} disabled={trainingRunning} /></label>
+          <label>TAPS RIGHT<input type="number" min="0" bind:value={tapsRight} disabled={trainingRunning} /></label>
+          <label>PATIENCE<input type="number" min="0" bind:value={patience} disabled={trainingRunning} /></label>
+        </div>
+        <div class="pair single">
+          <label>EPOCHS<input type="number" min="1" max="500" bind:value={epochs} disabled={trainingRunning} /></label>
+        </div>
+      {/if}
       <button class="snapshot" onclick={startTraining} disabled={!canTrain}>{trainingRunning ? 'TRAINING IN PROGRESS…' : 'TRAIN MODEL'}</button>
       {#if selectedIds.length === 0}<p class="note">SELECT AT LEAST ONE CAPTURED CLIP TO TRAIN</p>{/if}
+      {#if modeMismatch}<p class="note error">{modeMismatch}</p>{/if}
       {#if trainMessage}<p class="note error">{trainMessage}</p>{/if}
       {#if trainingStatus === 'failed'}
         <p class="note error">{String(training?.error ?? 'Training failed')}</p>
       {/if}
-      {#if trainingResult}
+      {#if multilabelResult}
+        <dl class="result">
+          <dt>SUBSET ACCURACY</dt>
+          <dd class="accuracy">{subsetAccuracy !== null ? `${(subsetAccuracy * 100).toFixed(2)}% · ALL FOUR SEATS CORRECT` : '—'}</dd>
+          <dt>MEAN BIT ACCURACY</dt>
+          <dd class="accuracy">{meanBitAccuracy !== null ? `${(meanBitAccuracy * 100).toFixed(2)}%` : '—'}</dd>
+          <dt>SAVED MODEL</dt>
+          <dd class="path">{String(multilabelResult.model_path ?? '—')}</dd>
+        </dl>
+        {#if perSeatMetrics}
+          <div class="confusion-wrap">
+            <p class="note">PER-SEAT METRICS · INDEPENDENT DETECTORS</p>
+            <table class="confusion">
+              <thead><tr><th></th><th>PRECISION</th><th>RECALL</th><th>F1</th><th>ACC</th><th>SUPPORT</th></tr></thead>
+              <tbody>
+                {#each perSeatMetrics as row (row.seat)}
+                  <tr>
+                    <th>{seatDisplay[row.seat]}</th>
+                    <td>{(Number(row.precision) * 100).toFixed(2)}%</td>
+                    <td>{(Number(row.recall) * 100).toFixed(2)}%</td>
+                    <td>{(Number(row.f1) * 100).toFixed(2)}%</td>
+                    <td>{(Number(row.accuracy) * 100).toFixed(2)}%</td>
+                    <td>{Number(row.support)}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+      {:else if trainingResult}
         <dl class="result">
           <dt>SEAT ACCURACY</dt>
           <dd class="accuracy">{seatAccuracy !== null ? `${(seatAccuracy * 100).toFixed(2)}%` : '—'}</dd>
@@ -411,11 +604,15 @@
     display: grid;
     gap: 7px;
     grid-template-columns: minmax(330px, 400px) minmax(0, 1fr);
-    /* Both rows take fixed shares of the viewport so a growing clips table
-       can never squeeze the train/log row out; panels scroll internally. */
-    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-    grid-template-areas: 'capture clips' 'train log';
+    /* Both content rows take fixed shares of the viewport so a growing clips
+       table can never squeeze the train/log row out; panels scroll internally. */
+    grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas: 'modebar modebar' 'capture clips' 'train log';
   }
+  .mode-bar { grid-area: modebar; display: flex; align-items: center; gap: 14px; padding: 8px 13px; }
+  .mode-bar label { display: flex; align-items: center; gap: 10px; color: #99aaae; font: 9px DM Mono; letter-spacing: .08em; white-space: nowrap; }
+  .mode-bar select { font: 11px DM Mono; }
+  .mode-bar .note { margin: 0; }
   .capture-panel { grid-area: capture; }
   .clips-panel { grid-area: clips; }
   .train-panel { grid-area: train; }
@@ -451,6 +648,16 @@
   tbody select, tbody input:not([type='checkbox']) { width: 100%; min-width: 90px; font: 9px DM Mono; }
   td.empty { padding: 16px 10px; color: var(--muted); letter-spacing: .1em; }
 
+  .chips-label { margin: 10px 13px 0; color: #99aaae; font: 9px DM Mono; letter-spacing: .08em; }
+  .seat-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 13px 0; }
+  .seat-chips button { border: 1px solid #26373d; background: #0b1215; color: #718188; padding: 7px 9px; font: 9px DM Mono; letter-spacing: .06em; cursor: pointer; }
+  .seat-chips button.active { border-color: var(--teal); background: #0d211e; color: var(--teal); }
+  .seat-chips button.empty-chip.active { border-color: var(--amber); background: #211a0d; color: var(--amber); }
+  .row-chips { display: flex; gap: 3px; }
+  .row-chips button { border: 1px solid #26373d; background: #0b1215; color: #718188; min-width: 22px; padding: 3px 0; font: 8px DM Mono; cursor: pointer; }
+  .row-chips button.active { border-color: var(--teal); background: #0d211e; color: var(--teal); }
+  .row-chips button.empty-chip.active { border-color: var(--amber); background: #211a0d; color: var(--amber); }
+  .row-chips button:disabled { opacity: .4; cursor: not-allowed; }
   .coverage { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin: 10px 13px 0; }
   .coverage div { display: flex; align-items: center; justify-content: space-between; padding: 7px 9px; border: 1px solid #33564f; background: #0e1a18; font: 8px DM Mono; letter-spacing: .08em; color: #99aaae; }
   .coverage div b { color: var(--teal); font-size: 11px; }
@@ -478,12 +685,13 @@
 
   /* Short viewports: let the whole tab scroll instead of crushing panels. */
   @media (min-width: 901px) and (max-height: 640px) {
-    .training-layout { overflow-y: auto; grid-template-rows: minmax(300px, auto) minmax(300px, auto); }
+    .training-layout { overflow-y: auto; grid-template-rows: auto minmax(300px, auto) minmax(300px, auto); }
     .table-scroll { max-height: 45vh; }
   }
   @media (max-width: 900px) {
-    .training-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(3, auto) minmax(240px, 1fr); grid-template-areas: 'capture' 'clips' 'train' 'log'; overflow-y: auto; }
+    .training-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(4, auto) minmax(240px, 1fr); grid-template-areas: 'modebar' 'capture' 'clips' 'train' 'log'; overflow-y: auto; }
     .table-scroll { max-height: 300px; }
     .pair.triple { grid-template-columns: 1fr 1fr; }
+    .mode-bar { flex-wrap: wrap; }
   }
 </style>
