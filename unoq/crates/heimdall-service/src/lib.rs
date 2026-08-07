@@ -1,5 +1,6 @@
 pub mod api;
 pub mod archive;
+pub mod camera;
 pub mod clips;
 pub mod inference;
 pub mod live_agent;

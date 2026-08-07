@@ -10,6 +10,7 @@ build = "build.rs"
 anyhow.workspace = true
 axum.workspace = true
 flatbuffers.workspace = true
+futures-util.workspace = true
 heimdall-dsp = { path = "../heimdall-dsp" }
 heimdall-protocol = { path = "../heimdall-protocol" }
 libc.workspace = true

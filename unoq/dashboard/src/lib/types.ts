@@ -10,6 +10,7 @@ export const tabs = [
   'Distance Calibration',
   'Radar Map',
   'Training',
+  'Camera',
   'Presence Detection'
 ] as const;
 
@@ -42,6 +43,27 @@ export type SeatState = { seats: Record<SeatId, boolean>; people?: Partial<Recor
 // "Rear Left"/"Rear Right" but always sends these identifiers.
 export const seatClasses = ['FrontLeft', 'FrontRight', 'BackRight', 'BackLeft', 'Empty'] as const;
 export type SeatClass = (typeof seatClasses)[number];
+
+export type CameraSessionSummary = {
+  id: string;
+  person: string;
+  status: 'recording' | 'complete' | 'failed';
+  started_ns: number;
+  stopped_ns?: number | null;
+  error?: string | null;
+};
+
+export type CameraStatus = {
+  enabled: boolean;
+  device: string | null;
+  width: number;
+  height: number;
+  fps: number;
+  state: 'disabled' | 'idle' | 'recording' | 'error';
+  session: CameraSessionSummary | null;
+  preview_available: boolean;
+  error: string | null;
+};
 
 export type TrainingVariant = 'raw' | 'calibrated';
 export type TrainingMode = 'seat' | 'person' | 'separate' | 'joint' | 'multilabel';

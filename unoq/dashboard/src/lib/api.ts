@@ -1,5 +1,5 @@
 import { decodeEnvelopes } from './envelope';
-import type { Envelope, SeatClass, StartTrainingPayload, StreamStatus, Tab } from './types';
+import type { CameraSessionSummary, CameraStatus, Envelope, SeatClass, StartTrainingPayload, StreamStatus, Tab } from './types';
 
 export type BootstrapData = { health?: unknown; topology?: unknown; distanceHistory?: unknown; settings?: unknown; calibration?: unknown };
 
@@ -17,6 +17,7 @@ const tabTopics = (tab: Tab): string[] => {
     case 'Radar Map': return ['instantaneous-cir'];
     case 'Presence Detection': return ['seat-inference'];
     case 'Training': return [];
+    case 'Camera': return [];
   }
 };
 
@@ -55,6 +56,11 @@ export class HeimdallApi {
     return response.json() as Promise<T>;
   }
 
+  async delete(path: string): Promise<void> {
+    const response = await fetch(`${this.base}${path}`, { method: 'DELETE', headers: { Accept: 'application/json' } });
+    if (!response.ok && response.status !== 404) throw new Error(`DELETE ${path}: HTTP ${response.status}`);
+  }
+
   putSettings(value: unknown): Promise<unknown> { return this.send('/settings', 'PUT', value); }
   boardStatus(): Promise<unknown> { return this.get('/board'); }
   freezeBoard(): Promise<unknown> { return this.send('/board/freeze', 'POST', {}); }
@@ -70,8 +76,7 @@ export class HeimdallApi {
   getClips(): Promise<unknown> { return this.get('/clips'); }
   clipDownload(id: number): string { return `${this.base}/clips/${id}`; }
   async deleteClip(id: number): Promise<void> {
-    const response=await fetch(`${this.base}/clips/${id}`,{method:'DELETE'});
-    if (!response.ok && response.status !== 404) throw new Error(`DELETE /clips/${id}: HTTP ${response.status}`);
+    return this.delete(`/clips/${id}`);
   }
   setClipTraining(id: number, payload: { seat: SeatClass | null; seats?: SeatClass[]; person?: string; exclude?: boolean }): Promise<unknown> {
     return this.send(`/clips/${id}/training`, 'POST', payload);
@@ -84,6 +89,16 @@ export class HeimdallApi {
   inferenceStatus(): Promise<unknown> { return this.get('/inference/status'); }
   startInference(model: string, smoothingWindow = 5): Promise<unknown> { return this.send('/inference/start', 'POST', { model, smoothing_window: smoothingWindow }); }
   stopInference(): Promise<unknown> { return this.send('/inference/stop', 'POST', {}); }
+  cameraStatus(): Promise<CameraStatus> { return this.get('/camera/status'); }
+  cameraSessions(): Promise<CameraSessionSummary[] | { sessions: CameraSessionSummary[] }> { return this.get('/camera/sessions'); }
+  startCameraSession(person: string): Promise<CameraSessionSummary> { return this.send('/camera/sessions', 'POST', { person, consent: true }); }
+  cameraSessionEvent(id: string, payload: { kind: string; seat?: SeatClass; note?: string }): Promise<unknown> {
+    return this.send(`/camera/sessions/${encodeURIComponent(id)}/events`, 'POST', payload);
+  }
+  stopCameraSession(id: string): Promise<unknown> { return this.send(`/camera/sessions/${encodeURIComponent(id)}/stop`, 'POST', {}); }
+  deleteCameraSession(id: string): Promise<void> { return this.delete(`/camera/sessions/${encodeURIComponent(id)}`); }
+  cameraPreviewUrl(cacheKey?: number): string { return `${this.base}/camera/frame.jpg${cacheKey === undefined ? '' : `?t=${cacheKey}`}`; }
+  cameraVideoUrl(id: string): string { return `${this.base}/camera/sessions/${encodeURIComponent(id)}/video`; }
 
   connect(): void {
     this.stopped = false;

@@ -58,6 +58,7 @@ deployed UNO Q.
 | FlatBuffers JS | 25.9.23 | npm package, reserved for generated schemas | Browser binary telemetry decoder | [npm](https://www.npmjs.com/package/flatbuffers/v/25.9.23) |
 | FlatBuffers Rust | 25.12.19 | Cargo crate | Server binary telemetry encoder | [crates.io](https://crates.io/crates/flatbuffers/25.12.19) |
 | Zig | 0.15.2 | Windows ARM64 / Linux ARM64 | Cross compiler/linker on the Snapdragon host and native linker on UNO Q | [Zig 0.15.2](https://ziglang.org/download/0.15.2/release-notes.html) |
+| FFmpeg | 8.0 full build | Windows x86-64 under ARM64 emulation | Service-owned DirectShow capture, H.264 session video, and JPEG preview | [Gyan.dev package](https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.0-full_build.7z) |
 
 Exact application dependency checksums are locked by `unoq/Cargo.lock` and
 `unoq/dashboard/package-lock.json`. Before acquiring an ARM64 build container
@@ -181,6 +182,7 @@ add the installer files themselves to Git.
 | `windows-arm64/JLink_Windows_V962_arm64.exe` | 9.62 | Windows ARM64 | `0C79A68C64FF654787A31CFEBAA8D2A93CC3D8D7F67AF2D4558831C18B489F8B` | SEGGER J-Link installer |
 | `windows-x86_64/JLink_Windows_V962_x86_64.exe` | 9.62 | Windows x86-64 | `50F44E977285D76D45BB0BAEBE4C7867C96E6C9167112248093C3B18D7A7A137` | SEGGER fallback installer |
 | `windows-x86_64/zadig-2.9.exe` | 2.9 | Windows x86-64 | `4ECAA95DF3DA3621486A043AEF8B3050B8BAFE7C901402871E816229EF82039B` | WinUSB workaround; use only for J-Link MI_02 |
+| `windows-x86_64/ffmpeg-8.0-full_build.7z` | 8.0 | Windows x86-64 | `973DB2088FC8DACC927443A95E1DDBFC686170A7E748D0AC810AE5AB81587B30` | Camera-session recording; validated under Windows ARM64 emulation |
 | `linux-arm64/JLink_Linux_V962_arm64.deb` | 9.62 | Linux ARM64 | `F4BD3F3DC7EAD379EB9BC7BDF858CF8B1296FB82573B5A04B5A7248AA8877F74` | UNO Q J-Link package |
 | `linux-arm64/rustup-init-aarch64-unknown-linux-gnu` | current rustup bootstrap, fetched 2026-07-27 | Linux ARM64 | `9732D6C5E2A098D3521FCA8145D826AE0AAA067EF2385EAD08E6FEAC88FA5792` | Official Rust bootstrap; install pinned Rust 1.93.1 |
 | `common-python/torch-2.13.0-cp310-cp310-win_amd64.whl` | 2.13.0 | CPython 3.10 Windows x86-64 | `2BD30B6B730D987FA386CE3898933762C5CB8CC82EB0535211D787CC3CE2DFEB` | Neural-recon CPU-only torch |

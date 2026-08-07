@@ -1,6 +1,7 @@
 # UNO Q Runtime
 
-This directory contains the Linux-side Heimdall runtime. Its primary seams are:
+This directory contains the Heimdall runtime shared by the UNO Q Linux agent
+and the Windows ARM64 processing server. Its primary seams are:
 
 ```text
 CDC adapter -> frame decoder -> canonical observation stream -> fusion/storage
@@ -44,10 +45,40 @@ user's `@reboot` crontab entry instead.
 The dashboard and API listen on port 8080. Runtime data is stored outside the
 repository under `/home/arduino/heimdall-data`.
 
-Protected captures retain complete USB records for 30 seconds before and after
-the trigger. Use `POST /api/v1/clips` to arm a capture, `GET /api/v1/clips` to
-inspect progress, and `GET` or `DELETE /api/v1/clips/{id}` to download or remove
-a completed ZIP.
+Protected captures retain complete post-trigger USB records for a requested
+1-60 second interval. Use `POST /api/v1/clips` to arm a capture,
+`GET /api/v1/clips` to inspect progress, and `GET` or `DELETE
+/api/v1/clips/{id}` to download or remove a completed ZIP.
+
+## Camera-assisted collection
+
+The optional Logitech camera path runs only in `heimdall-service server` on the
+Windows Snapdragon host. The UNO Q `agent` and monolithic Linux `serve` command
+do not open a camera. Enable the detected Brio 101 in the foreground with:
+
+```powershell
+.\tools\run-windows-server.ps1 -CameraDevice 'Brio 101' -Ffmpeg 'C:\Users\anand\scoop\apps\ffmpeg\current\bin\ffmpeg.exe'
+```
+
+For the logon task, pass the same `-CameraDevice` and `-Ffmpeg` arguments to
+`install-windows-server-task.ps1`. Omitting `-CameraDevice` keeps camera support
+disabled. The pinned FFmpeg 8.0 x86-64 archive and checksum are documented in
+`../tools/README.md`; it runs under Windows ARM64 emulation.
+
+The Training tab requires a participant name and explicit consent before it
+starts a continuous session. It records fragmented H.264 video at 1280x720 and
+30 fps, publishes a latest-only 2 fps JPEG preview, and guides an operator
+through named `Empty`, front, and rear seat calibration prompts. Named prompts,
+not image left/right coordinates, define the seat mapping. Stable intervals
+create tagged 10-second UWB clips and host-timestamped camera events; transitions
+are not captured as training clips. Video, calibration JPEGs, event manifests,
+and FFmpeg logs remain under `data/camera-sessions/` until manual deletion.
+
+Camera API lifecycle routes are under `/api/v1/camera/` with `/api/camera/`
+compatibility aliases. An active UWB clip records the camera session ID and its
+host-clock trigger offset in `metadata.json`. These timestamps align Windows
+video processing with Windows UWB receipt; they are not source-frame or
+cross-machine transport timestamps.
 
 Run the live desktop and phone acceptance audit from `dashboard/`:
 

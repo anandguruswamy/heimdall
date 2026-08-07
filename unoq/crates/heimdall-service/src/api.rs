@@ -15,7 +15,7 @@ use axum::{
         Path, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    http::{HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -27,6 +27,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use anyhow::Context;
 
 use crate::{
+    camera::{AddCameraEvent, CameraManager, StartCameraSession},
     clips::ClipManager,
     inference::InferenceManager,
     metadata::Metadata,
@@ -72,6 +73,7 @@ pub struct AppState {
     pub pipeline: Arc<Mutex<Pipeline>>,
     pub metadata: Arc<Metadata>,
     pub clips: ClipManager,
+    pub camera: CameraManager,
     pub training: TrainingManager,
     pub inference: InferenceManager,
     pub stream: broadcast::Sender<Vec<u8>>,
@@ -91,6 +93,15 @@ impl AppState {
         metadata: Arc<Metadata>,
         data_root: impl AsRef<std::path::Path>,
     ) -> anyhow::Result<Self> {
+        let camera = CameraManager::disabled(data_root.as_ref().join("camera-sessions"))?;
+        Self::with_camera(metadata, data_root, camera)
+    }
+
+    pub fn with_camera(
+        metadata: Arc<Metadata>,
+        data_root: impl AsRef<std::path::Path>,
+        camera: CameraManager,
+    ) -> anyhow::Result<Self> {
         let data_root = data_root.as_ref().to_path_buf();
         let (stream, _) = broadcast::channel(2_048);
         let mut pipeline = Pipeline::new();
@@ -106,6 +117,7 @@ impl AppState {
         Ok(Self {
             pipeline: Arc::new(Mutex::new(pipeline)),
             clips: ClipManager::new(data_root.join("clips"), metadata.clone())?,
+            camera,
             training: TrainingManager::new(data_root.join("training"), training_config.clone()),
             inference: InferenceManager::new(training_config, stream.clone()),
             metadata,
@@ -151,6 +163,25 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/clips", get(clips).post(post_clip))
         .route("/api/v1/clips/{id}", get(download_clip).delete(delete_clip))
         .route("/api/v1/clips/{id}/training", post(tag_clip))
+        .route("/api/v1/camera/status", get(camera_status))
+        .route("/api/v1/camera/frame.jpg", get(camera_frame))
+        .route(
+            "/api/v1/camera/sessions",
+            get(camera_sessions).post(start_camera_session),
+        )
+        .route(
+            "/api/v1/camera/sessions/{id}/events",
+            post(add_camera_event),
+        )
+        .route(
+            "/api/v1/camera/sessions/{id}/stop",
+            post(stop_camera_session),
+        )
+        .route("/api/v1/camera/sessions/{id}/video", get(camera_video))
+        .route(
+            "/api/v1/camera/sessions/{id}",
+            axum::routing::delete(delete_camera_session),
+        )
         .route("/api/v1/training/run", post(run_training))
         .route("/api/v1/training/status", get(training_status))
         .route("/api/v1/inference/models", get(inference_models))
@@ -185,6 +216,19 @@ pub fn router(state: AppState) -> Router {
         .route("/api/clips", get(clips).post(post_clip))
         .route("/api/clips/{id}", get(download_clip).delete(delete_clip))
         .route("/api/clips/{id}/training", post(tag_clip))
+        .route("/api/camera/status", get(camera_status))
+        .route("/api/camera/frame.jpg", get(camera_frame))
+        .route(
+            "/api/camera/sessions",
+            get(camera_sessions).post(start_camera_session),
+        )
+        .route("/api/camera/sessions/{id}/events", post(add_camera_event))
+        .route("/api/camera/sessions/{id}/stop", post(stop_camera_session))
+        .route("/api/camera/sessions/{id}/video", get(camera_video))
+        .route(
+            "/api/camera/sessions/{id}",
+            axum::routing::delete(delete_camera_session),
+        )
         .route("/api/training/run", post(run_training))
         .route("/api/training/status", get(training_status))
         .route("/api/inference/models", get(inference_models))
@@ -269,7 +313,8 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
         "archive": {"closed_bytes": archive_bytes, "free_bytes": free_bytes, "total_bytes": total_bytes,
             "free_percent": free_percent, "paused": archive_paused,
             "errors": state.archive_errors.load(Ordering::Relaxed), "last_error": archive_last_error},
-        "process": {"rss_bytes": process_rss_bytes()}
+        "process": {"rss_bytes": process_rss_bytes()},
+        "camera": state.camera.status()
     }))
 }
 
@@ -322,6 +367,7 @@ async fn post_clip(
     State(state): State<AppState>,
     Json(value): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let trigger_ns = crate::metadata::now_ns();
     let mut context = {
         let pipeline = state.pipeline.lock();
         json!({
@@ -334,10 +380,182 @@ async fn post_clip(
     if let Some(positions) = value.get("board_positions") {
         context["board_positions"] = positions.clone();
     }
-    let clip = state
-        .clips
-        .start(&value, context, crate::metadata::now_ns())?;
+    if let Some(camera) = state.camera.clip_context(trigger_ns) {
+        context["camera"] = camera;
+    }
+    let clip = state.clips.start(&value, context, trigger_ns)?;
     Ok((StatusCode::ACCEPTED, Json(clip)))
+}
+
+async fn camera_status(State(state): State<AppState>) -> Json<Value> {
+    Json(serde_json::to_value(state.camera.status()).expect("camera status serializes"))
+}
+
+async fn camera_sessions(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let manager = state.camera.clone();
+    let sessions = tokio::task::spawn_blocking(move || manager.sessions()).await??;
+    Ok(Json(serde_json::to_value(sessions)?))
+}
+
+async fn start_camera_session(
+    State(state): State<AppState>,
+    Json(request): Json<StartCameraSession>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let manager = state.camera.clone();
+    let session = tokio::task::spawn_blocking(move || manager.start(request)).await??;
+    Ok((StatusCode::CREATED, Json(serde_json::to_value(session)?)))
+}
+
+async fn add_camera_event(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    Json(request): Json<AddCameraEvent>,
+) -> Result<Json<Value>, ApiError> {
+    let manager = state.camera.clone();
+    let session = tokio::task::spawn_blocking(move || manager.add_event(&id, request)).await??;
+    Ok(Json(serde_json::to_value(session)?))
+}
+
+async fn stop_camera_session(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, ApiError> {
+    let manager = state.camera.clone();
+    let session = tokio::task::spawn_blocking(move || manager.stop(&id)).await??;
+    Ok(Json(serde_json::to_value(session)?))
+}
+
+async fn camera_frame(State(state): State<AppState>) -> Result<Response, ApiError> {
+    let manager = state.camera.clone();
+    let path = tokio::task::spawn_blocking(move || manager.preview_path()).await??;
+    file_response(path, "image/jpeg", Some("no-store")).await
+}
+
+async fn camera_video(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let manager = state.camera.clone();
+    let path = tokio::task::spawn_blocking(move || manager.video_path(&id)).await??;
+    ranged_file_response(path, "video/mp4", headers.get(header::RANGE)).await
+}
+
+async fn delete_camera_session(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<StatusCode, ApiError> {
+    let manager = state.camera.clone();
+    if tokio::task::spawn_blocking(move || manager.delete(&id)).await?? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Ok(StatusCode::NOT_FOUND)
+    }
+}
+
+async fn file_response(
+    path: PathBuf,
+    content_type: &'static str,
+    cache_control: Option<&'static str>,
+) -> Result<Response, ApiError> {
+    let bytes = tokio::fs::read(path).await.map_err(anyhow::Error::from)?;
+    let mut response = Response::new(Body::from(bytes));
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    if let Some(value) = cache_control {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static(value));
+    }
+    Ok(response)
+}
+
+async fn ranged_file_response(
+    path: PathBuf,
+    content_type: &'static str,
+    range: Option<&HeaderValue>,
+) -> Result<Response, ApiError> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
+
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(anyhow::Error::from)?;
+    let length = file.metadata().await.map_err(anyhow::Error::from)?.len();
+    let requested = range
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| parse_byte_range(value, length));
+    if range.is_some() && requested.is_none() {
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
+        response.headers_mut().insert(
+            header::CONTENT_RANGE,
+            HeaderValue::from_str(&format!("bytes */{length}")).map_err(anyhow::Error::from)?,
+        );
+        return Ok(response);
+    }
+    let (start, end) = requested.unwrap_or((0, length.saturating_sub(1)));
+    let response_length = if length == 0 { 0 } else { end - start + 1 };
+    file.seek(SeekFrom::Start(start))
+        .await
+        .map_err(anyhow::Error::from)?;
+    let stream = futures_util::stream::try_unfold(
+        (file, response_length),
+        |(mut file, remaining)| async move {
+            if remaining == 0 {
+                return Ok::<_, std::io::Error>(None);
+            }
+            let mut chunk = vec![0_u8; remaining.min(64 * 1024) as usize];
+            let count = file.read(&mut chunk).await?;
+            if count == 0 {
+                return Ok(None);
+            }
+            chunk.truncate(count);
+            Ok(Some((chunk, (file, remaining - count as u64))))
+        },
+    );
+    let mut response = Response::new(Body::from_stream(stream));
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response
+        .headers_mut()
+        .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    response.headers_mut().insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&response_length.to_string()).map_err(anyhow::Error::from)?,
+    );
+    if requested.is_some() {
+        *response.status_mut() = StatusCode::PARTIAL_CONTENT;
+        response.headers_mut().insert(
+            header::CONTENT_RANGE,
+            HeaderValue::from_str(&format!("bytes {start}-{end}/{length}"))
+                .map_err(anyhow::Error::from)?,
+        );
+    }
+    Ok(response)
+}
+
+fn parse_byte_range(value: &str, length: u64) -> Option<(u64, u64)> {
+    let range = value.strip_prefix("bytes=")?;
+    if length == 0 || range.contains(',') {
+        return None;
+    }
+    let (start, end) = range.split_once('-')?;
+    if start.is_empty() {
+        let suffix = end.parse::<u64>().ok()?.min(length);
+        return (suffix > 0).then_some((length - suffix, length - 1));
+    }
+    let start = start.parse::<u64>().ok()?;
+    if start >= length {
+        return None;
+    }
+    let end = if end.is_empty() {
+        length - 1
+    } else {
+        end.parse::<u64>().ok()?.min(length - 1)
+    };
+    (end >= start).then_some((start, end))
 }
 
 async fn download_clip(
@@ -839,6 +1057,11 @@ impl From<serde_json::Error> for ApiError {
         Self(value.into())
     }
 }
+impl From<tokio::task::JoinError> for ApiError {
+    fn from(value: tokio::task::JoinError) -> Self {
+        Self(value.into())
+    }
+}
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (
@@ -865,6 +1088,16 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    #[test]
+    fn byte_ranges_support_playback_seeking() {
+        assert_eq!(parse_byte_range("bytes=10-19", 100), Some((10, 19)));
+        assert_eq!(parse_byte_range("bytes=90-", 100), Some((90, 99)));
+        assert_eq!(parse_byte_range("bytes=-10", 100), Some((90, 99)));
+        assert_eq!(parse_byte_range("bytes=90-200", 100), Some((90, 99)));
+        assert_eq!(parse_byte_range("bytes=100-", 100), None);
+        assert_eq!(parse_byte_range("bytes=0-1,4-5", 100), None);
+    }
+
     #[tokio::test]
     async fn api_state_and_compatibility_routes() {
         let dir = tempfile::tempdir().unwrap();
@@ -881,6 +1114,10 @@ mod tests {
             "/api/settings",
             "/api/v1/board",
             "/api/board",
+            "/api/v1/camera/status",
+            "/api/camera/status",
+            "/api/v1/camera/sessions",
+            "/api/camera/sessions",
         ] {
             let response = app
                 .clone()
@@ -896,6 +1133,21 @@ mod tests {
             let body = response.into_body().collect().await.unwrap().to_bytes();
             serde_json::from_slice::<Value>(&body).unwrap();
         }
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/v1/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let health = serde_json::from_slice::<Value>(&body).unwrap();
+        assert_eq!(health["camera"]["state"], "disabled");
+        assert_eq!(health["camera"]["enabled"], false);
 
         let response = app
             .clone()

@@ -123,6 +123,112 @@ paths:
           description: Clip deleted
         "404":
           description: Clip not found
+  /camera/status:
+    get:
+      operationId: getCameraStatus
+      responses:
+        "200":
+          description: Continuous camera manager status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CameraStatus"
+  /camera/frame.jpg:
+    get:
+      operationId: getCameraPreview
+      responses:
+        "200":
+          description: Latest host-timestamped camera preview (not source-frame synchronized)
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+  /camera/sessions:
+    get:
+      operationId: listCameraSessions
+      responses:
+        "200":
+          description: Stored camera session manifests, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CameraSession"
+    post:
+      operationId: startCameraSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartCameraSession"
+      responses:
+        "201":
+          description: Continuous camera recording started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CameraSession"
+  /camera/sessions/{id}:
+    parameters:
+      - $ref: "#/components/parameters/CameraSessionId"
+    delete:
+      operationId: deleteCameraSession
+      responses:
+        "204":
+          description: Inactive camera session deleted
+        "404":
+          description: Camera session not found
+  /camera/sessions/{id}/events:
+    parameters:
+      - $ref: "#/components/parameters/CameraSessionId"
+    post:
+      operationId: addCameraSessionEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddCameraEvent"
+      responses:
+        "200":
+          description: Event timestamped by the server and persisted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CameraSession"
+  /camera/sessions/{id}/stop:
+    parameters:
+      - $ref: "#/components/parameters/CameraSessionId"
+    post:
+      operationId: stopCameraSession
+      responses:
+        "200":
+          description: FFmpeg stopped gracefully or killed after a bounded timeout
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CameraSession"
+  /camera/sessions/{id}/video:
+    parameters:
+      - $ref: "#/components/parameters/CameraSessionId"
+    get:
+      operationId: downloadCameraVideo
+      responses:
+        "200":
+          description: Completed fragmented MP4 recording
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
   /calibration:
     get:
       operationId: getCalibration
@@ -160,7 +266,129 @@ paths:
         "101":
           description: Versioned FlatBuffers WebSocket stream
 components:
+  parameters:
+    CameraSessionId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9_-]{1,80}$"
   schemas:
+    SeatClass:
+      type: string
+      enum: [FrontLeft, FrontRight, BackRight, BackLeft, Empty]
+    StartCameraSession:
+      type: object
+      additionalProperties: false
+      required: [person, consent]
+      properties:
+        person:
+          type: string
+          minLength: 1
+          maxLength: 60
+        consent:
+          type: boolean
+          const: true
+    AddCameraEvent:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          minLength: 1
+          maxLength: 60
+        seat:
+          $ref: "#/components/schemas/SeatClass"
+        note:
+          type: string
+          maxLength: 500
+    CameraStatus:
+      type: object
+      additionalProperties: false
+      required: [enabled, device, width, height, fps, state, session, preview_available, error]
+      properties:
+        enabled:
+          type: boolean
+        device:
+          type: [string, "null"]
+        width:
+          type: integer
+          const: 1280
+        height:
+          type: integer
+          const: 720
+        fps:
+          type: integer
+          const: 30
+        state:
+          type: string
+          enum: [disabled, idle, recording, error]
+        session:
+          oneOf:
+            - $ref: "#/components/schemas/CameraSession"
+            - type: "null"
+        preview_available:
+          type: boolean
+        error:
+          type: [string, "null"]
+    CameraSession:
+      type: object
+      additionalProperties: false
+      required: [id, person, consent, status, started_ns, video_path, preview_path, ffmpeg_log_path, events]
+      properties:
+        id:
+          type: string
+          pattern: "^[A-Za-z0-9_-]{1,80}$"
+        person:
+          type: string
+          maxLength: 60
+        consent:
+          type: boolean
+          const: true
+        status:
+          type: string
+          enum: [recording, complete, failed]
+        started_ns:
+          type: integer
+          format: int64
+        stopped_ns:
+          type: integer
+          format: int64
+        error:
+          type: string
+        video_path:
+          type: string
+          const: video.mp4
+        preview_path:
+          type: string
+          const: preview.jpg
+        ffmpeg_log_path:
+          type: string
+          const: ffmpeg.log
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/CameraEvent"
+    CameraEvent:
+      type: object
+      additionalProperties: false
+      required: [kind, timestamp_ns]
+      properties:
+        kind:
+          type: string
+          maxLength: 60
+        seat:
+          $ref: "#/components/schemas/SeatClass"
+        note:
+          type: string
+          maxLength: 500
+        timestamp_ns:
+          type: integer
+          format: int64
+        calibration_path:
+          type: string
     DspSettings:
       type: object
       additionalProperties: true
@@ -260,6 +488,7 @@ components:
         - websocket_clients
         - archive
         - process
+        - camera
       properties:
         status:
           type: string
@@ -313,3 +542,5 @@ components:
               type: integer
               format: int64
               minimum: 0
+        camera:
+          $ref: "#/components/schemas/CameraStatus"

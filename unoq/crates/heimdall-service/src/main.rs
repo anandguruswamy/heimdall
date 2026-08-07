@@ -22,6 +22,7 @@ use heimdall_protocol::live::{LiveFragment, fragment_record};
 use heimdall_service::{
     api::{self, AppState, record_max},
     archive::{ArchiveWriter, ordered_segments, verify_archive},
+    camera::{CameraConfig, CameraManager},
     live_agent::{self, AgentState},
     metadata::Metadata,
     pipeline::{Pipeline, PipelineSummary},
@@ -61,6 +62,10 @@ enum Command {
         bind: SocketAddr,
         #[arg(long, default_value = "data")]
         data: PathBuf,
+        #[arg(long)]
+        camera_device: Option<String>,
+        #[arg(long, default_value = "ffmpeg")]
+        ffmpeg: PathBuf,
     },
     Serve {
         #[arg(
@@ -109,7 +114,9 @@ async fn main() -> Result<()> {
             udp_bind,
             bind,
             data,
-        } => live_server(udp_bind, bind, data).await,
+            camera_device,
+            ffmpeg,
+        } => live_server(udp_bind, bind, data, camera_device, ffmpeg).await,
         Command::Serve { device, data, bind } => serve(device, data, bind).await,
         Command::Replay { path, chunk_size } => print_summary(replay(&path, chunk_size)?),
         Command::Inspect { path } => inspect(&path),
@@ -134,10 +141,23 @@ async fn agent(device: PathBuf, target: SocketAddr, bind: SocketAddr) -> Result<
     result
 }
 
-async fn live_server(udp_bind: SocketAddr, bind: SocketAddr, data: PathBuf) -> Result<()> {
+async fn live_server(
+    udp_bind: SocketAddr,
+    bind: SocketAddr,
+    data: PathBuf,
+    camera_device: Option<String>,
+    ffmpeg: PathBuf,
+) -> Result<()> {
     std::fs::create_dir_all(&data)?;
     let metadata = Metadata::open(data.join("heimdall.sqlite3"))?;
-    let state = AppState::new(metadata, &data)?;
+    let camera = match camera_device {
+        Some(device) => CameraManager::enabled(
+            data.join("camera-sessions"),
+            CameraConfig { device, ffmpeg },
+        )?,
+        None => CameraManager::disabled(data.join("camera-sessions"))?,
+    };
+    let state = AppState::with_camera(metadata, &data, camera.clone())?;
     let (processing_tx, processing_rx) = mpsc::sync_channel(1024);
     let processor = spawn_processor(processing_rx, state.clone());
     let running = Arc::new(AtomicBool::new(true));
@@ -152,6 +172,7 @@ async fn live_server(udp_bind: SocketAddr, bind: SocketAddr, data: PathBuf) -> R
     processor
         .join()
         .map_err(|_| anyhow::anyhow!("processing worker panicked"))?;
+    camera.stop_active();
     result
 }
 

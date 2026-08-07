@@ -619,6 +619,27 @@ calibration remains before timestamps can be treated as accurate ranges.
   tests and 50 Rust service tests pass; one checkpoint-dependent inference test
   remains ignored. Live hardware accuracy and the `<35 ms` p95 snapshot target
   are not yet verified, and no ONNX/QNN runtime dependency has been introduced.
+- Camera-assisted collection deployed to the Windows ARM64 processing server on
+  2026-08-06. The scheduled task now runs `server` with `--camera-device "Brio
+  101"` and FFmpeg 8.0 full build (x86-64 under emulation, cached and
+  checksum-pinned in `tools/README.md`). `/api/health` reports `ok`, UDP `7878`
+  and TCP `8080` are owned by the task, and `/api/camera/status` reports
+  enabled/idle at 1280x720@30. The service owns one continuous DirectShow MJPEG
+  input, splits it into fragmented H.264 MP4 session video and a latest-only 2
+  fps JPEG preview, persists atomic session manifests/events/calibration JPEGs
+  under `data/camera-sessions/` until manual deletion, and recovers interrupted
+  sessions as failed at startup. The UNO Q agent and Linux `serve` stay
+  camera-disabled. The Training tab requires participant name and explicit
+  consent, guides named Empty/front/rear calibration plus random continuous
+  prompts with screen+speech, creates tagged 10-second UWB clips for stable
+  intervals only, and halts on clip/event failure rather than advancing. UWB
+  clips record the active camera session ID and host-clock trigger offset; these
+  are not source-frame or cross-machine transport timestamps. A disposable
+  8-second physical-camera smoke test verified preview (104 KB JPEG), byte-range
+  video serving (HTTP 206), and FFprobe: H.264 1280x720 ~30 fps, 9.27 s. All
+  60 host tests pass (one pre-existing checkpoint-dependent inference test
+  remains ignored). The deployed binary SHA-256 is
+  `D043464914838564CA21585D03376C99B4EF5254277EFDD25AD156D3FA370DA1`.
 - Commit `4e3a772` was rebuilt and deployed to the Windows ARM64 processing
   server on 2026-08-06. The running scheduled task owns UDP `7878` and TCP
   `8080`, `/api/health` reports `ok`, the served dashboard bundle contains the

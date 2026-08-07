@@ -1,7 +1,9 @@
 param(
     [string]$UdpBind = '0.0.0.0:7878',
     [string]$Bind = '0.0.0.0:8080',
-    [string]$Data = 'data'
+    [string]$Data = 'data',
+    [string]$CameraDevice,
+    [string]$Ffmpeg = 'ffmpeg'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,5 +15,10 @@ if (-not (Test-Path -LiteralPath $binary)) {
     throw "Build the Windows server first with .\tools\build-windows-server.ps1"
 }
 
-& $binary server --udp-bind $UdpBind --bind $Bind --data $dataPath
+$serverArgs = @('server', '--udp-bind', $UdpBind, '--bind', $Bind, '--data', $dataPath)
+if (-not [string]::IsNullOrWhiteSpace($CameraDevice)) {
+    $serverArgs += @('--camera-device', $CameraDevice, '--ffmpeg', $Ffmpeg)
+}
+
+& $binary @serverArgs
 exit $LASTEXITCODE

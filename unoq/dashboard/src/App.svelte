@@ -4,6 +4,7 @@
   import BoardPositions from './lib/BoardPositions.svelte';
   import RadarMap from './lib/RadarMap.svelte';
   import TrainingTab from './lib/TrainingTab.svelte';
+  import CameraTab from './lib/CameraTab.svelte';
   import { HeimdallApi } from './lib/api';
   import { linksFor } from './lib/demo';
   import { LiveStore } from './lib/live';
@@ -225,7 +226,7 @@
   }
 
   function topicFor(tab: Tab): TopicKey {
-    return ({ 'Network Health':'health','Live Distance':'distance','Board Positions':'distance','Live CIR':'cir','CIR Waterfall':'waterfall','Slow-Time FFT':'slow-fft','Fast-Time FFT':'fast-fft','CFO':'cfo','Distance Calibration':'calibration','Radar Map':'cir','Presence Detection':'health','Training':'health' } as const)[tab];
+    return ({ 'Network Health':'health','Live Distance':'distance','Board Positions':'distance','Live CIR':'cir','CIR Waterfall':'waterfall','Slow-Time FFT':'slow-fft','Fast-Time FFT':'fast-fft','CFO':'cfo','Distance Calibration':'calibration','Radar Map':'cir','Presence Detection':'health','Training':'health','Camera':'health' } as const)[tab];
   }
 
   function linkMetric(link: Link) {
@@ -599,6 +600,8 @@
       {/await}
     {:else if active === 'Training'}
       <TrainingTab {api} boardPositions={frozenBoardPositions} />
+    {:else if active === 'Camera'}
+      <CameraTab {api} boardPositions={frozenBoardPositions} />
     {:else if active === 'Network Health'}
       <section class="health-layout">
         <div class="node-strip">

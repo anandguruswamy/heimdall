@@ -14,7 +14,6 @@
     BackLeft: 'REAR LEFT',
     Empty: 'EMPTY',
   };
-
   type ClipRow = {
     id: number;
     name: string;
@@ -80,6 +79,7 @@
   let logNext = 0;
   let runId = 0;
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
+  let captureWaitTimer: ReturnType<typeof setTimeout> | undefined;
   let destroyed = false;
 
   const selectable = $derived(clips.filter(canSelectClip));
@@ -182,24 +182,29 @@
     }
   }
 
-  async function capture() {
-    if (captureState === 'capturing' || backendCaptureActive) return;
+  function wait(ms: number): Promise<void> {
+    return new Promise((resolve) => { captureWaitTimer = setTimeout(resolve, ms); });
+  }
+
+  async function captureClip(name: string, note: string, durationS: number, seat: SeatClass | '', person: string): Promise<number> {
+    if (captureState === 'capturing' || backendCaptureActive) throw new Error('Another UWB clip capture is active');
     captureState = 'capturing';
     captureProgress = 0;
     captureError = false;
-    captureMessage = `Capturing ${captureDurationS} s from trigger…`;
+    captureMessage = `Capturing ${durationS} s from trigger...`;
     try {
       const created = await api.saveClip({
-        name: captureName.trim(),
-        note: captureNote.trim(),
-        duration_s: captureDurationS,
+        name,
+        note,
+        duration_s: durationS,
         board_positions: boardPositions(),
       }) as Record<string, unknown>;
       const clipId = Number(created.id);
       const started = Date.now();
-      const pollMs = Math.max(15_000, captureDurationS * 1000 + 5_000);
+      const pollMs = Math.max(15_000, durationS * 1000 + 5_000);
       while (Date.now() - started < pollMs) {
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        await wait(1_000);
+        if (destroyed) throw new Error('Capture cancelled');
         captureProgress = Math.min(99, ((Date.now() - started) / pollMs) * 100);
         await refreshClips();
         const row = clips.find((clip) => clip.id === clipId);
@@ -217,16 +222,17 @@
               captureMessage = `Clip ${clipId} captured · assign seat tags to include it in training`;
             }
           } else {
-            const person = captureSeat === 'Empty' ? '' : capturePerson.trim();
-            if (captureSeat) {
-              await tag(clipId, captureSeat, person, false);
-              captureMessage = `Clip ${clipId} captured and tagged ${seatDisplay[captureSeat]}${person ? ` · ${person}` : ''}`;
+            const taggedPerson = seat === 'Empty' ? '' : person.trim();
+            if (seat) {
+              await api.setClipTraining(clipId, { seat, person: taggedPerson, exclude: false });
+              await refreshClips();
+              captureMessage = `Clip ${clipId} captured and tagged ${seatDisplay[seat]}${taggedPerson ? ` / ${taggedPerson}` : ''}`;
             } else {
-              captureMessage = `Clip ${clipId} captured · assign a seat tag to include it in training`;
+              captureMessage = `Clip ${clipId} captured / assign a seat tag to include it in training`;
             }
           }
           captureState = 'idle';
-          return;
+          return clipId;
         }
         if (row?.status === 'failed') throw new Error(row.error || 'Capture failed on the backend');
       }
@@ -236,7 +242,14 @@
       captureProgress = 0;
       captureError = true;
       captureMessage = error instanceof Error ? error.message : 'Capture failed';
+      throw error;
     }
+  }
+
+  async function capture() {
+    try {
+      await captureClip(captureName.trim(), captureNote.trim(), captureDurationS, captureSeat, capturePerson);
+    } catch { /* captureClip reports manual capture errors in the panel */ }
   }
 
   async function tag(id: number, seat: SeatClass | null, person: string, exclude: boolean) {
@@ -376,6 +389,7 @@
     return () => {
       destroyed = true;
       clearTimeout(pollTimer);
+      clearTimeout(captureWaitTimer);
     };
   });
 </script>
