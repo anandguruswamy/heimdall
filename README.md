@@ -21,11 +21,11 @@ reconstruction of the environment, all computed on-device.
 
 | Name | Email |
 | --- | --- |
-| Anand Guruswamy | _(email pending)_ |
-| Ehsan Hosseini | _(email pending)_ |
-| Jianxiu Li | _(email pending)_ |
-| Saisundar Sridharan | _(email pending)_ |
-| Simarjit Singh | _(email pending)_ |
+| Anand Guruswamy | anand.me AT Gmail Dot com |
+| Ehsan Hosseini | ehsan.hosseini AT Gmail Dot com |
+| Jianxiu Li | lijianxiu2019 AT Gmail Dot com |
+| Saisundar Sridharan | saisundar2 AT Gmail Dot com  |
+| Simarjit Singh | simar.rajput AT Gmail Dot com |
 
 ## Current status
 
