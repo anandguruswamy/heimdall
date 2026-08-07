@@ -2,10 +2,32 @@
 
 > Entry for the **Snapdragon Multiverse Hackathon 2026** (Qualcomm, San Diego).
 
-Heimdall is a room-scale, multi-node UWB sensing and scene-reconstruction
-system built around DWM3001 radios and an Arduino UNO Q gateway.
+Heimdall is a room-scale, multi-node UWB sensing system built around five
+DWM3001 radios and an Arduino UNO Q gateway — a privacy-first radar you can
+build from a handful of $30 dev boards. It senses people and space without
+cameras, running the whole pipeline on-device.
 
 ![Heimdall system topology: a Snapdragon host and Arduino UNO Q gateway linked to a five-node DWM3001 UWB mesh](docs/assets/topology.svg)
+
+## Key numbers
+
+- 5 UWB nodes → **20 directed links** every 35 ms cycle
+- **28.571 Hz** per link, **64** complex CIR taps per observation
+- **Lossless 187 kB/s** USB-CDC export from the gateway
+- Everything computed **on-device** (Qualcomm QRB2210) — no cloud, no laptop in
+  the sensing loop
+
+## How it works
+
+Five fixed radios talk on a custom beacon protocol: each node takes a turn
+sending a ping, and every other node captures the ping's reflections — the RF
+echoes that bounce off walls, furniture, and people. Each echo profile (a
+channel impulse response, or CIR) is like a mini radar image of the room.
+
+One node is the gateway: it streams the full set of observations to an Arduino
+UNO Q over a plain USB cable. The UNO Q validates and archives every record,
+fuses the links into range, CIR, and spectrum products, and serves a live
+dashboard. No cameras, no cloud — the radar is five radios and one board.
 
 ## Application description
 
@@ -17,6 +39,13 @@ estimates geometry, and runs the sensing pipeline. A live dashboard shows
 distance, CIR, and spectrum streams, a 3D board-position solve, and a radar-map
 reconstruction of the environment, all computed on-device.
 
+## Current status
+
+The N=5/M=2 radio profile is hardware-qualified with all five nodes active at
+28.571 Hz per link and lossless steady-state gateway export at 187 kB/s. See
+[STATUS.md](STATUS.md) for the full build, deployment, and hardware-validation
+log.
+
 ## Team
 
 | Name | Email (@gmail.com)|
@@ -27,34 +56,12 @@ reconstruction of the environment, all computed on-device.
 | Saisundar Sridharan | saisundar2  |
 | Simarjit Singh | simar.rajput |
 
-## Current status
-
-- The N=5/M=2 radio profile is hardware-qualified with all five nodes active.
-  Each 35 ms cycle provides 20 directed links at 28.571 Hz with 64 complex CIR
-  taps per observation.
-- The gateway exports the full roster over native USB CDC without steady-state
-  loss at the modeled 187,200 B/s load while keeping radio timing independent
-  of USB backpressure.
-- The Rust service validates, archives, and replays observations and serves the
-  live DSP dashboard. The deployed split path can forward validated records
-  from the UNO Q agent to the server over direct Ethernet or Wi-Fi.
-- Range/CIR processing, board-geometry estimation, and experimental 3D
-  multistatic backprojection are implemented. Compact neural scene
-  reconstruction is specified as a research direction, not yet a validated
-  sensing result.
-- Per-board antenna-delay and phase-center calibration remain outstanding, so
-  current timestamps must not be presented as accurate metric ranges.
-
-Radio firmware uses the open Zephyr + DW3000 driver path. The closed FiRa/BLE
-experiments remain useful for lessons and fixtures, but BLE is not the Heimdall
-data plane. See [STATUS.md](STATUS.md) for detailed build, deployment, and
-hardware-validation records.
-
 ## Setup instructions
 
-The system has three buildable parts: node/gateway radio firmware, the UNO Q
+Heimdall has three buildable parts: node/gateway radio firmware, the UNO Q
 Linux runtime (Rust service + embedded Svelte dashboard), and host-side
-analysis tools.
+analysis tools. The full from-scratch guide, complete toolchain manifest with
+checksums, and troubleshooting are in [docs/development.md](docs/development.md).
 
 ### Prerequisites
 
@@ -65,19 +72,11 @@ Hardware:
 - 1x J-Link (J9 connection) for programming boards, optionally hosted on the
   UNO Q.
 
-Host (a Windows ARM64 Copilot+ PC is the validated build machine):
-
-- Python 3.12 (for west/Zephyr and the reference Python suite).
-- Rust 1.93.1 with the `aarch64-pc-windows-gnullvm` host toolchain and the
-  `aarch64-unknown-linux-gnu` target, plus Zig 0.15.2 for cross-linking.
-- Node.js 24.x and npm 11.x (dashboard build).
-- For firmware: west 1.5.0, CMake 3.31.10, Ninja 1.13.x, DeviceTree compiler
-  1.6.x, Zephyr SDK 0.17.4 with the `arm-zephyr-eabi` toolchain, 7-Zip, and
-  wget.
-
-Every host tool and the exact cached assets and checksums are documented in
-[tools/README.md](tools/README.md). Installers are cached under the ignored
-`tools/installers/` directory.
+Host: a Windows ARM64 Copilot+ PC is the validated build machine. The complete
+toolchain (Python 3.12, Rust 1.93.1 + Zig 0.15.2 for cross-linking, Node.js
+24.x, and the Zephyr toolchain) is listed with exact versions and checksums in
+[docs/development.md](docs/development.md) and
+[tools/README.md](tools/README.md).
 
 ### 1. Firmware
 
@@ -91,19 +90,12 @@ west update
 west build -p always --no-sysbuild -b nrf52833dk/nrf52833 radio/app -d build-radio -- "-DOVERLAY_CONFIG=radio/app/usb.conf"
 ```
 
-The default build uses the 8 MHz SPI rollback overlay. The 32 MHz SPIM3 profile
-(used by the validated deployment) adds the absolute overlay path documented in
-[docs/firmware-onboarding.md](docs/firmware-onboarding.md). Node-specific images
-are bound at build time to a node ID, the board's FICR `DEVICEID` words, and
-per-board antenna delays; see `deployment/node-roster.lab.yaml` and
-`deployment/beacon-config.n5.json` for the current N=5/M=2 profile.
-
-Flash each board through J9 with J-Link:
-
-```bash
-printf 'connect\nloadfile /tmp/heimdall-boardN.hex\nr\ng\nq\n' \
-  | JLinkExe -device nRF52833_xxAA -if SWD -speed 4000 -SelectEmuBySN <jlink-serial>
-```
+Node images are bound at build time to a node ID, the board's FICR `DEVICEID`
+words, and per-board antenna delays; see `deployment/node-roster.lab.yaml` and
+`deployment/beacon-config.n5.json`. The 32 MHz SPIM3 profile used by the
+validated deployment is documented in
+[docs/firmware-onboarding.md](docs/firmware-onboarding.md). Flash each board
+through J9 with J-Link (commands in [docs/development.md](docs/development.md)).
 
 ### 2. UNO Q Rust service
 
@@ -113,9 +105,7 @@ Build the Debian ARM64 release on the Windows host (never on the UNO Q):
 .\tools\build-linux-arm64.ps1 -Release
 ```
 
-The deployable binary is written to
-`target/aarch64-unknown-linux-gnu/release/heimdall-service`. The Svelte
-dashboard is embedded at build time; rebuild it first if the UI changed:
+Rebuild the embedded Svelte dashboard first if the UI changed:
 
 ```sh
 cd unoq/dashboard
@@ -123,6 +113,9 @@ npm install
 npm run check
 npm run build
 ```
+
+The deployable binary is written to
+`target/aarch64-unknown-linux-gnu/release/heimdall-service`.
 
 ### 3. Deployment
 
@@ -139,37 +132,20 @@ provided. The UNO Q connects over SSH as `arduino@<unoq-ip>`; see AGENTS.md.
 
 ## Run and usage instructions
 
-### Live system
-
 1. Power the DWM3001 nodes and the gateway node; the gateway node must be
    attached to the UNO Q over native USB CDC (J20).
 2. Start `heimdall-service` on the UNO Q (`deploy/run-heimdall.sh`), or in the
    split path run `heimdall-service agent` on the UNO Q and `heimdall-service
    server` on the Windows host to view the dashboard locally.
-3. Open the dashboard at `http://<host>:8080`. Eight tabs show distance,
-   CIR, waterfall, FFT, CFO, board positions, the radar map, and the
-   seat-occupancy simulator/training.
-4. Health and topology: `GET /api/health` and `GET /api/topology`.
+3. Open the dashboard at `http://<host>:8080`. Health and topology:
+   `GET /api/health` and `GET /api/topology`.
 
-Runtime data is stored on the UNO Q under `/home/arduino/heimdall-data`.
-
-### Capture and replay
-
-- Arm a protected 30-second capture: `POST /api/v1/clips`; poll with
-  `GET /api/v1/clips`; download or delete with `GET|DELETE /api/v1/clips/{id}`.
-- Replay canonical observations from a `.husb` capture through the reference
-  Python path:
-
-```bash
-python3 -m heimdall.replay_ingest data/raw/connection-000001 data/replay.sqlite3
-python3 -m heimdall.verify_h3 data/heimdall.sqlite3 data/raw data/replay.sqlite3
-```
-
-- `host-tools/radar-map/` replays captures into 3D multistatic backprojection
-  volumes and serves XY/XZ/YZ slices.
-
-See [docs/operations.md](docs/operations.md) for run metadata requirements and
-recovery procedures.
+Capture and replay: arm a protected 30-second capture with
+`POST /api/v1/clips`, download or delete with `GET|DELETE /api/v1/clips/{id}`,
+and replay `.husb` captures through the reference Python path. Full commands,
+run metadata requirements, and recovery procedures are in
+[docs/operations.md](docs/operations.md) and
+[docs/development.md](docs/development.md).
 
 ## Tests
 
@@ -178,25 +154,18 @@ recovery procedures.
   `.\tools\test-linux-arm64.ps1`
 - Frontend checks and build: `npm run check && npm run build` in
   `unoq/dashboard`
-- Live acceptance audit across desktop and phone: from `unoq/dashboard`,
-  `npm run audit:live -- "http://<host>:8080" /tmp/heimdall-tab-audit`
+
+See [docs/development.md](docs/development.md) for the full test guide.
 
 ## Notes
 
-- Radio timing is kept independent of USB backpressure by design; the gateway
-  uses bounded, drop-newest queues with sequence-visible producer drops.
-- Every record carries a protocol version, node identity, round identity,
-  sequence information, and integrity check. See `contracts/`.
-- Per-board antenna-delay calibration is required before timestamps are treated
-  as accurate metric ranges; current boards use the bring-up value.
-
-## Read first
-
-- [docs/architecture.md](docs/architecture.md)
-- [docs/protocol.md](docs/protocol.md)
-- [docs/lessons-learned.md](docs/lessons-learned.md)
-- [docs/bring-up-plan.md](docs/bring-up-plan.md)
-- [STATUS.md](STATUS.md)
+- Per-board antenna-delay and phase-center calibration remain outstanding, so
+  current timestamps must not be presented as accurate metric ranges.
+- Design guarantees — radio timing kept independent of USB backpressure via
+  bounded, drop-newest queues with sequence-visible producer drops, and
+  per-record version/node/round/sequence/integrity fields — are detailed in
+  [docs/architecture.md](docs/architecture.md) and
+  [docs/protocol.md](docs/protocol.md).
 
 ## Project map
 
@@ -207,6 +176,25 @@ recovery procedures.
 - `tests/`: protocol, replay, and fusion tests.
 - `captures/`: local raw and processed data; ignored by default.
 - `deployment/`: node roster, slot plan, and UNO Q configuration.
+
+## Read more
+
+- [Architecture](docs/architecture.md) — data flow, modules, and design
+  guarantees.
+- [Protocol](docs/protocol.md) and
+  [beacon-protocol-explained.md](docs/beacon-protocol-explained.md) — the
+  UWB beacon and USB-CDC contracts.
+- [Topology](docs/topology.md) — node roster and radio profile.
+- [Development guide](docs/development.md) — build, deploy, run, and test from
+  scratch.
+- [Firmware onboarding](docs/firmware-onboarding.md) — Zephyr/DW3000 build
+  paths and board bring-up.
+- [Operations](docs/operations.md) — running the live system and recovery.
+- [DSP and sensing](docs/live-cir-alignment.md),
+  [multistatic UWB backprojection](docs/multistatic-uwb-mgbp-cgbp.md), and
+  [seat classification](host-tools/seat-classification/README.md).
+- [Hardware validation log](STATUS.md).
+- [Lessons learned](docs/lessons-learned.md).
 
 ## Technical papers
 

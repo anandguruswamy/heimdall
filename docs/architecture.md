@@ -18,6 +18,15 @@ Node radio
 The gateway is a normal UWB node plus a USB exporter. It must not become a
 special timing authority merely because it is tethered to Linux.
 
+## Guarantees
+
+- **Radio timing never waits for the USB link.** When the host falls behind,
+  the gateway drops the newest records from its bounded queues with
+  sequence-visible producer drops rather than stalling the radio schedule.
+- Every record carries a protocol version, node identity, round identity,
+  sequence information, and integrity check; see [protocol.md](protocol.md) and
+  `contracts/`.
+
 ## Modules and seams
 
 ### Radio firmware module
