@@ -408,65 +408,13 @@
   .s3 .demo-note { margin-top: 14px; font-family: var(--mono); font-size: 13px; letter-spacing: 0.1em; color: var(--muted); }
   .s3 .demo-note b { color: var(--teal); font-weight: 400; }
   .shot { flex: 1; min-height: 0; position: relative; overflow: hidden; }
-  .shot-tag {
-    position: absolute; left: 10px; bottom: 10px; z-index: 3;
-    font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; color: var(--dim);
-    background: rgba(5, 9, 11, 0.72); padding: 4px 7px;
-  }
-
-  /* waterfall mock */
-  .waterfall-mock { position: absolute; inset: 0; overflow: hidden; background: #070d0f; }
-  .wf-row {
-    position: absolute; left: 0; right: 0; height: 9px;
-    background-size: 160px 100%;
-    animation: wfscroll var(--d, 3s) linear infinite;
-    opacity: 0.85;
-  }
-  @keyframes wfscroll { from { background-position-x: 0; } to { background-position-x: -160px; } }
-  .waterfall-mock .gridline { position: absolute; left: 0; right: 0; height: 1px; background: rgba(69, 224, 193, 0.06); }
-  .waterfall-mock .axis { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(69, 224, 193, 0.1); }
+  .shot img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   .waterfall-readout {
     position: absolute; left: 12px; top: 12px; z-index: 2;
     font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; color: #bdf3e6;
     background: rgba(5, 9, 11, 0.6); padding: 5px 8px;
   }
   .waterfall-readout i { font-style: normal; color: var(--amber); }
-
-  /* presence mock */
-  .presence-mock { position: absolute; inset: 0; background: #0a1114; padding: 18px; display: flex; flex-direction: column; }
-  .cabin {
-    flex: 1; position: relative; min-height: 0;
-    border: 2px solid #2c3d44; border-radius: 6px; background: rgba(0, 0, 0, 0.25);
-  }
-  .seat {
-    position: absolute; width: 96px; height: 62px;
-    border: 1px solid #2a3a40; border-radius: 8px; background: #101a1e;
-  }
-  .seat .lbl { margin-top: 21px; text-align: center; font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
-  .seat.fl { left: 26px; top: 26px; }
-  .seat.fr { right: 26px; top: 26px; }
-  .seat.rl { left: 26px; bottom: 26px; }
-  .seat.rr { right: 26px; bottom: 26px; }
-  .seat.oc { border-color: var(--teal); background: var(--teal-soft); box-shadow: 0 0 18px rgba(69, 224, 193, 0.35); animation: seatglow 2.2s infinite ease-in-out; }
-  .seat.oc .lbl { color: #bdf3e6; }
-  @keyframes seatglow { 0%,100% { box-shadow: 0 0 12px rgba(69, 224, 193, 0.28); } 50% { box-shadow: 0 0 22px rgba(69, 224, 193, 0.5); } }
-  .person {
-    position: absolute; width: 46px; height: 46px; border: 2px solid var(--amber); border-radius: 50%;
-    background: rgba(244, 189, 98, 0.08);
-  }
-  .person::after {
-    content: ""; position: absolute; left: 50%; top: 62px; transform: translateX(-50%);
-    width: 26px; height: 20px; border: 2px solid var(--amber); border-top: 0; border-radius: 0 0 20px 20px;
-  }
-  .occ-tag {
-    position: absolute; left: 0; right: 0; top: -30px; text-align: center;
-    font-family: var(--mono); font-size: 11px; letter-spacing: 0.16em; color: var(--teal);
-  }
-  .occ-tag::before { content: "●  "; color: var(--teal); }
-  .presence-legend {
-    margin-top: 12px; display: flex; justify-content: space-between;
-    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; color: var(--dim);
-  }
 
   /* ============================================================
      SLIDE 4 — USE CASES + CLOSE
@@ -692,25 +640,14 @@ FALLBACK: if the live link flakes, replay a clean .husb capture through the same
         <div class="panel">
           <header><span>Raw echo stream</span><span class="live-tag"><i></i>LIVE</span></header>
           <div class="shot">
-            <div class="waterfall-mock" id="waterfall" aria-hidden="true"></div>
+            <img src="assets/Raw CIR steam.gif" alt="Live raw CIR stream">
             <div class="waterfall-readout">CIR · 20 LINKS · <i>28.6 Hz</i></div>
-            <span class="shot-tag">PLACEHOLDER — SWAP REAL CAPTURE</span>
           </div>
         </div>
         <div class="panel">
           <header><span>Presence detection</span><span class="live-tag"><i></i>LIVE</span></header>
           <div class="shot">
-            <div class="presence-mock">
-              <div class="cabin">
-                <span class="seat fl"><span class="lbl">Front L</span></span>
-                <span class="seat fr oc"><span class="occ-tag">OCCUPIED</span><span class="lbl">Front R</span></span>
-                <span class="seat rl"><span class="lbl">Back L</span></span>
-                <span class="seat rr"><span class="lbl">Back R</span></span>
-                <span class="person" style="right: 148px; bottom: 24px;"></span>
-              </div>
-              <div class="presence-legend"><span>EMPTY ⇄ OCCUPIED</span><span style="color:#bdf3e6;">FRONT-RIGHT SEAT</span></div>
-            </div>
-            <span class="shot-tag">PLACEHOLDER — SWAP REAL CAPTURE</span>
+            <img src="assets/Presence_Detection.gif" alt="Live presence detection on the cabin">
           </div>
         </div>
       </div>
@@ -1023,42 +960,6 @@ CLOSE: "Everything here is open source, documented, and capture/replay-tested �
     lineV.style.left = lapX + "%";
     lineV.style.top = lineTop + "%";
     lineV.style.height = Math.max(0, lineBottom - lineTop) + "%";
-  }
-
-  // ---- slide 3: waterfall mock rows (one per directed link) ----
-  var wf = document.getElementById("waterfall");
-  if (wf) {
-    var colors = ["69,224,193", "110,199,232", "244,189,98", "69,224,193", "110,199,232"];
-    var seed = 11;
-    function rnd() { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; }
-    for (var l = 0; l < 20; l++) {
-      var row = document.createElement("div");
-      row.className = "wf-row";
-      var stops = "";
-      for (var s = 0; s < 8; s++) {
-        var base = s * 20;
-        var on = rnd() > 0.55;
-        var col = colors[(l + s) % colors.length];
-        if (on) {
-          stops += "rgba(" + col + "," + (0.10 + 0.4 * rnd()).toFixed(2) + ") " + (base + 2) + "px,";
-          stops += "rgba(" + col + ",0) " + (base + 12 + rnd() * 8) + "px,";
-        } else {
-          stops += "rgba(" + col + ",0.04) " + (base + 2) + "px,";
-          stops += "rgba(" + col + ",0) " + (base + 16) + "px,";
-        }
-      }
-      row.style.backgroundImage = "repeating-linear-gradient(90deg," + stops.replace(/,$/, "") + ")";
-      row.style.setProperty("--d", (2.2 + (l % 6) * 0.55) + "s");
-      row.style.top = (14 + l * 15) + "px";
-      wf.appendChild(row);
-    }
-    // gridlines
-    for (var g = 1; g < 20; g++) {
-      var gl = document.createElement("div");
-      gl.className = "gridline";
-      gl.style.top = (14 + g * 15) + "px";
-      wf.appendChild(gl);
-    }
   }
 
   prev.addEventListener("click", function () { move(-1); });

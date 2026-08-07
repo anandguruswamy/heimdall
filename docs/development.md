@@ -8,7 +8,8 @@ this file is the from-scratch guide.
 
 ### Hardware
 
-- 5x DWM3001CDK nodes (DWM3001CDK/nRF52833, DW3110 radio).
+- 5x DWM3001CDK nodes by default (DWM3001CDK/nRF52833, DW3110 radio); the
+  project supports 2–8 nodes.
 - 1x Arduino UNO Q as the fusion hub/gateway host.
 - 1x J-Link (J9 connection) for programming boards, optionally hosted on the
   UNO Q.

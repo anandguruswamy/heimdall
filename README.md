@@ -5,7 +5,7 @@
 Heimdall is a room-scale, multi-node UWB sensing system built around five
 DWM3001 radios and an Arduino UNO Q gateway — a privacy-first radar you can
 build from a handful of $30 dev boards. It senses people and space without
-cameras, running the whole pipeline on-device.
+cameras, running the whole sensing pipeline on the UNO Q.
 
 ![Heimdall system topology: a Snapdragon host and Arduino UNO Q gateway linked to a five-node DWM3001 UWB mesh](docs/assets/topology.svg)
 
@@ -14,8 +14,8 @@ cameras, running the whole pipeline on-device.
 - 5 UWB nodes → **20 directed links** every 35 ms cycle
 - **28.571 Hz** per link, **64** complex CIR taps per observation
 - **Lossless 187 kB/s** USB-CDC export from the gateway
-- Everything computed **on-device** (Qualcomm QRB2210) — no cloud, no laptop in
-  the sensing loop
+- All sensing and fusion on the **UNO Q** (Qualcomm QRB2210) — the live
+  dashboard is served on-device; no cloud
 
 ## How it works
 
@@ -67,7 +67,8 @@ checksums, and troubleshooting are in [docs/development.md](docs/development.md)
 
 Hardware:
 
-- 5x DWM3001CDK nodes (DWM3001CDK/nRF52833, DW3110 radio).
+- 5x DWM3001CDK nodes by default (DWM3001CDK/nRF52833, DW3110 radio); the
+  project supports 2–8 nodes.
 - 1x Arduino UNO Q as the fusion hub/gateway host.
 - 1x J-Link (J9 connection) for programming boards, optionally hosted on the
   UNO Q.
@@ -198,8 +199,8 @@ See [docs/development.md](docs/development.md) for the full test guide.
 
 ## Technical papers
 
-- [Offset-Free Joint Time-of-Flight, Clock-Rate, and Clock-Drift Estimation](docs/papers/joint-tof-clock-estimation.html)
-- [Geometry-Conditioned Neural 3D Scene Reconstruction from Multistatic UWB Channel Impulse Responses](docs/papers/neural-uwb-scene-reconstruction.html)
+- [Offset-Free Joint Time-of-Flight, Clock-Rate, and Clock-Drift Estimation](https://htmlpreview.github.io/?https://github.com/anandguruswamy/heimdall/blob/main/docs/papers/joint-tof-clock-estimation.html)
+- [Geometry-Conditioned Neural 3D Scene Reconstruction from Multistatic UWB Channel Impulse Responses](https://htmlpreview.github.io/?https://github.com/anandguruswamy/heimdall/blob/main/docs/papers/neural-uwb-scene-reconstruction.html)
 
 ## References
 
