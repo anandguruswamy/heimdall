@@ -199,7 +199,7 @@
     margin: 6px 0 0;
     font-size: 34px; font-weight: 600; letter-spacing: -0.01em; color: var(--ice);
   }
-  .s0 .kicker { margin-top: 26px; max-width: 900px; }
+  .s0 .kicker { margin-top: 26px; max-width: none; }
   .s0 .team {
     margin-top: 22px;
     font-family: var(--mono); font-size: 13px; letter-spacing: 0.1em; color: var(--dim);
@@ -210,7 +210,8 @@
      SLIDE 1 — WHY UWB
      ============================================================ */
   .s1 .visual { position: relative; border: 1px solid var(--line); min-height: 0; overflow: hidden;
-    background: linear-gradient(180deg, #0c1418, #070b0d); display: flex; flex-direction: column; }
+    background: linear-gradient(180deg, #0c1418, #070b0d); display: flex; flex-direction: column;
+    margin-top: 24px; }
 
   /* scene: Tx → Rx with a reflecting surface */
   .scene { position: relative; flex: 1.1; min-height: 0; overflow: hidden;
@@ -219,20 +220,20 @@
     letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
   .node-dot { position: absolute; width: 14px; height: 14px; border-radius: 50%;
     background: var(--teal); box-shadow: 0 0 16px var(--teal); transform: translate(-50%, -50%); }
-  .node-dot.tx { left: 10%; bottom: 34%; }
-  .rx-anchor { position: absolute; left: 90%; bottom: 34%; width: 0; height: 0; }
+  .node-dot.tx { left: 10%; bottom: 28.7%; }
+  .rx-anchor { position: absolute; left: 90%; bottom: 28.7%; width: 0; height: 0; }
   .rx-anchor .node-dot { left: 0; top: 0; z-index: 1; }
   .rx-anchor .glow { left: 0; top: 0; z-index: 0; }
-  .label.tx { left: 10%; bottom: 25%; transform: translateX(-50%); }
-  .label.rx { left: 90%; bottom: 25%; transform: translateX(-50%); }
-  .reflector { position: absolute; left: 40%; top: 8%; width: 12px; height: 12px;
+  .label.tx { left: 10%; bottom: 19.7%; transform: translateX(-50%); }
+  .label.rx { left: 90%; bottom: 19.7%; transform: translateX(-50%); }
+  .reflector { position: absolute; left: 40%; top: 13.4%; width: 12px; height: 12px;
     border-radius: 50%; background: #3c5560; box-shadow: 0 0 10px rgba(60, 85, 96, 0.6);
     transform: translate(-50%, -50%); }
-  .label.ref { left: 40%; top: 1.5%; transform: translateX(-50%); }
+  .label.ref { left: 40%; top: 6.9%; transform: translateX(-50%); }
 
   .ping-anchor { position: absolute; width: 0; height: 0; }
-  .ping-anchor.tx { left: 10%; bottom: 34%; }
-  .ping-anchor.ref { left: 40%; top: 8%; }
+  .ping-anchor.tx { left: 10%; bottom: 28.7%; }
+  .ping-anchor.ref { left: 40%; top: 13.4%; }
   .ping { position: absolute; top: 0; left: 0; border-radius: 50%; opacity: 0; pointer-events: none; }
   .ping.teal { border: 2px solid var(--teal); width: 872px; height: 872px; animation: pingtx 3.68s linear infinite; }
   .ping.amber { border: 2px solid var(--amber); width: 628px; height: 628px; animation: pingrefl 3.68s linear infinite; }
@@ -260,7 +261,7 @@
   .glow.rx-r {
     background: radial-gradient(circle, rgba(244, 189, 98, 0.55), transparent 70%);
     animation: flashR 3.68s linear infinite; }
-  .glow.ref { left: 40%; top: 8%;
+  .glow.ref { left: 40%; top: 13.4%;
     background: radial-gradient(circle, rgba(244, 189, 98, 0.5), transparent 70%);
     animation: flashRef 3.68s linear infinite; }
   @keyframes flashD { 0%, 31% { opacity: 0; } 35% { opacity: 0.9; } 42%, 100% { opacity: 0; } }
@@ -314,7 +315,7 @@
   .s2 .kicker { max-width: 1020px; }
   .pipeline { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-top: 24px; }
   .pipe {
-    position: relative; min-height: 138px;
+    position: relative; min-height: 110px;
     border: 1px solid var(--line); border-top: 4px solid var(--teal);
     background: linear-gradient(180deg, var(--panel-3), var(--panel-2));
     padding: 14px 14px 16px;
@@ -334,32 +335,63 @@
   .pipe p { margin: 9px 0 0; font-size: 14px; line-height: 1.38; color: var(--muted); }
   .s2-bottom { display: grid; grid-template-columns: 1.08fr 0.92fr; gap: 14px; margin-top: 16px; flex: 1; min-height: 0; }
 
-  .linkgrid {
-    flex: 1; min-height: 0;
-    display: grid; grid-template-columns: repeat(5, 1fr); grid-template-rows: repeat(5, 1fr);
-    grid-auto-flow: column; gap: 5px;
-    border: 1px solid var(--line); background: var(--panel-2);
-    padding: 10px;
-  }
-  .cell {
-    min-width: 0; min-height: 0;
-    display: grid; place-items: center;
-    border: 1px solid #1c2a2f; background: #0b1215;
-    font-family: var(--mono); font-size: 11px; color: var(--dim);
-    opacity: 0;
-  }
-  .slide.active .cell { animation: cellpop 0.4s both; animation-delay: calc(var(--i) * 60ms); }
-  @keyframes cellpop { from { opacity: 0; transform: scale(0.6); } to { opacity: 1; transform: scale(1); } }
-  .cell.lit { color: #bdf3e6; border-color: var(--teal); background: var(--teal-soft); box-shadow: inset 0 0 10px rgba(69, 224, 193, 0.22); }
-  .cell.diag { opacity: 1; border-color: transparent; background: transparent; position: relative; }
-  .cell.diag::before {
-    content: ""; width: 9px; height: 9px; border-radius: 50%;
-    background: var(--teal); box-shadow: 0 0 12px var(--teal);
-  }
+  .stat-grid { display: grid; grid-template-columns: 1fr; gap: 10px; }
+  .stat-grid .chip { padding: 8px 14px 9px; }
+  .stat-grid .chip b { font-size: 20px; }
+  .stat-grid .chip span { margin-top: 3px; }
+  .stat-grid .proto-tile { border: 1px solid var(--line); border-left: 3px solid var(--teal);
+    background: linear-gradient(160deg, var(--panel-3), var(--panel-2)); padding: 9px 14px 10px; }
+  .stat-grid .proto-tile h3 { margin: 0; font-family: var(--mono); font-size: 15px;
+    letter-spacing: 0.1em; text-transform: uppercase; color: var(--strong); }
+  .stat-grid .proto-tile ul { margin: 8px 0 0; padding: 0; list-style: none;
+    display: grid; gap: 5px; }
+  .stat-grid .proto-tile li { position: relative; padding-left: 15px;
+    font-size: 15px; line-height: 1.32; color: var(--muted); }
+  .stat-grid .proto-tile li::before { content: ""; position: absolute; left: 0; top: 8px;
+    width: 6px; height: 6px; border-radius: 50%; background: var(--teal);
+    box-shadow: 0 0 6px rgba(69, 224, 193, 0.5); }
 
-  .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .stat-grid .chip { padding: 11px 14px 12px; }
-  .stat-grid .chip b { font-size: 22px; }
+  /* Heimdall beacon protocol figure */
+  .beacon { flex: 1; min-height: 0; position: relative; overflow: hidden;
+    background: linear-gradient(180deg, #0c1418, #070b0d); }
+  .beacon-scene { position: absolute; inset: 0; }
+  .beacon-node { position: absolute; transform: translate(-50%, -50%); z-index: 3;
+    display: flex; flex-direction: column; align-items: center; }
+  .beacon-node .dot { width: 16px; height: 16px; border-radius: 50%;
+    border: 3px solid var(--c); box-shadow: 0 0 10px var(--cg), inset 0 0 6px var(--cg);
+    transition: box-shadow 0.15s; }
+  .beacon-node.tx .dot { box-shadow: 0 0 18px var(--cg), 0 0 36px var(--cg); }
+  .beacon-node .lbl { margin-top: 6px; font-family: var(--mono); font-size: 11px;
+    letter-spacing: 0.06em; color: #dbe5e7; }
+  .beacon-node .dots { display: flex; gap: 5px; margin-top: 5px; min-height: 8px; }
+  .beacon-node .dots b { width: 7px; height: 7px; border-radius: 50%; background: var(--c);
+    box-shadow: 0 0 6px var(--cg); transition: opacity 0.12s; }
+  .beacon-ring { position: absolute; width: 760px; height: 760px; border-radius: 50%;
+    border: 2px solid var(--c); opacity: 0; z-index: 1; pointer-events: none; }
+  .beacon-reflector { position: absolute; width: 12px; height: 12px; border-radius: 50%;
+    background: #3c5560; box-shadow: 0 0 10px rgba(60, 85, 96, 0.6);
+    transform: translate(-50%, -50%); z-index: 2; }
+  .beacon-refl-ring { position: absolute; width: 760px; height: 760px; border-radius: 50%;
+    border: 2px solid var(--c); opacity: 0; z-index: 1; pointer-events: none; }
+  .beacon-refl-label { position: absolute; left: 50%; top: 44.5%; transform: translateX(-50%);
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; color: var(--muted); z-index: 2; }
+  .beacon-link { position: absolute; height: 2px; background: rgba(69, 224, 193, 0.45);
+    z-index: 2; transform: translateY(-50%); }
+  .beacon-link-v { position: absolute; width: 2px; background: rgba(69, 224, 193, 0.45);
+    z-index: 2; transform: translateX(-50%); }
+  .beacon-laptop { position: absolute; z-index: 2; text-align: center;
+    border: 1px solid #4a5f68; background: #10191d; padding: 6px 8px;
+    font-family: var(--mono); font-size: 9.6px; letter-spacing: 0.08em; color: #bdf3e6;
+    line-height: 1.4; white-space: nowrap; }
+  .beacon-unoq { position: absolute; transform: translateY(-50%); z-index: 2;
+    border: 1px solid #4a5f68; background: #10191d; padding: 6px 9px;
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; color: #bdf3e6; }
+  .beacon-tx { position: absolute; left: 12px; top: 10px; z-index: 4;
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; color: var(--teal);
+    background: rgba(5, 9, 11, 0.7); padding: 4px 8px; }
+  .beacon-legend { position: absolute; left: 12px; right: 12px; bottom: 8px; z-index: 4;
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; color: var(--dim);
+    text-align: center; }
 
   .callout {
     margin-top: 10px; padding: 14px 16px 15px;
@@ -454,8 +486,12 @@
   .tile p { margin: 9px 0 0; font-size: 15.5px; line-height: 1.42; color: var(--muted); }
   .tile p b { color: var(--amber-text); font-weight: 500; }
 
-  .s4-bottom { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 14px; margin-top: 14px; flex: 1; min-height: 0; }
-  .research { border: 1px solid var(--line); border-left: 4px solid var(--ice); background: linear-gradient(160deg, #0e1820, #0a1116); padding: 14px 16px 15px; }
+  .s4-bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; flex: 1; min-height: 0; }
+  .research { border: 1px solid var(--line); border-top: 4px solid var(--ice); background: linear-gradient(160deg, #0e1820, #0a1116); padding: 14px 16px 15px; }
+  .research ul { margin: 9px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+  .research li { position: relative; padding-left: 15px; font-size: 14px; line-height: 1.35; color: var(--muted); }
+  .research li::before { content: ""; position: absolute; left: 0; top: 8px; width: 6px; height: 6px; border-radius: 50%; background: var(--ice); box-shadow: 0 0 6px rgba(110, 199, 232, 0.5); }
+  .research li b { color: #dff4fb; font-weight: 500; }
   .research h3 { margin: 0; font-family: var(--mono); font-size: 12px; letter-spacing: 0.16em; color: var(--ice); text-transform: uppercase; }
   .research p { margin: 9px 0 0; font-size: 15px; line-height: 1.42; color: #b9c6c9; }
   .close-box { border: 1px solid var(--line); border-top: 4px solid var(--teal); background: linear-gradient(160deg, #10211e, #0a1211); padding: 14px 18px 16px; display: flex; flex-direction: column; justify-content: center; }
@@ -508,7 +544,6 @@
      ============================================================ */
   @media (prefers-reduced-motion: reduce) {
     * { animation-duration: 0.001s !important; animation-delay: 0s !important; animation-iteration-count: 1 !important; }
-    .cell { opacity: 1; }
     .cir-path { stroke-dashoffset: 0 !important; }
     .ping, .glow, .cir-sweep { display: none !important; }
   }
@@ -539,7 +574,7 @@ Open on the title. "Heimdall — radar, from $30 radios." One beat, then hand to
         <div class="title-main">
           <h1>HEIMDALL</h1>
           <p class="subtitle">Room-wide radar mesh, from $30 radios</p>
-          <p class="kicker">UWB radios were invented to answer one question — <span class="mono" style="color:#bdf3e6;">how far away is the key fob?</span> Every pulse bounces off the whole room. We built a radar out of five of them.</p>
+          <p class="kicker">UWB radios were invented to answer one question — <span class="mono" style="color:#bdf3e6;">how far away is the key&nbsp;fob?</span><br>But every ping bounces off the whole room. <span class="mono" style="color:#ffffff;font-weight:700;">Our hack:</span> build a radar mesh out of five UWB radios.</p>
           <p class="team">Built by five Qualcomm UWB / Bluetooth modem engineers · <b>Anand · Ehsan · Jianxiu · Saisundar · Simarjit</b></p>
         </div>
       </div>
@@ -548,7 +583,6 @@ Open on the title. "Heimdall — radar, from $30 radios." One beat, then hand to
         <div class="chip"><b>20</b><span>directed links</span></div>
         <div class="chip"><b>28.6 Hz</b><span>per link</span></div>
         <div class="chip"><b>64</b><span>CIR taps</span></div>
-        <div class="chip"><b>&lt; $150</b><span>total hardware</span></div>
       </div>
     </section>
 
@@ -563,7 +597,7 @@ Open on the title. "Heimdall — radar, from $30 radios." One beat, then hand to
         <div>
           <div class="facts">
             <div class="fact"><span class="n">01</span><p>A UWB radio fires a short pulse. It bounces off walls, furniture, and people — and the radio records <b style="color:#bdf3e6;font-weight:500;">every echo</b>.</p></div>
-            <div class="fact"><span class="n">02</span><p>Pulses are sub-nanosecond wide, so each echo is separated in time — a <b style="color:#bdf3e6;font-weight:500;">full reflected-energy profile</b> of the room.</p></div>
+            <div class="fact"><span class="n">02</span><p>Pulses are just a few nanoseconds wide, so each echo is separated in time — a <b style="color:#bdf3e6;font-weight:500;">full reflected-energy profile</b> of the room.</p></div>
             <div class="fact"><span class="n">03</span><p>No cameras. Works in the dark, through smoke and non-metal walls — and it records <b style="color:#bdf3e6;font-weight:500;">where</b> things are, never <b style="color:#bdf3e6;font-weight:500;">what</b> you look like.</p></div>
           </div>
           <div class="contrast">Today the industry uses it for one thing — <b>IS THE KEY FOB IN RANGE?</b> &nbsp;→&nbsp; the least interesting measurement it makes.</div>
@@ -608,36 +642,38 @@ Open on the title. "Heimdall — radar, from $30 radios." One beat, then hand to
 
     <!-- ============ SLIDE 2 · THE HACK ============ -->
     <section class="slide s2" data-title="The Hack" data-time="0:45 – 1:30" data-notes="PRESENTER A · 0:45–1:30
-"The DWM3001 is a $30 board that ships as a one-to-one key-fob ranger. We threw out the vendor stack and wrote our own protocol on open Zephyr — every 35 ms all five nodes transmit AND listen → 20 directed links, 64-tap complex echoes at 28.6 Hz → 571 radar observations a second for under $150."
+"The DWM3001 is a $30 board that ships as a one-to-one key-fob ranger. We threw out the vendor stack and wrote our own bespoke protocol on open Zephyr RTOS — every 35 ms all five nodes transmit AND listen → 20 directed links, 64-tap complex echoes at 28.6 Hz → 571 radar observations a second for under $150."
 "One node is a gateway over native USB into the Arduino UNO Q — a Qualcomm Dragonwing QRB2210. It validates every record, archives, runs the DSP, and serves a live dashboard. No cloud. No laptop. About 7% of one core."
 DEEP-DIVE BEAT: "The engineering that matters: radio timing never waits for the USB link. Host falls behind → drop-newest, sequence-visible gaps; the radio schedule is never perturbed. Every record carries protocol version, node, round, sequence, and CRC. Nothing is trusted. Everything is replayable."
 HANDOFF: "Here's what that looks like right now."">
       <p class="eyebrow">02 · The Hack</p>
       <h2>Five key-fob rangers → a radar mesh.</h2>
-      <p class="kicker">We replaced the vendor firmware with our own protocol on open Zephyr — every node transmits <b style="color:#bdf3e6;font-weight:600;">and</b> listens.</p>
+      <p class="kicker">We replaced the vendor firmware with our own bespoke protocol on open Zephyr RTOS — every node transmits <b style="color:#bdf3e6;font-weight:600;">and</b> listens.</p>
       <div class="pipeline">
-        <div class="pipe"><h3>Radio mesh</h3><p>5 × DWM3001 · one 35 ms cycle · custom beacon protocol</p></div>
-        <div class="pipe"><h3>Gateway</h3><p>one node exports every link to the host</p></div>
+        <div class="pipe"><h3>Radio mesh</h3><p>5 × DWM3001 · 35 ms cycles · custom beacon protocol</p></div>
+        <div class="pipe"><h3>Node 0 Gateway</h3><p>Node 0 collects and reports all CIRs to the host</p></div>
         <div class="pipe"><h3>USB CDC</h3><p>native USB · lossless 187 kB/s</p></div>
         <div class="pipe"><h3>Arduino UNO Q</h3><p>Qualcomm QRB2210 · validate · archive · DSP · serve</p></div>
-        <div class="pipe"><h3>Dashboard</h3><p>live web UI — this deck speaks its language</p></div>
+        <div class="pipe"><h3>Dashboard</h3><p>live dashboard web app</p></div>
       </div>
       <div class="s2-bottom">
         <div class="panel" style="min-width:0;">
-          <header><span>Directed links per cycle</span><b>N² − N = 20</b></header>
-          <div class="linkgrid" id="linkgrid" aria-label="20 directed UWB links"></div>
+          <header><span>Heimdall beacon protocol</span><b>round-robin · one TX per slot</b></header>
+          <div class="beacon" id="beacon" aria-label="Beacon protocol: five nodes transmit in turn; receiving nodes collect a dot of the sender's color until their own transmission clears them"></div>
         </div>
         <div style="display:flex; flex-direction:column; min-height:0;">
           <div class="stat-grid">
+            <div class="proto-tile">
+              <h3>Every ping works double duty</h3>
+              <ul>
+                <li>All nodes capture a fresh CIR from each ping</li>
+                <li>Each ping's payload carries telemetry — node 0 reports it, peers sync</li>
+                <li>One ping, many new CIRs</li>
+                <li>All-to-all CIR collection at maximum rate</li>
+              </ul>
+            </div>
             <div class="chip"><b>571</b><span>radar observations / sec</span></div>
-            <div class="chip"><b>&lt; $150</b><span>five boards, total</span></div>
             <div class="chip"><b>187 kB/s</b><span>lossless USB export</span></div>
-            <div class="chip"><b>~7%</b><span>of one UNO Q core</span></div>
-          </div>
-          <div class="callout">
-            <h3>The engineering that matters</h3>
-            <p>Radio timing never waits for the USB link. When the host falls behind we drop-newest with visible sequence gaps — the radio schedule is never perturbed.</p>
-            <p class="foot">EVERY RECORD · PROTOCOL VERSION · NODE · ROUND · SEQUENCE · CRC32 — VERSIONED, REPLAYABLE</p>
           </div>
         </div>
       </div>
@@ -695,13 +731,17 @@ CLOSE: "Everything here is open source, documented, and capture/replay-tested �
       <div class="tiles">
         <div class="tile" tabindex="0"><h3>Child left in a car</h3><p><b>cm-level presence</b> in a hot cabin — a sensor that is already there.</p></div>
         <div class="tile" tabindex="0"><h3>Falls &amp; vital signs</h3><p>A bedroom where a <b>camera is unacceptable</b> — radar never looks at you.</p></div>
-        <div class="tile" tabindex="0"><h3>Through-wall intrusion</h3><p><b>Device-free, privacy-first</b> security — seen without carrying anything.</p></div>
+        <div class="tile" tabindex="0"><h3>Reconstruct the room</h3><p>Walls, furniture, and people mapped <b>directly from the echoes</b> — no cameras.</p></div>
         <div class="tile" tabindex="0"><h3>Presence-driven HVAC</h3><p>Heat and cool the rooms <b>people are actually in</b> — energy, not guesses.</p></div>
       </div>
       <div class="s4-bottom">
         <div class="research">
-          <h3>Research · seeing the room itself</h3>
-          <p>Further out, we are reconstructing the room's geometry <b style="color:#bdf3e6;font-weight:500;">directly from the echoes</b> — a neural inverse model of the scene, no cameras.</p>
+          <h3>The tech stack</h3>
+          <ul>
+            <li><b>UWB boards</b> — Zephyr RTOS + DW3000 driver + bespoke beacon protocol</li>
+            <li><b>Arduino UNO Q</b> — Rust fusion service</li>
+            <li><b>Snapdragon Laptop</b> — Svelte dashboard + PyTorch model</li>
+          </ul>
         </div>
         <div class="close-box">
           <p class="line">Open source · documented · capture/replay-tested — <b>a reference pipeline</b> for turning cheap radios into a radar, on an Arduino, in the open.</p>
@@ -778,6 +818,7 @@ CLOSE: "Everything here is open source, documented, and capture/replay-tested �
     counter.textContent = (current + 1) + " / " + slides.length;
     document.title = slides[current].dataset.title + " — Heimdall";
     renderNotes();
+    if (slides[current].querySelector(".beacon")) { positionBeaconLink(); }
     if (focus && slides[current].querySelector(".tile")) {
       var t = slides[current].querySelector(".tile");
       t.focus();
@@ -795,24 +836,193 @@ CLOSE: "Everything here is open source, documented, and capture/replay-tested �
     dots.appendChild(d);
   });
 
-  // ---- slide 2: link grid (column-major, like the dashboard) ----
-  var grid = document.getElementById("linkgrid");
-  if (grid) {
-    var n = 5, k = 0;
-    for (var c = 0; c < n; c++) {
-      for (var r = 0; r < n; r++) {
-        var cell = document.createElement("div");
-        cell.className = "cell";
-        if (r === c) {
-          cell.classList.add("diag");
-        } else {
-          cell.textContent = "N" + r + "→N" + c;
-          cell.classList.add("lit");
-          cell.style.setProperty("--i", k++);
-        }
-        grid.appendChild(cell);
+  // ---- slide 2: Heimdall beacon protocol animation ----
+  var beacon = document.getElementById("beacon");
+  if (beacon) {
+    var BN = 5;
+    var TURN = 1.6 / 1.5;
+    var CYCLE = BN * TURN;
+    var BCOL = ["45e0c1", "f4bd62", "6ec7e8", "c9a6f7", "ff8a7a"];
+    var BPOS = [{ x: 82, y: 46 }, { x: 60, y: 10 }, { x: 24, y: 24 }, { x: 24, y: 68 }, { x: 60, y: 82 }];
+    function hexRgb(h) {
+      return parseInt(h.substr(0, 2), 16) + "," + parseInt(h.substr(2, 2), 16) + "," + parseInt(h.substr(4, 2), 16);
+    }
+    function darken(h, f) {
+      return "rgb(" + Math.round(parseInt(h.substr(0, 2), 16) * f) + "," +
+        Math.round(parseInt(h.substr(2, 2), 16) * f) + "," +
+        Math.round(parseInt(h.substr(4, 2), 16) * f) + ")";
+    }
+    var bScene = document.createElement("div");
+    bScene.className = "beacon-scene";
+    var bTxt = document.createElement("div");
+    bTxt.className = "beacon-tx";
+    bScene.appendChild(bTxt);
+    var bLegend = document.createElement("div");
+    bLegend.className = "beacon-legend";
+    bLegend.textContent = "ROUND-ROBIN · DOTS INDICATE CIRS · RECEIVERS COLLECT A DOT · TX CLEARS ITS OWN DOTS";
+    bScene.appendChild(bLegend);
+    var bLink = document.createElement("div");
+    bLink.className = "beacon-link";
+    bLink.style.left = "82%";
+    bLink.style.top = "39.8%";
+    bLink.style.right = "13%";
+    bScene.appendChild(bLink);
+    var bUnoq = document.createElement("div");
+    bUnoq.className = "beacon-unoq";
+    bUnoq.style.left = "87%";
+    bUnoq.style.top = "39.8%";
+    bUnoq.textContent = "uno q";
+    bScene.appendChild(bUnoq);
+    var bRings = [], bNodes = [], bDots = [];
+    for (var bi = 0; bi < BN; bi++) {
+      var nd = document.createElement("div");
+      nd.className = "beacon-node";
+      nd.style.left = BPOS[bi].x + "%";
+      nd.style.top = BPOS[bi].y + "%";
+      nd.style.setProperty("--c", "#" + BCOL[bi]);
+      nd.style.setProperty("--cg", "rgba(" + hexRgb(BCOL[bi]) + ",0.5)");
+      var circ = document.createElement("i");
+      circ.className = "dot";
+      var lbl = document.createElement("span");
+      lbl.className = "lbl";
+      lbl.textContent = bi;
+      var bRow = document.createElement("span");
+      bRow.className = "dots";
+      nd.appendChild(circ);
+      nd.appendChild(lbl);
+      nd.appendChild(bRow);
+      bScene.appendChild(nd);
+      bNodes[bi] = nd;
+      var rg = document.createElement("div");
+      rg.className = "beacon-ring";
+      rg.style.left = BPOS[bi].x + "%";
+      rg.style.top = BPOS[bi].y + "%";
+      rg.style.setProperty("--c", "#" + BCOL[bi]);
+      bScene.appendChild(rg);
+      bRings[bi] = rg;
+      bDots[bi] = {};
+    }
+    var bReflector = document.createElement("div");
+    bReflector.className = "beacon-reflector";
+    bReflector.style.left = "50%";
+    bReflector.style.top = "39.9%";
+    bScene.appendChild(bReflector);
+    var bReflRing = document.createElement("div");
+    bReflRing.className = "beacon-refl-ring";
+    bReflRing.style.left = "50%";
+    bReflRing.style.top = "39.9%";
+    bScene.appendChild(bReflRing);
+    var bReflLabel = document.createElement("div");
+    bReflLabel.className = "beacon-refl-label";
+    bReflLabel.textContent = "Reflector";
+    bScene.appendChild(bReflLabel);
+    for (var rj = 0; rj < BN; rj++) {
+      for (var k = 1; k < BN; k++) {
+        var si = (rj + k) % BN;
+        var d = document.createElement("b");
+        d.style.setProperty("--c", "#" + BCOL[si]);
+        d.style.opacity = 0;
+        bNodes[rj].querySelector(".dots").appendChild(d);
+        bDots[rj][si] = d;
       }
     }
+    beacon.appendChild(bScene);
+
+    // snapdragon laptop + vertical connector up from the uno q's top-edge center
+    var bLaptop = document.createElement("div");
+    bLaptop.className = "beacon-laptop";
+    bLaptop.innerHTML = "Snapdragon<br>Laptop";
+    bLaptop.style.left = "87%";
+    bLaptop.style.top = "5%";
+    bLaptop.style.transform = "translateX(-50%)";
+    bScene.appendChild(bLaptop);
+    var bLineV = document.createElement("div");
+    bLineV.className = "beacon-link-v";
+    bLineV.style.left = "87%";
+    bScene.appendChild(bLineV);
+
+    var bT0 = performance.now() - 2800;
+    var bReduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    function bFrame(now) {
+      var t = ((now - bT0) / 1000) % CYCLE;
+      var turn = Math.floor(t / TURN) % BN;
+      var within = (t % TURN) / TURN;
+      bTxt.textContent = "TX: N" + turn;
+      bReflRing.style.setProperty("--c", darken(BCOL[turn], 0.55));
+      var reflScale = 0.05, reflOp = 0;
+      if (within >= 0.30 && within < 0.90) {
+        var rw = (within - 0.30) / 0.48;
+        if (rw > 1) rw = 1;
+        reflScale = 0.05 + rw * 0.95;
+        reflOp = rw < 0.25 ? (rw / 0.25) * 0.9 : (rw < 0.7 ? 0.9 : ((1 - rw) / 0.3) * 0.9);
+      }
+      bReflRing.style.transform = "translate(-50%, -50%) scale(" + reflScale + ")";
+      bReflRing.style.opacity = reflOp;
+      for (var i = 0; i < BN; i++) {
+        bNodes[i].classList.toggle("tx", i === turn);
+        var ring = bRings[i];
+        if (i === turn) {
+          var sc = 0.05 + Math.min(within / 0.6, 1) * 0.95;
+          var op = within < 0.15 ? (within / 0.15) * 0.9 : (within < 0.7 ? ((0.7 - within) / 0.55) * 0.9 : 0);
+          ring.style.transform = "translate(-50%, -50%) scale(" + sc + ")";
+          ring.style.opacity = op;
+        } else {
+          ring.style.opacity = 0;
+        }
+        for (var j = 0; j < BN; j++) {
+          if (i === j) continue;
+          var collect = (i + 0.55) * TURN;
+          var clear = j * TURN;
+          var collectAbs = t >= collect ? collect : collect - CYCLE;
+          var clearAbs = t >= clear ? clear : clear - CYCLE;
+          bDots[j][i].style.opacity = (collectAbs > clearAbs) ? 1 : 0;
+        }
+      }
+      var sinceHit = CYCLE;
+      for (var g = 1; g < BN; g++) {
+        var hitT = (g + 0.55) * TURN;
+        var since = (t - hitT + CYCLE) % CYCLE;
+        if (since < sinceHit) sinceHit = since;
+      }
+      var intens = sinceHit < 0.45 ? 1 - sinceHit / 0.45 : 0;
+      var halo = intens > 0.02
+        ? "0 0 " + (10 * intens) + "px rgba(69,224,193," + (0.7 * intens) + "), 0 0 " + (22 * intens) + "px rgba(69,224,193," + (0.35 * intens) + ")"
+        : "none";
+      var bg = "rgba(69,224,193," + (0.45 + 0.55 * intens).toFixed(3) + ")";
+      bLink.style.background = bg;
+      bLineV.style.background = bg;
+      bLink.style.boxShadow = halo;
+      bLineV.style.boxShadow = halo;
+      requestAnimationFrame(bFrame);
+    }
+    if (bReduced) {
+      bTxt.textContent = "STATIC · ROUND-ROBIN TX";
+      for (var a = 0; a < BN; a++) for (var c2 = 0; c2 < BN; c2++) if (a !== c2) bDots[c2][a].style.opacity = 1;
+    } else {
+      requestAnimationFrame(bFrame);
+    }
+  }
+
+  function positionBeaconLink() {
+    var b = document.getElementById("beacon");
+    if (!b) return;
+    var unoq = b.querySelector(".beacon-unoq");
+    var laptop = b.querySelector(".beacon-laptop");
+    var lineV = b.querySelector(".beacon-link-v");
+    if (!unoq || !laptop || !lineV) return;
+    var beaconRect = b.getBoundingClientRect();
+    if (!beaconRect.width || !beaconRect.height) return;
+    var unoqRect = unoq.getBoundingClientRect();
+    var lapX = ((unoqRect.left + unoqRect.right) / 2 - beaconRect.left) / beaconRect.width * 100;
+    laptop.style.left = lapX + "%";
+    laptop.style.top = "5%";
+    laptop.style.transform = "translateX(-50%)";
+    var laptopRect = laptop.getBoundingClientRect();
+    var lineTop = (laptopRect.bottom - beaconRect.top) / beaconRect.height * 100;
+    var lineBottom = (unoqRect.top - beaconRect.top) / beaconRect.height * 100;
+    lineV.style.left = lapX + "%";
+    lineV.style.top = lineTop + "%";
+    lineV.style.height = Math.max(0, lineBottom - lineTop) + "%";
   }
 
   // ---- slide 3: waterfall mock rows (one per directed link) ----
@@ -880,7 +1090,7 @@ CLOSE: "Everything here is open source, documented, and capture/replay-tested �
     move(1);
   });
 
-  window.addEventListener("resize", fit);
+  window.addEventListener("resize", function () { fit(); positionBeaconLink(); });
   window.addEventListener("orientationchange", fit);
   setInterval(tick, 500);
 
@@ -890,3 +1100,4 @@ CLOSE: "Everything here is open source, documented, and capture/replay-tested �
 </script>
 </body>
 </html>
+
