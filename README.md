@@ -46,15 +46,7 @@ The N=5/M=2 radio profile is hardware-qualified with all five nodes active at
 [STATUS.md](STATUS.md) for the full build, deployment, and hardware-validation
 log.
 
-## Team
 
-| Name | Email (@gmail.com)|
-| --- | --- |
-| Anand Guruswamy | anand.me |
-| Ehsan Hosseini | ehsan.hosseini |
-| Jianxiu Li | lijianxiu2019 |
-| Saisundar Sridharan | saisundar2  |
-| Simarjit Singh | simar.rajput |
 
 ## Setup instructions
 
